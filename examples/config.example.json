@@ -1,0 +1,20 @@
+{
+  "youtube": {
+    "api_key": "REPLACE_WITH_RESTRICTED_API_KEY",
+    "access_token": "",
+    "video_id": "REPLACE_WITH_VIDEO_ID"
+  },
+  "kick": {
+    "client_id": "REPLACE_WITH_CLIENT_ID",
+    "client_secret": "",
+    "access_token": "",
+    "broadcaster_id": "REPLACE_WITH_NUMERIC_USER_ID",
+    "webhook_url": "https://chat.example.com/webhooks/kick",
+    "listen": "127.0.0.1:8788"
+  },
+  "log_file": "",
+  "timestamps": true,
+  "no_color": false,
+  "queue_size": 256,
+  "duplicate_capacity": 10000
+}

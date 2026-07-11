@@ -1,0 +1,27 @@
+[Unit]
+Description=Streamchat live chat merger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=streamchat
+Group=streamchat
+EnvironmentFile=/etc/streamchat/streamchat.env
+ExecStart=/usr/local/bin/streamchat run --kick-listen 127.0.0.1:8788 --timestamps --no-color
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
