@@ -1,5 +1,5 @@
 [Unit]
-Description=Streamchat Kick webhook and relay server
+Description=Streamchat chat ingestion, archive, and relay server
 After=network-online.target
 Wants=network-online.target
 
@@ -12,6 +12,8 @@ ExecStart=/usr/bin/streamchat serve --config /etc/streamchat/config.json
 Restart=on-failure
 RestartSec=5s
 UMask=0077
+StateDirectory=streamchat
+StateDirectoryMode=0750
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

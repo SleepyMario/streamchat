@@ -3,12 +3,13 @@ package youtube
 import (
 	"context"
 	"errors"
-	"github.com/SleepyMario/streamchat/internal/chat"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/chat"
 )
 
 func TestDiscoveryPollingTokenAndEnded(t *testing.T) {
@@ -43,6 +44,97 @@ func TestDiscoveryPollingTokenAndEnded(t *testing.T) {
 	}
 	if !strings.Contains(paths[len(paths)-1], "pageToken=next") {
 		t.Fatalf("paths %v", paths)
+	}
+}
+
+func TestServerDiscoveryStreamReconnectAndTokenRefresh(t *testing.T) {
+	var streamCalls int
+	var tokenPersisted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if strings.Contains(r.URL.RawQuery, "secret") || strings.Contains(r.URL.RawQuery, "refresh-value") {
+				t.Fatal("OAuth secret leaked in URL")
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "refresh-value" {
+				t.Fatalf("bad refresh form: %v", r.Form)
+			}
+			w.Write([]byte(`{"access_token":"fresh-access","expires_in":3600,"token_type":"Bearer"}`))
+		case "/liveBroadcasts":
+			if r.Header.Get("Authorization") != "Bearer fresh-access" || r.URL.Query().Get("broadcastStatus") != "active" {
+				t.Fatalf("bad discovery request: %s %v", r.Header.Get("Authorization"), r.URL.Query())
+			}
+			w.Write([]byte(`{"items":[{"id":"broadcast-1","snippet":{"title":"Live","liveChatId":"chat-1"}}]}`))
+		case "/liveChat/messages/stream":
+			streamCalls++
+			if streamCalls > 1 && r.URL.Query().Get("pageToken") != "resume-token" {
+				t.Fatalf("stream reconnect lost page token: %s", r.URL.String())
+			}
+			switch streamCalls {
+			case 1:
+				w.Write([]byte(`{"nextPageToken":"resume-token","items":[{"id":"yt-1","snippet":{"type":"textMessageEvent","liveChatId":"chat-1","publishedAt":"2026-08-14T01:02:03Z","displayMessage":"hello"},"authorDetails":{"channelId":"user-1","displayName":"Ada"}}]}`))
+			case 2:
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(`{"error":{"errors":[{"reason":"backendError"}]}}`))
+			default:
+				w.Write([]byte(`{"nextPageToken":"resume-token","offlineAt":"2026-08-14T01:03:00Z","items":[]}`))
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := New(server.Client(), server.URL, "", "expired-access", "")
+	c.ClientID = "client-id"
+	c.ClientSecret = "client-secret"
+	c.RefreshToken = "refresh-value"
+	c.TokenExpiry = time.Now().Add(-time.Minute)
+	c.TokenURL = server.URL + "/token"
+	c.RetryDelay = 10 * time.Millisecond
+	c.OnToken = func(tok Token) error {
+		tokenPersisted = tok.AccessToken == "fresh-access" && tok.RefreshToken == "refresh-value"
+		return nil
+	}
+	c.Sleep = func(_ context.Context, d time.Duration) error {
+		if d == c.RetryDelay {
+			cancel()
+			return context.Canceled
+		}
+		return nil
+	}
+	out := make(chan chat.Message, 1)
+	if err := c.RunServer(ctx, out); err != nil {
+		t.Fatal(err)
+	}
+	if !tokenPersisted || streamCalls != 3 {
+		t.Fatalf("persisted=%v stream calls=%d", tokenPersisted, streamCalls)
+	}
+	got := <-out
+	if got.ID != "yt-1" || got.ChannelID != "broadcast-1" || got.Text != "hello" {
+		t.Fatalf("unexpected message: %+v", got)
+	}
+}
+
+func TestOAuthErrorRedactsCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer server.Close()
+	client := OAuthClient{HTTP: server.Client(), TokenURL: server.URL, ClientID: "client-secret-id", ClientSecret: "client-secret-value"}
+	_, err := client.Refresh(context.Background(), "refresh-secret-value")
+	if err == nil {
+		t.Fatal("expected OAuth rejection")
+	}
+	for _, secret := range []string{"client-secret-id", "client-secret-value", "refresh-secret-value"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("secret leaked in error: %v", err)
+		}
 	}
 }
 func TestRetryClassification(t *testing.T) {

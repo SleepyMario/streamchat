@@ -21,6 +21,7 @@ type Config struct {
 	Twitch            Twitch  `json:"twitch"`
 	Server            Server  `json:"server"`
 	Client            Client  `json:"client"`
+	Storage           Storage `json:"storage"`
 	RelayAuthToken    string  `json:"relay_auth_token,omitempty"`
 	LogFile           string  `json:"log_file,omitempty"`
 	Timestamps        bool    `json:"timestamps,omitempty"`
@@ -30,8 +31,13 @@ type Config struct {
 }
 
 type YouTube struct {
-	APIKey      string `json:"api_key,omitempty"`
-	AccessToken string `json:"access_token,omitempty"`
+	APIKey       string    `json:"api_key,omitempty"`
+	ClientID     string    `json:"client_id,omitempty"`
+	ClientSecret string    `json:"client_secret,omitempty"`
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	TokenExpiry  time.Time `json:"token_expiry,omitempty"`
+	RedirectURI  string    `json:"redirect_uri,omitempty"`
 	// VideoID is retained for compatibility, but is normally a per-run target.
 	VideoID string `json:"video_id,omitempty"`
 	BaseURL string `json:"-"`
@@ -79,12 +85,17 @@ type Client struct {
 	ServerURL string `json:"server_url,omitempty"`
 }
 
+type Storage struct {
+	SQLitePath string `json:"sqlite_path,omitempty"`
+}
+
 func Defaults() Config {
 	return Config{
-		YouTube:   YouTube{BaseURL: "https://www.googleapis.com/youtube/v3"},
+		YouTube:   YouTube{BaseURL: "https://youtube.googleapis.com/youtube/v3", RedirectURI: "http://localhost:8791/oauth/youtube/callback"},
 		Kick:      Kick{Listen: "127.0.0.1:8788", RedirectURI: "http://localhost:8789/oauth/kick/callback", APIBaseURL: "https://api.kick.com/public/v1", OAuthBaseURL: "https://id.kick.com", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute},
 		Twitch:    Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
 		Server:    Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
+		Storage:   Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
 		QueueSize: 256, DuplicateCapacity: 10000,
 	}
 }
@@ -125,6 +136,9 @@ func applyDefaults(c *Config) {
 	if c.YouTube.BaseURL == "" {
 		c.YouTube.BaseURL = d.YouTube.BaseURL
 	}
+	if c.YouTube.RedirectURI == "" {
+		c.YouTube.RedirectURI = d.YouTube.RedirectURI
+	}
 	if c.Kick.Listen == "" {
 		c.Kick.Listen = d.Kick.Listen
 	}
@@ -160,6 +174,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Server.WebSocketPath == "" {
 		c.Server.WebSocketPath = d.Server.WebSocketPath
+	}
+	if c.Storage.SQLitePath == "" {
+		c.Storage.SQLitePath = d.Storage.SQLitePath
 	}
 	if c.QueueSize == 0 {
 		c.QueueSize = d.QueueSize
@@ -219,7 +236,11 @@ func ApplyEnv(c *Config, get func(string) string) {
 		}
 	}
 	set("STREAMCHAT_YOUTUBE_API_KEY", &c.YouTube.APIKey)
+	set("STREAMCHAT_YOUTUBE_CLIENT_ID", &c.YouTube.ClientID)
+	set("STREAMCHAT_YOUTUBE_CLIENT_SECRET", &c.YouTube.ClientSecret)
 	set("STREAMCHAT_YOUTUBE_ACCESS_TOKEN", &c.YouTube.AccessToken)
+	set("STREAMCHAT_YOUTUBE_REFRESH_TOKEN", &c.YouTube.RefreshToken)
+	set("STREAMCHAT_YOUTUBE_REDIRECT_URI", &c.YouTube.RedirectURI)
 	set("STREAMCHAT_YOUTUBE_VIDEO_ID", &c.YouTube.VideoID)
 	set("STREAMCHAT_KICK_CLIENT_ID", &c.Kick.ClientID)
 	set("STREAMCHAT_KICK_CLIENT_SECRET", &c.Kick.ClientSecret)
@@ -240,6 +261,7 @@ func ApplyEnv(c *Config, get func(string) string) {
 	set("STREAMCHAT_SERVER_LISTEN", &c.Server.Listen)
 	set("STREAMCHAT_SERVER_WEBSOCKET_PATH", &c.Server.WebSocketPath)
 	set("STREAMCHAT_CLIENT_SERVER_URL", &c.Client.ServerURL)
+	set("STREAMCHAT_STORAGE_SQLITE_PATH", &c.Storage.SQLitePath)
 	set("STREAMCHAT_RELAY_AUTH_TOKEN", &c.RelayAuthToken)
 	set("STREAMCHAT_LOG_FILE", &c.LogFile)
 }
@@ -309,6 +331,12 @@ func (c Config) Validate(mode string) error {
 	if mode == "serve" && c.RelayAuthToken == "" {
 		return errors.New("relay_auth_token is required for streamchat serve")
 	}
+	if mode == "serve" && strings.TrimSpace(c.Storage.SQLitePath) == "" {
+		return errors.New("storage.sqlite_path is required for streamchat serve")
+	}
+	if mode == "serve" && (c.YouTube.ClientID != "" || c.YouTube.ClientSecret != "" || c.YouTube.RefreshToken != "") && (c.YouTube.ClientID == "" || c.YouTube.ClientSecret == "" || c.YouTube.RefreshToken == "") {
+		return errors.New("server-side YouTube needs client_id, client_secret, and refresh_token; run: streamchat setup youtube-server")
+	}
 	if mode == "run" && c.Client.ServerURL != "" && c.RelayAuthToken == "" {
 		return errors.New("relay_auth_token is required when client.server_url is configured")
 	}
@@ -331,7 +359,9 @@ func Redact(v string) string {
 func Redacted(c Config) Config {
 	r := c
 	r.YouTube.APIKey = Redact(c.YouTube.APIKey)
+	r.YouTube.ClientSecret = Redact(c.YouTube.ClientSecret)
 	r.YouTube.AccessToken = Redact(c.YouTube.AccessToken)
+	r.YouTube.RefreshToken = Redact(c.YouTube.RefreshToken)
 	r.Kick.ClientSecret = Redact(c.Kick.ClientSecret)
 	r.Kick.AccessToken = Redact(c.Kick.AccessToken)
 	r.Kick.RefreshToken = Redact(c.Kick.RefreshToken)

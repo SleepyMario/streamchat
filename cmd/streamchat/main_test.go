@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
 )
@@ -25,6 +26,13 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	out.Reset()
 	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestSetupArgumentsAcceptConfigAfterPlatform(t *testing.T) {
+	selected, path, err := setupArguments([]string{"youtube-server", "--config", "/etc/streamchat/config.json"})
+	if err != nil || len(selected) != 1 || selected[0] != "youtube-server" || path != "/etc/streamchat/config.json" {
+		t.Fatalf("selected=%v path=%q err=%v", selected, path, err)
 	}
 }
 
@@ -57,7 +65,7 @@ func TestRunMultipleAdapters(t *testing.T) {
 	}
 }
 
-func TestRemoteServerReplacesLocalKickAdapter(t *testing.T) {
+func TestRemoteServerReplacesServerOwnedAdapters(t *testing.T) {
 	c := config.Defaults()
 	c.Client.ServerURL = "ws://127.0.0.1:8788/relay"
 	c.RelayAuthToken = "0123456789abcdef0123456789abcdef"
@@ -71,7 +79,7 @@ func TestRemoteServerReplacesLocalKickAdapter(t *testing.T) {
 	for _, adapter := range got {
 		names = append(names, adapter.Name())
 	}
-	if strings.Join(names, ",") != "youtube,twitch,server" {
+	if strings.Join(names, ",") != "twitch,server" {
 		t.Fatalf("unexpected adapters: %v", names)
 	}
 }
@@ -89,6 +97,8 @@ func TestConfigShowRedactsEverySecret(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	c := config.Defaults()
 	c.YouTube.APIKey = "youtube-private"
+	c.YouTube.ClientSecret = "youtube-client-private"
+	c.YouTube.RefreshToken = "youtube-refresh-private"
 	c.Kick.ClientSecret = "kick-private"
 	c.Twitch.AccessToken = "twitch-private"
 	c.RelayAuthToken = "relay-private"
@@ -99,7 +109,7 @@ func TestConfigShowRedactsEverySecret(t *testing.T) {
 	if code := run([]string{"config", "show", "--config", p}, &out, &errw); code != 0 {
 		t.Fatalf("%d %s", code, errw.String())
 	}
-	for _, s := range []string{"youtube-private", "kick-private", "twitch-private", "relay-private"} {
+	for _, s := range []string{"youtube-private", "youtube-client-private", "youtube-refresh-private", "kick-private", "twitch-private", "relay-private"} {
 		if strings.Contains(out.String(), s) {
 			t.Fatalf("leaked %s", s)
 		}
@@ -136,5 +146,34 @@ func TestConfigCheckExplainsKickPortalWebhookRelationship(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("config check missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestArchiveStatsCommandUsesSQLiteFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "streamchat.db")
+	store, err := archivepkg.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := chat.Message{ID: "yt-smoke", Platform: chat.PlatformYouTube, ChannelID: "broadcast", Timestamp: time.Now().UTC(), AuthorDisplayName: "viewer", Text: "persisted", EventType: chat.EventMessage}
+	if inserted, storeErr := store.Store(context.Background(), message); storeErr != nil || !inserted {
+		t.Fatalf("store=%v, %v", inserted, storeErr)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "config.json")
+	c := config.Defaults()
+	c.Storage.SQLitePath = dbPath
+	if err = config.Save(configPath, c); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := run([]string{"archive", "stats", "--config", configPath}, &out, &errw); code != 0 {
+		t.Fatalf("%d %s", code, errw.String())
+	}
+	if !strings.Contains(out.String(), "Messages: 1") || !strings.Contains(out.String(), "youtube: 1") {
+		t.Fatal(out.String())
 	}
 }

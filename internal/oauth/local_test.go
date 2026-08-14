@@ -36,3 +36,18 @@ func TestTwitchReadOnlyAuthorizationScope(t *testing.T) {
 		t.Fatalf("scope %q", scope)
 	}
 }
+
+func TestAuthorizationURLIncludesOfflineParametersWithoutSecrets(t *testing.T) {
+	u, err := AuthorizationURL(Request{AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth", ClientID: "client", RedirectURI: "http://localhost:8791/oauth/youtube/callback", Scopes: []string{"https://www.googleapis.com/auth/youtube.readonly"}, UsePKCE: true, Parameters: map[string]string{"access_type": "offline", "include_granted_scopes": "true", "prompt": "consent"}}, "state", "verifier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, _ := url.Parse(u)
+	values := q.Query()
+	if values.Get("access_type") != "offline" || values.Get("prompt") != "consent" || values.Get("scope") != "https://www.googleapis.com/auth/youtube.readonly" {
+		t.Fatal(u)
+	}
+	if strings.Contains(u, "client_secret") || strings.Contains(u, "refresh_token") {
+		t.Fatalf("secret in authorization URL: %s", u)
+	}
+}

@@ -14,7 +14,7 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 
 | Platform | What Streamchat needs | Where to get it | Setup command |
 | --- | --- | --- | --- |
-| YouTube | A Google Cloud API key restricted to YouTube Data API v3; a live URL or video ID when running | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` |
+| YouTube | A restricted API key for local public-chat mode, or a Desktop-app OAuth client for unattended server mode | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` or `streamchat setup youtube-server` |
 | Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
 | Twitch | A Twitch app Client ID and Client Secret and a browser-created user access/refresh token with only `user:read:chat`; a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [EventSub chat authentication](https://dev.twitch.tv/docs/chat/authenticating/) | `streamchat setup twitch` |
 
@@ -28,18 +28,20 @@ streamchat run --youtube-video 'https://www.youtube.com/watch?v=VIDEO_ID'
 streamchat run --twitch-channel 'https://www.twitch.tv/CHANNEL'
 streamchat config show
 streamchat config check
+streamchat archive stats
 ```
 
 `run` activates configured platforms through the internal platform registry. If a configured YouTube or Twitch target is missing, Streamchat asks for the live URL/video ID or channel name rather than asking for a numeric platform ID.
 
-## Minimal server/client mode
+## Server/client mode and archive
 
-For an always-on Kick webhook, run `streamchat serve` on a utility VM and let the interactive machine connect to it. This first server mode relays only new Kick messages; it has no history, database, or outgoing-chat support.
+Run `streamchat serve` on the utility VM and let the interactive machine connect to it. The server receives verified Kick webhooks, discovers and streams the authenticated YouTube account's active live chat, writes every accepted normalized Kick/YouTube event to SQLite, then relays it live. Twitch remains on the interactive client for now. There is no history replay or outgoing-chat support.
 
 ```text
-Kick → public VPS HTTPS reverse proxy → utility VM streamchat serve
-                                          ↓ private WebSocket (for example ZeroTier)
-                                      main machine streamchat run
+Kick → public VPS HTTPS reverse proxy ─┐
+                                      ├→ utility VM streamchat serve → SQLite
+YouTube official API streamList ──────┘                 ↓ private WebSocket
+                                                 main machine streamchat run
 ```
 
 Generate one shared token and store the same value in private mode-`0600` configuration files on both machines:
@@ -56,9 +58,22 @@ Utility VM configuration (`/etc/streamchat/config.json` in the systemd example):
     "listen": "10.147.0.10:8788",
     "websocket_path": "/relay"
   },
+  "storage": {
+    "sqlite_path": "/var/lib/streamchat/streamchat.db"
+  },
   "relay_auth_token": "PASTE_THE_SHARED_RANDOM_TOKEN_HERE"
 }
 ```
+
+Authorize YouTube once as the service account. Create a Google OAuth Client ID with application type **Desktop app**, then run:
+
+```sh
+streamchat setup youtube-server --config /etc/streamchat/config.json
+```
+
+The browser flow uses the loopback callback `http://localhost:8791/oauth/youtube/callback`, PKCE, and only `youtube.readonly`. It requests offline access and stores the refresh token in the mode-`0600` config, allowing the service to refresh access without the Gentoo client. On a headless VM, use SSH port forwarding (`ssh -L 8791:127.0.0.1:8791 utility-vm`) and open the printed Google URL on your workstation. By default the server calls authenticated `liveBroadcasts.list` to find the active broadcast and its `snippet.liveChatId`; setting `youtube.video_id` retains an explicit broadcast/video override.
+
+Google's official `liveChatMessages.streamList` HTTP transport supplies live messages and a continuation token. Streamchat reconnects with that token after recoverable failures and waits between broadcasts so the service can remain running continuously.
 
 Start it with:
 
@@ -91,7 +106,17 @@ Then run the usual client command:
 streamchat run
 ```
 
-The client sends the token only in the WebSocket `Authorization: Bearer` header, never in the URL. When a remote server URL is configured, `run` consumes relayed Kick messages instead of opening the local Kick webhook listener; configured YouTube and Twitch adapters still run normally. The legacy local-only `streamchat kick serve` command remains available.
+The client sends the token only in the WebSocket `Authorization: Bearer` header, never in the URL. When a remote server URL is configured, `run` consumes relayed Kick and YouTube messages instead of starting those local adapters; configured Twitch still runs normally. The legacy local-only YouTube and `streamchat kick serve` commands remain available.
+
+The archive defaults to `/var/lib/streamchat/streamchat.db`. The example systemd unit uses `StateDirectory=streamchat`, so systemd creates that private writable directory for the dedicated `streamchat` account despite the read-only filesystem sandbox. Verify ingestion without installing the `sqlite3` CLI:
+
+```sh
+streamchat archive stats --config /etc/streamchat/config.json
+```
+
+The versioned schema stores platform, broadcast/channel ID, provider message ID, event time, user ID/display name, text, event type, represented moderation/deletion state, emotes, selected safe provider metadata, and the complete normalized message. `(platform, message_id)` is unique, so reconnect deliveries are not duplicated. An archive write failure stops the server before relay rather than silently losing data.
+
+Chat archives contain viewer names, IDs, messages, payment/membership metadata, and moderation events. Treat the database and backups as personal data, limit access and retention appropriately, and remove the database and its backups when the archive is no longer required.
 
 The older expert commands remain available:
 
@@ -109,7 +134,9 @@ streamchat demo --no-color --timestamps
 
 The wizard explains how to create/select a Google Cloud project, enable YouTube Data API v3, create an API key, and restrict that key to the YouTube Data API. It validates a newly entered key with one low-cost `videos.list` request.
 
-For public live chat, the API key is sufficient. Streamchat uses official `videos.list` to discover `activeLiveChatId`, then polls official `liveChatMessages.list`, preserving `nextPageToken` and honoring `pollingIntervalMillis`. An optional OAuth access token remains supported for private or ownership-sensitive resources, but setup does not request OAuth unnecessarily. Google documents `streamList` as the preferred lower-latency future path; Streamchat currently retains its tested polling implementation.
+For local public live chat, the API key remains sufficient. Streamchat uses official `videos.list` to discover `activeLiveChatId`, then polls official `liveChatMessages.list`, preserving `nextPageToken` and honoring `pollingIntervalMillis`.
+
+For the utility server, `streamchat setup youtube-server` performs Google's official desktop OAuth authorization-code flow with PKCE and offline access. It requests only `youtube.readonly`, stores and refreshes the access/refresh tokens, discovers the authenticated account's active broadcast through `liveBroadcasts.list`, and consumes the preferred lower-latency `liveChatMessages.streamList` endpoint. It does not request chat-write or moderation access.
 
 ### Kick
 
@@ -155,12 +182,13 @@ Persistent credentials live in the config. YouTube live URLs/video IDs and Twitc
 
 Advanced environment variables:
 
-- YouTube: `STREAMCHAT_YOUTUBE_API_KEY`, `STREAMCHAT_YOUTUBE_ACCESS_TOKEN`, `STREAMCHAT_YOUTUBE_VIDEO_ID`
+- YouTube: `STREAMCHAT_YOUTUBE_API_KEY`, `STREAMCHAT_YOUTUBE_CLIENT_ID`, `STREAMCHAT_YOUTUBE_CLIENT_SECRET`, `STREAMCHAT_YOUTUBE_ACCESS_TOKEN`, `STREAMCHAT_YOUTUBE_REFRESH_TOKEN`, `STREAMCHAT_YOUTUBE_REDIRECT_URI`, `STREAMCHAT_YOUTUBE_VIDEO_ID`
 - Kick: `STREAMCHAT_KICK_CLIENT_ID`, `STREAMCHAT_KICK_CLIENT_SECRET`, `STREAMCHAT_KICK_ACCESS_TOKEN`, `STREAMCHAT_KICK_REFRESH_TOKEN`, `STREAMCHAT_KICK_BROADCASTER_ID`, `STREAMCHAT_KICK_WEBHOOK_URL`, `STREAMCHAT_KICK_REDIRECT_URI`, `STREAMCHAT_KICK_LISTEN`
 - Twitch: `STREAMCHAT_TWITCH_CLIENT_ID`, `STREAMCHAT_TWITCH_CLIENT_SECRET`, `STREAMCHAT_TWITCH_ACCESS_TOKEN`, `STREAMCHAT_TWITCH_REFRESH_TOKEN`, `STREAMCHAT_TWITCH_USER_ID`, `STREAMCHAT_TWITCH_USER_LOGIN`, `STREAMCHAT_TWITCH_REDIRECT_URI`, `STREAMCHAT_TWITCH_CHANNEL`
 - Server: `STREAMCHAT_SERVER_LISTEN`, `STREAMCHAT_SERVER_WEBSOCKET_PATH`
 - Client: `STREAMCHAT_CLIENT_SERVER_URL`
 - Relay authentication: `STREAMCHAT_RELAY_AUTH_TOKEN`
+- Storage: `STREAMCHAT_STORAGE_SQLITE_PATH`
 - Output: `STREAMCHAT_LOG_FILE`
 
 See `examples/config.example.json` for the manual JSON shape. Environment-provided access tokens are used in memory and are not written back during refresh.
@@ -173,6 +201,7 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/platform/kick`: OAuth, subscriptions, verified webhook receiver
 - `internal/platform/twitch`: OAuth/API support and EventSub WebSocket adapter
 - `internal/relay`: authenticated in-memory WebSocket broadcast server/client
+- `internal/archive`: versioned SQLite storage and operational statistics
 - `internal/setup`: interactive, safely rerunnable setup wizard
 - `internal/config`: JSON/env/defaults, atomic writer, validation, redaction
 - `internal/aggregate`: bounded chronological merge and duplicate cache
@@ -201,7 +230,16 @@ sudo apt install ./dist/streamchat_<version>_amd64.deb
 
 The version is derived from the exact Git tag, or from the commit date and hash when the commit is untagged. Set `VERSION=1.2.3 make deb` to override it for a release build. The package contains a statically linked `/usr/bin/streamchat`, the README and license, and configuration/systemd examples under `/usr/share/doc/streamchat/examples/`. It has no Go or libc runtime dependency; only `ca-certificates` is required for trusted HTTPS connections to the platform APIs.
 
-The example unit runs as the dedicated `streamchat` user and reads `/etc/streamchat/config.json`; it does not embed secrets. Create the service account and private configuration directory before installing the example as a real unit.
+The example unit runs as the dedicated `streamchat` user, reads `/etc/streamchat/config.json`, and uses systemd's `StateDirectory=streamchat` to create `/var/lib/streamchat`; it does not embed secrets. Create the service account and private configuration directory before installing the example as a real unit:
+
+```sh
+sudo useradd --system --home-dir /var/lib/streamchat --shell /usr/sbin/nologin streamchat
+sudo install -d -m 0750 -o streamchat -g streamchat /etc/streamchat
+sudo install -m 0600 -o streamchat -g streamchat /usr/share/doc/streamchat/examples/config.example.json /etc/streamchat/config.json
+sudo install -m 0644 /usr/share/doc/streamchat/examples/systemd/streamchat.service /etc/systemd/system/streamchat.service
+```
+
+The `.deb` includes the updated unit under `/usr/share/doc/streamchat/examples/systemd/` and keeps the existing single-package model.
 
 ## License
 

@@ -21,6 +21,7 @@ import (
 type Request struct {
 	AuthorizeURL, ClientID, RedirectURI string
 	Scopes                              []string
+	Parameters                          map[string]string
 	UsePKCE                             bool
 }
 
@@ -47,6 +48,9 @@ func AuthorizationURL(r Request, state, verifier string) (string, error) {
 	q.Set("redirect_uri", r.RedirectURI)
 	q.Set("scope", strings.Join(r.Scopes, " "))
 	q.Set("state", state)
+	for key, value := range r.Parameters {
+		q.Set(key, value)
+	}
 	if r.UsePKCE {
 		sum := sha256.Sum256([]byte(verifier))
 		q.Set("code_challenge", base64.RawURLEncoding.EncodeToString(sum[:]))

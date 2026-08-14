@@ -75,12 +75,15 @@ func (h *hub) count() int {
 }
 
 // Server combines an existing webhook handler with an authenticated WebSocket
-// endpoint and forwards normalized messages without retaining history.
+// endpoint and forwards normalized messages.
 type Server struct {
 	Listen, Path, Token string
 	Webhook             http.Handler
-	hub                 *hub
-	server              *http.Server
+	// Accept runs before broadcast. Returning false suppresses a duplicate;
+	// returning an error stops the server so archival failures are visible.
+	Accept func(context.Context, chat.Message) (bool, error)
+	hub    *hub
+	server *http.Server
 }
 
 func NewServer(listen, path, token string, webhook http.Handler) *Server {
@@ -160,7 +163,16 @@ func (s *Server) forward(ctx context.Context, messages <-chan chat.Message) erro
 			return nil
 		case m, ok := <-messages:
 			if !ok {
-				return errors.New("Kick webhook message stream closed")
+				return errors.New("server ingestion message stream closed")
+			}
+			if s.Accept != nil {
+				accepted, err := s.Accept(ctx, m)
+				if err != nil {
+					return fmt.Errorf("persist message before relay: %w", err)
+				}
+				if !accepted {
+					continue
+				}
 			}
 			if err := s.Broadcast(m); err != nil {
 				return fmt.Errorf("relay message: %w", err)

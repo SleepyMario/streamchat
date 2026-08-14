@@ -64,6 +64,9 @@ func TestSaveCreatesPrivateFileAndRoundTripsMergedConfig(t *testing.T) {
 func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 	c := Defaults()
 	c.YouTube.APIKey = "YT-VERY-SECRET"
+	c.YouTube.ClientSecret = "YT-CLIENT-SECRET"
+	c.YouTube.AccessToken = "YT-ACCESS-TOKEN"
+	c.YouTube.RefreshToken = "YT-REFRESH-TOKEN"
 	c.Kick.ClientSecret = "KICK-VERY-SECRET"
 	c.Kick.AccessToken = "KICK-TOKEN"
 	c.Twitch.RefreshToken = "TWITCH-REFRESH"
@@ -72,7 +75,7 @@ func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"YT-VERY-SECRET", "KICK-VERY-SECRET", "KICK-TOKEN", "TWITCH-REFRESH", "RELAY-VERY-SECRET"} {
+	for _, secret := range []string{"YT-VERY-SECRET", "YT-CLIENT-SECRET", "YT-ACCESS-TOKEN", "YT-REFRESH-TOKEN", "KICK-VERY-SECRET", "KICK-TOKEN", "TWITCH-REFRESH", "RELAY-VERY-SECRET"} {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("secret leaked: %s", secret)
 		}
@@ -111,7 +114,7 @@ func TestInvalid(t *testing.T) {
 
 func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
 	c := Defaults()
-	if c.Server.Listen != "127.0.0.1:8788" || c.Server.WebSocketPath != "/relay" {
+	if c.Server.Listen != "127.0.0.1:8788" || c.Server.WebSocketPath != "/relay" || c.Storage.SQLitePath != "/var/lib/streamchat/streamchat.db" {
 		t.Fatalf("unsafe relay defaults: %+v", c.Server)
 	}
 	ApplyEnv(&c, func(key string) string {
@@ -124,6 +127,8 @@ func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
 			return "ws://10.20.30.40:8788/streamchat"
 		case "STREAMCHAT_RELAY_AUTH_TOKEN":
 			return "0123456789abcdef0123456789abcdef"
+		case "STREAMCHAT_STORAGE_SQLITE_PATH":
+			return "/tmp/streamchat-test.db"
 		default:
 			return ""
 		}
@@ -136,6 +141,20 @@ func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
 	}
 	if !c.HasUsablePlatform() {
 		t.Fatal("remote relay is not considered usable")
+	}
+}
+
+func TestServerYouTubeOAuthRequiresRefreshableCredentials(t *testing.T) {
+	c := Defaults()
+	c.RelayAuthToken = "0123456789abcdef0123456789abcdef"
+	c.YouTube.ClientID = "client"
+	if err := c.Validate("serve"); err == nil || !strings.Contains(err.Error(), "youtube-server") {
+		t.Fatalf("partial OAuth configuration accepted: %v", err)
+	}
+	c.YouTube.ClientSecret = "secret"
+	c.YouTube.RefreshToken = "refresh"
+	if err := c.Validate("serve"); err != nil {
+		t.Fatal(err)
 	}
 }
 

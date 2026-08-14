@@ -11,11 +11,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/gorilla/websocket"
@@ -25,6 +27,54 @@ const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 
 func testMessage(id string) chat.Message {
 	return chat.Message{ID: id, Platform: chat.PlatformKick, Timestamp: time.Now().UTC(), AuthorDisplayName: "viewer", Text: "hello", EventType: chat.EventMessage}
+}
+
+func TestPersistenceAndRelayUseSameMessage(t *testing.T) {
+	store, err := archive.Open(filepath.Join(t.TempDir(), "streamchat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	relay := NewServer("", "/relay", testToken, nil)
+	relay.Accept = store.Store
+	httpServer := httptest.NewServer(relay.Handler())
+	defer httpServer.Close()
+	conn, _, err := connect(t, websocketURL(httpServer.URL), testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	waitFor(t, func() bool { return relay.hub.count() == 1 })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	messages := make(chan chat.Message, 1)
+	go func() { _ = relay.forward(ctx, messages) }()
+	messages <- testMessage("persisted-and-relayed")
+	if got := readMessage(t, conn); got.ID != "persisted-and-relayed" {
+		t.Fatalf("unexpected message: %+v", got)
+	}
+	stats, err := store.Stats(context.Background())
+	if err != nil || stats.Total != 1 {
+		t.Fatalf("archive stats %+v, %v", stats, err)
+	}
+}
+
+func TestPersistenceFailureStopsRelay(t *testing.T) {
+	store, err := archive.Open(filepath.Join(t.TempDir(), "streamchat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	relay := NewServer("", "/relay", testToken, nil)
+	relay.Accept = store.Store
+	messages := make(chan chat.Message, 1)
+	messages <- testMessage("must-not-relay")
+	err = relay.forward(context.Background(), messages)
+	if err == nil || !strings.Contains(err.Error(), "persist message before relay") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func websocketURL(serverURL string) string {
@@ -135,6 +185,12 @@ func TestVerifiedKickWebhookRelaysNormalizedMessage(t *testing.T) {
 	webhook := kick.NewServer("", &privateKey.PublicKey, messages)
 	webhook.Now = func() time.Time { return now }
 	relay := NewServer("", "/relay", testToken, webhook.Handler())
+	store, err := archive.Open(filepath.Join(t.TempDir(), "kick.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	relay.Accept = store.Store
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = relay.forward(ctx, messages) }()
@@ -176,6 +232,10 @@ func TestVerifiedKickWebhookRelaysNormalizedMessage(t *testing.T) {
 	got := readMessage(t, conn)
 	if got.ID != "kick-message" || got.Platform != chat.PlatformKick || got.Text != "relayed" {
 		t.Fatalf("unexpected relayed message: %+v", got)
+	}
+	stats, err := store.Stats(context.Background())
+	if err != nil || stats.Total != 1 || len(stats.Platforms) != 1 || stats.Platforms[0].Platform != "kick" {
+		t.Fatalf("Kick was not persisted: %+v, %v", stats, err)
 	}
 }
 

@@ -144,6 +144,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 		switch name {
 		case "youtube":
 			err = w.youtube(ctx, &c)
+		case "youtube-server":
+			err = w.youtubeServer(ctx, &c)
 		case "kick":
 			err = w.kick(ctx, &c)
 		case "twitch":
@@ -158,8 +160,59 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 			return err
 		}
 		display := strings.ToUpper(name[:1]) + name[1:]
+		if name == "youtube-server" {
+			display = "YouTube server"
+		}
 		fmt.Fprintf(w.Out, "%s configuration saved to %s.\n", display, pathOrDefault(w.Path))
 	}
+	return nil
+}
+
+func (w *Wizard) youtubeServer(ctx context.Context, c *config.Config) error {
+	fmt.Fprintln(w.Out, `Server-side YouTube ingestion uses Google's official OAuth 2.0 desktop-app flow and the read-only YouTube scope.
+
+1. Enable YouTube Data API v3 in a Google Cloud project.
+2. Configure the OAuth consent screen for that project.
+3. Create an OAuth Client ID whose application type is Desktop app.
+4. Streamchat opens a loopback callback on `+c.YouTube.RedirectURI+`.
+
+Offline access stores a refresh token so streamchat serve can discover the authenticated account's active broadcast and ingest chat while no interactive client is running. No chat-write or moderation scope is requested.`)
+	var err error
+	c.YouTube.ClientID, err = w.value("Google OAuth Client ID", c.YouTube.ClientID, false)
+	if err != nil {
+		return err
+	}
+	c.YouTube.ClientSecret, err = w.value("Google OAuth Client Secret", c.YouTube.ClientSecret, true)
+	if err != nil {
+		return err
+	}
+	res, err := w.Authorize(ctx, oauthpkg.Request{
+		AuthorizeURL: youtube.AuthorizeURL,
+		ClientID:     c.YouTube.ClientID,
+		RedirectURI:  c.YouTube.RedirectURI,
+		Scopes:       []string{youtube.ReadOnlyScope},
+		UsePKCE:      true,
+		Parameters: map[string]string{
+			"access_type":            "offline",
+			"include_granted_scopes": "true",
+			"prompt":                 "consent",
+		},
+	}, w.Out, w.OpenBrowser)
+	if err != nil {
+		return err
+	}
+	oc := youtube.OAuthClient{HTTP: w.HTTP, ClientID: c.YouTube.ClientID, ClientSecret: c.YouTube.ClientSecret}
+	tok, err := oc.Exchange(ctx, res.Code, c.YouTube.RedirectURI, res.Verifier)
+	if err != nil {
+		return err
+	}
+	if tok.RefreshToken == "" {
+		return errors.New("Google did not return a refresh token; revoke the prior grant if necessary, then run: streamchat setup youtube-server")
+	}
+	c.YouTube.AccessToken = tok.AccessToken
+	c.YouTube.RefreshToken = tok.RefreshToken
+	c.YouTube.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	fmt.Fprintln(w.Out, "YouTube server authorization saved. streamchat serve will discover active broadcasts automatically.")
 	return nil
 }
 
@@ -323,7 +376,7 @@ func ParsePlatforms(args []string) ([]string, error) {
 		return nil, errors.New("setup accepts at most one platform")
 	}
 	switch args[0] {
-	case "youtube", "kick", "twitch":
+	case "youtube", "youtube-server", "kick", "twitch":
 		return []string{args[0]}, nil
 	default:
 		return nil, fmt.Errorf("unknown platform %q", args[0])

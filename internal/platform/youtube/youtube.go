@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/SleepyMario/streamchat/internal/chat"
 	"io"
 	"math/rand"
 	"net/http"
@@ -13,22 +12,89 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/chat"
 )
 
 var ErrChatEnded = errors.New("YouTube live chat ended")
+var ErrNoActiveBroadcast = errors.New("YouTube account has no active broadcast")
+
+const (
+	ReadOnlyScope = "https://www.googleapis.com/auth/youtube.readonly"
+	AuthorizeURL  = "https://accounts.google.com/o/oauth2/v2/auth"
+	TokenURL      = "https://oauth2.googleapis.com/token"
+)
+
+type Token struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+type OAuthClient struct {
+	HTTP                   *http.Client
+	TokenURL               string
+	ClientID, ClientSecret string
+}
+
+func (c OAuthClient) token(ctx context.Context, form url.Values) (Token, error) {
+	endpoint := c.TokenURL
+	if endpoint == "" {
+		endpoint = TokenURL
+	}
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 20 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return Token{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return Token{}, &chat.AdapterError{Kind: chat.Recoverable, Op: "YouTube OAuth", Err: errors.New("request failed")}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return Token{}, &chat.AdapterError{Kind: chat.Authentication, Op: "YouTube OAuth", Err: fmt.Errorf("credential exchange rejected (HTTP %d)", resp.StatusCode)}
+	}
+	var tok Token
+	if err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tok); err != nil {
+		return Token{}, errors.New("YouTube OAuth returned an invalid response")
+	}
+	if tok.AccessToken == "" {
+		return Token{}, errors.New("YouTube OAuth response did not contain an access token")
+	}
+	return tok, nil
+}
+
+func (c OAuthClient) Exchange(ctx context.Context, code, redirectURI, verifier string) (Token, error) {
+	return c.token(ctx, url.Values{"grant_type": {"authorization_code"}, "client_id": {c.ClientID}, "client_secret": {c.ClientSecret}, "code": {code}, "redirect_uri": {redirectURI}, "code_verifier": {verifier}})
+}
+
+func (c OAuthClient) Refresh(ctx context.Context, refreshToken string) (Token, error) {
+	return c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "client_id": {c.ClientID}, "client_secret": {c.ClientSecret}, "refresh_token": {refreshToken}})
+}
 
 type Client struct {
 	HTTP                                  *http.Client
 	BaseURL, APIKey, AccessToken, VideoID string
+	ClientID, ClientSecret, RefreshToken  string
+	TokenURL                              string
+	TokenExpiry                           time.Time
+	OnToken                               func(Token) error
 	Sleep                                 func(context.Context, time.Duration) error
 	Rand                                  *rand.Rand
+	RetryDelay                            time.Duration
 }
 
 func New(httpc *http.Client, base, key, token, video string) *Client {
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{HTTP: httpc, BaseURL: strings.TrimRight(base, "/"), APIKey: key, AccessToken: token, VideoID: video, Sleep: sleep, Rand: rand.New(rand.NewSource(time.Now().UnixNano()))}
+	return &Client{HTTP: httpc, BaseURL: strings.TrimRight(base, "/"), APIKey: key, AccessToken: token, VideoID: video, TokenURL: TokenURL, Sleep: sleep, Rand: rand.New(rand.NewSource(time.Now().UnixNano())), RetryDelay: 15 * time.Second}
 }
 
 // ParseVideoID accepts the identifiers and URL forms users commonly copy from
@@ -81,7 +147,38 @@ func sleep(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+func (c *Client) refresh(ctx context.Context, force bool) error {
+	if c.RefreshToken == "" || c.ClientID == "" || c.ClientSecret == "" {
+		return nil
+	}
+	if !force && c.AccessToken != "" && (c.TokenExpiry.IsZero() || time.Until(c.TokenExpiry) > time.Minute) {
+		return nil
+	}
+	oc := OAuthClient{HTTP: c.HTTP, TokenURL: c.TokenURL, ClientID: c.ClientID, ClientSecret: c.ClientSecret}
+	tok, err := oc.Refresh(ctx, c.RefreshToken)
+	if err != nil {
+		return err
+	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = c.RefreshToken
+	}
+	c.AccessToken = tok.AccessToken
+	c.RefreshToken = tok.RefreshToken
+	c.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	if c.OnToken != nil {
+		return c.OnToken(tok)
+	}
+	return nil
+}
+
 func (c *Client) request(ctx context.Context, path string, q url.Values, out any) error {
+	if err := c.refresh(ctx, false); err != nil {
+		return err
+	}
+	return c.requestAttempt(ctx, path, q, out, true)
+}
+
+func (c *Client) requestAttempt(ctx context.Context, path string, q url.Values, out any, retryAuth bool) error {
 	req, e := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path+"?"+q.Encode(), nil)
 	if e != nil {
 		return e
@@ -100,6 +197,12 @@ func (c *Client) request(ctx context.Context, path string, q url.Values, out any
 	if r.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
 		reason := errorReason(b)
+		if r.StatusCode == http.StatusUnauthorized && retryAuth && c.RefreshToken != "" {
+			if err := c.refresh(ctx, true); err != nil {
+				return err
+			}
+			return c.requestAttempt(ctx, path, q, out, false)
+		}
 		if reason == "liveChatEnded" {
 			return ErrChatEnded
 		}
@@ -142,6 +245,9 @@ func errorReason(b []byte) string {
 	return "unknown"
 }
 func (c *Client) Discover(ctx context.Context) (string, string, error) {
+	if c.VideoID == "" {
+		return c.discoverActive(ctx)
+	}
 	var v struct {
 		Items []struct {
 			ID      string `json:"id"`
@@ -162,6 +268,27 @@ func (c *Client) Discover(ctx context.Context) (string, string, error) {
 		return "", "", errors.New("YouTube video has no active live chat")
 	}
 	return v.Items[0].Snippet.LiveChatID, v.Items[0].ID, e
+}
+
+func (c *Client) discoverActive(ctx context.Context) (string, string, error) {
+	var v struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Snippet struct {
+				Title      string `json:"title"`
+				LiveChatID string `json:"liveChatId"`
+			} `json:"snippet"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, "/liveBroadcasts", url.Values{"part": {"id,snippet"}, "broadcastStatus": {"active"}, "broadcastType": {"all"}, "maxResults": {"5"}}, &v); err != nil {
+		return "", "", err
+	}
+	for _, item := range v.Items {
+		if item.Snippet.LiveChatID != "" {
+			return item.Snippet.LiveChatID, item.ID, nil
+		}
+	}
+	return "", "", ErrNoActiveBroadcast
 }
 
 type listResponse struct {
@@ -237,7 +364,7 @@ func ParseMessage(v apiMessage, channelID, channelName string) (chat.Message, er
 	}
 	return m, nil
 }
-func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
+func (c *Client) run(ctx context.Context, out chan<- chat.Message, streaming bool) error {
 	chatID, channelID, e := c.Discover(ctx)
 	if e != nil {
 		return e
@@ -250,7 +377,12 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 		if token != "" {
 			q.Set("pageToken", token)
 		}
-		e = c.request(ctx, "/liveChat/messages", q, &v)
+		path := "/liveChat/messages"
+		if streaming {
+			path = "/liveChat/messages/stream"
+			q.Del("maxResults")
+		}
+		e = c.request(ctx, path, q, &v)
 		if e != nil {
 			if errors.Is(e, ErrChatEnded) {
 				return nil
@@ -290,12 +422,40 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 		if v.OfflineAt != "" {
 			return nil
 		}
+		if streaming {
+			continue
+		}
 		d := time.Duration(v.PollingInterval) * time.Millisecond
 		if d <= 0 {
 			d = time.Second
 		}
 		if c.Sleep(ctx, d) != nil {
 			return ctx.Err()
+		}
+	}
+}
+
+func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
+	return c.run(ctx, out, false)
+}
+
+// RunServer continuously discovers the authenticated account's active
+// broadcast and reconnects the official streamList transport using its page
+// token. This keeps an unattended utility VM ready between broadcasts.
+func (c *Client) RunServer(ctx context.Context, out chan<- chat.Message) error {
+	for {
+		err := c.run(ctx, out, true)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil && !errors.Is(err, ErrNoActiveBroadcast) {
+			var ae *chat.AdapterError
+			if !errors.As(err, &ae) || ae.Kind != chat.Recoverable {
+				return err
+			}
+		}
+		if c.Sleep(ctx, c.RetryDelay) != nil {
+			return nil
 		}
 	}
 }

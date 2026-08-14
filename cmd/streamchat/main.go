@@ -16,18 +16,20 @@ import (
 	"time"
 
 	"github.com/SleepyMario/streamchat/internal/aggregate"
+	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/logging"
 	platformreg "github.com/SleepyMario/streamchat/internal/platform"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
+	"github.com/SleepyMario/streamchat/internal/platform/youtube"
 	"github.com/SleepyMario/streamchat/internal/relay"
 	"github.com/SleepyMario/streamchat/internal/render"
 	"github.com/SleepyMario/streamchat/internal/setup"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 const usage = `Streamchat reads and merges live chat from YouTube, Kick, and Twitch.
 
 Start here:
@@ -35,15 +37,17 @@ Start here:
   streamchat run                   Read all configured chat targets
 
 Server/client mode:
-  streamchat serve                 Receive verified Kick webhooks and relay them
+  streamchat serve                 Ingest, archive, and relay Kick/YouTube chat
   streamchat run                   Connect to the configured Streamchat server
 
 Useful commands:
-  streamchat setup youtube|kick|twitch
+  streamchat setup youtube|kick|twitch [--config PATH]
+  streamchat setup youtube-server  Authorize unattended server ingestion
   streamchat run --youtube-video URL_OR_ID
   streamchat run --twitch-channel CHANNEL_OR_URL
   streamchat config show           Show configuration with secrets redacted
   streamchat config check          Check configuration and recovery steps
+  streamchat archive stats         Show SQLite archive status
   streamchat demo                  Run an offline demonstration
 
 Advanced compatibility commands:
@@ -88,9 +92,10 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 		return 0
 	case "setup":
 		var selected []string
-		selected, e = setup.ParsePlatforms(args[1:])
+		var setupPath string
+		selected, setupPath, e = setupArguments(args[1:])
 		if e == nil {
-			e = setup.New(in, out, "").Run(ctx, selected)
+			e = setup.New(in, out, setupPath).Run(ctx, selected)
 		}
 	case "demo":
 		e = demo(ctx, args[1:], out)
@@ -100,6 +105,12 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 		e = runPlatforms(ctx, "run", args[1:], in, out, errw)
 	case "serve":
 		e = serve(ctx, args[1:], out)
+	case "archive":
+		if len(args) < 2 || args[1] != "stats" {
+			e = errors.New("choose 'archive stats'")
+		} else {
+			e = archiveStats(ctx, args[2:], out)
+		}
 	case "kick":
 		if len(args) < 2 {
 			e = errors.New("choose 'kick serve' or 'kick subscribe'")
@@ -124,6 +135,27 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 		e = errors.New("unknown command; run 'streamchat --help'")
 	}
 	return finish(e, errw)
+}
+
+func setupArguments(args []string) ([]string, string, error) {
+	platformArgs := make([]string, 0, 1)
+	var path string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--config":
+			if i+1 >= len(args) {
+				return nil, "", errors.New("--config needs a path")
+			}
+			i++
+			path = args[i]
+		case strings.HasPrefix(args[i], "--config="):
+			path = strings.TrimPrefix(args[i], "--config=")
+		default:
+			platformArgs = append(platformArgs, args[i])
+		}
+	}
+	selected, err := setup.ParsePlatforms(platformArgs)
+	return selected, path, err
 }
 
 func finish(e error, errw io.Writer) int {
@@ -261,6 +293,9 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			}
 			continue
 		}
+		if mode == "run" && c.Client.ServerURL != "" && (d.Name == "kick" || d.Name == "youtube") {
+			continue
+		}
 		if d.TargetPrompt != "" && d.Target(c) == "" {
 			fmt.Fprintf(out, "%s: ", d.TargetPrompt)
 			v, er := reader.ReadString('\n')
@@ -288,7 +323,7 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
 	local := adapters[:0]
 	for _, adapter := range adapters {
-		if adapter.Name() != "kick" {
+		if adapter.Name() != "kick" && adapter.Name() != "youtube" {
 			local = append(local, adapter)
 		}
 	}
@@ -296,13 +331,18 @@ func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
 }
 
 func serve(ctx context.Context, args []string, out io.Writer) error {
-	_, c, err := flags("serve", args)
+	o, c, err := flags("serve", args)
 	if err != nil {
 		return err
 	}
 	if err = c.Validate("serve"); err != nil {
 		return err
 	}
+	store, err := archivepkg.Open(c.Storage.SQLitePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
 	publicKey := []byte(kick.OfficialPublicKeyPEM)
 	if c.Kick.PublicKeyPEM != "" {
 		publicKey = []byte(c.Kick.PublicKeyPEM)
@@ -316,8 +356,84 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	webhook.MaxBody = c.Kick.MaxBodyBytes
 	webhook.MaxAge = c.Kick.MaxAge
 	server := relay.NewServer(c.Server.Listen, c.Server.WebSocketPath, c.RelayAuthToken, webhook.Handler())
+	server.Accept = store.Store
+
+	serverCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.Run(serverCtx, messages) }()
+
+	youtubeEnabled := c.YouTube.RefreshToken != "" || (c.YouTube.VideoID != "" && (c.YouTube.APIKey != "" || c.YouTube.AccessToken != ""))
+	var youtubeErr <-chan error
+	if youtubeEnabled {
+		yt := youtube.New(&http.Client{Timeout: 0}, c.YouTube.BaseURL, c.YouTube.APIKey, c.YouTube.AccessToken, c.YouTube.VideoID)
+		yt.ClientID = c.YouTube.ClientID
+		yt.ClientSecret = c.YouTube.ClientSecret
+		yt.RefreshToken = c.YouTube.RefreshToken
+		yt.TokenExpiry = c.YouTube.TokenExpiry
+		yt.OnToken = func(tok youtube.Token) error {
+			c.YouTube.AccessToken = tok.AccessToken
+			c.YouTube.RefreshToken = tok.RefreshToken
+			c.YouTube.TokenExpiry = yt.TokenExpiry
+			if os.Getenv("STREAMCHAT_YOUTUBE_ACCESS_TOKEN") != "" || os.Getenv("STREAMCHAT_YOUTUBE_REFRESH_TOKEN") != "" {
+				return nil
+			}
+			return persistYouTubeTokens(o.config, c.YouTube)
+		}
+		ch := make(chan error, 1)
+		youtubeErr = ch
+		go func() { ch <- yt.RunServer(serverCtx, messages) }()
+	}
 	fmt.Fprintf(out, "Streamchat server listening on %s (Kick webhook /webhooks/kick, relay %s)\n", c.Server.Listen, c.Server.WebSocketPath)
-	return server.Run(ctx, messages)
+	fmt.Fprintf(out, "SQLite archive: %s\n", c.Storage.SQLitePath)
+	if youtubeEnabled {
+		fmt.Fprintln(out, "YouTube server ingestion enabled (active broadcast discovery + streamList).")
+	}
+	select {
+	case <-ctx.Done():
+		cancel()
+		<-serverErr
+		return nil
+	case err = <-serverErr:
+		return err
+	case err = <-youtubeErr:
+		cancel()
+		<-serverErr
+		if err == nil {
+			return errors.New("YouTube server ingestion stopped unexpectedly")
+		}
+		return fmt.Errorf("YouTube server ingestion: %w", err)
+	}
+}
+
+func archiveStats(ctx context.Context, args []string, out io.Writer) error {
+	_, c, err := flags("archive stats", args)
+	if err != nil {
+		return err
+	}
+	if _, err = os.Stat(c.Storage.SQLitePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("SQLite archive does not exist at %s; start streamchat serve first", c.Storage.SQLitePath)
+		}
+		return fmt.Errorf("inspect SQLite archive %s: %w", c.Storage.SQLitePath, err)
+	}
+	store, err := archivepkg.Open(c.Storage.SQLitePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "SQLite archive: %s\nSchema version: %d\nMessages: %d\n", c.Storage.SQLitePath, stats.SchemaVersion, stats.Total)
+	for _, platform := range stats.Platforms {
+		fmt.Fprintf(out, "  %s: %d\n", platform.Platform, platform.Count)
+	}
+	if !stats.First.IsZero() {
+		fmt.Fprintf(out, "First event: %s\nLast event:  %s\n", stats.First.Format(time.RFC3339), stats.Last.Format(time.RFC3339))
+	}
+	return nil
 }
 
 func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, out, errw io.Writer) error {
@@ -452,6 +568,12 @@ func check(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "          This local value is not sent to Kick; changing it alone does not change the destination.")
 		fmt.Fprintln(out, "          After changing the portal URL, run: streamchat kick subscribe")
 	}
+	youtubeServerStatus := "not configured — run: streamchat setup youtube-server"
+	if c.YouTube.ClientID != "" && c.YouTube.ClientSecret != "" && c.YouTube.RefreshToken != "" {
+		youtubeServerStatus = "configured for active-broadcast discovery and streamList"
+	}
+	fmt.Fprintf(out, "%-16s %s\n", "YouTube server:", youtubeServerStatus)
+	fmt.Fprintf(out, "%-16s %s\n", "SQLite archive:", c.Storage.SQLitePath)
 	relayStatus := "not configured"
 	if c.Client.ServerURL != "" && c.RelayAuthToken != "" {
 		relayStatus = "configured for " + c.Client.ServerURL
@@ -576,6 +698,17 @@ func persistKickTokens(path string, v config.Kick) error {
 	c.Kick.AccessToken = v.AccessToken
 	c.Kick.RefreshToken = v.RefreshToken
 	c.Kick.TokenExpiry = v.TokenExpiry
+	return config.Save(path, c)
+}
+
+func persistYouTubeTokens(path string, v config.YouTube) error {
+	c, e := config.Load(path)
+	if e != nil {
+		return e
+	}
+	c.YouTube.AccessToken = v.AccessToken
+	c.YouTube.RefreshToken = v.RefreshToken
+	c.YouTube.TokenExpiry = v.TokenExpiry
 	return config.Save(path, c)
 }
 

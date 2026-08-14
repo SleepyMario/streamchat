@@ -1,6 +1,12 @@
 {
   "youtube": {
-    "api_key": "REPLACE_WITH_YOUR_RESTRICTED_API_KEY"
+    "api_key": "REPLACE_WITH_YOUR_RESTRICTED_API_KEY_FOR_LOCAL_MODE",
+    "client_id": "",
+    "client_secret": "",
+    "access_token": "",
+    "refresh_token": "",
+    "redirect_uri": "http://localhost:8791/oauth/youtube/callback",
+    "video_id": ""
   },
   "kick": {
     "client_id": "REPLACE_WITH_YOUR_CLIENT_ID",
@@ -28,6 +34,9 @@
   },
   "client": {
     "server_url": ""
+  },
+  "storage": {
+    "sqlite_path": "/var/lib/streamchat/streamchat.db"
   },
   "relay_auth_token": "",
   "log_file": "",
