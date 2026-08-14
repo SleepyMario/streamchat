@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet fmt fmt-check check demo
+.PHONY: build test test-race vet fmt fmt-check check demo deb
 build:
 	mkdir -p bin
 	go build -o bin/streamchat ./cmd/streamchat
@@ -15,3 +15,5 @@ fmt-check:
 check: fmt-check vet test test-race build
 demo: build
 	./bin/streamchat demo --no-color --timestamps
+deb:
+	./scripts/build-deb.sh

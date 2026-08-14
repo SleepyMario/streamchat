@@ -123,6 +123,17 @@ make check
 
 Tests use fake adapters, `httptest` servers, invented fixtures, and fake WebSockets. They do not call external services.
 
+## Debian and Ubuntu package
+
+Build an amd64 package with the locally installed Go toolchain and `dpkg-deb`:
+
+```sh
+make deb
+sudo apt install ./dist/streamchat_<version>_amd64.deb
+```
+
+The version is derived from the exact Git tag, or from the commit date and hash when the commit is untagged. Set `VERSION=1.2.3 make deb` to override it for a release build. The package contains a statically linked `/usr/bin/streamchat`, the README and license, and the example configuration under `/usr/share/doc/streamchat/examples/`. It has no Go or libc runtime dependency; only `ca-certificates` is required for trusted HTTPS connections to the platform APIs.
+
 ## License
 
 MIT. See `LICENSE`.
