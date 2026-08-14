@@ -58,3 +58,35 @@ func TestRetryClassification(t *testing.T) {
 		t.Fatalf("%v", e)
 	}
 }
+
+func TestParseVideoID(t *testing.T) {
+	want := "abc123_DEF-"
+	for _, in := range []string{want, "https://www.youtube.com/watch?v=" + want + "&feature=share", "https://youtu.be/" + want, "https://www.youtube.com/live/" + want + "?si=x"} {
+		got, err := ParseVideoID(in)
+		if err != nil || got != want {
+			t.Errorf("%q => %q, %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "https://example.com/watch?v=x", "https://youtube.com/channel/name", "bad/id"} {
+		if _, err := ParseVideoID(in); err == nil {
+			t.Errorf("accepted %q", in)
+		}
+	}
+}
+
+func TestAPIKeyUsesHeaderNotURL(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "secret-key") {
+			t.Fatal("API key leaked into URL")
+		}
+		if r.Header.Get("X-Goog-Api-Key") != "secret-key" {
+			t.Fatal("missing API key header")
+		}
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer s.Close()
+	c := New(s.Client(), s.URL, "secret-key", "", "")
+	if err := c.ValidateCredential(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

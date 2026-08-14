@@ -30,6 +30,46 @@ func New(httpc *http.Client, base, key, token, video string) *Client {
 	}
 	return &Client{HTTP: httpc, BaseURL: strings.TrimRight(base, "/"), APIKey: key, AccessToken: token, VideoID: video, Sleep: sleep, Rand: rand.New(rand.NewSource(time.Now().UnixNano()))}
 }
+
+// ParseVideoID accepts the identifiers and URL forms users commonly copy from
+// YouTube without treating arbitrary URL path text as an ID.
+func ParseVideoID(input string) (string, error) {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return "", errors.New("enter a YouTube live URL or video ID")
+	}
+	if !strings.Contains(s, "://") {
+		if strings.ContainsAny(s, "/?#& ") {
+			return "", errors.New("invalid YouTube video ID")
+		}
+		return s, nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", errors.New("invalid YouTube URL")
+	}
+	h := strings.ToLower(u.Hostname())
+	var id string
+	switch h {
+	case "youtu.be":
+		id = strings.Split(strings.Trim(u.Path, "/"), "/")[0]
+	case "youtube.com", "www.youtube.com", "m.youtube.com":
+		if u.Path == "/watch" {
+			id = u.Query().Get("v")
+		} else {
+			p := strings.Split(strings.Trim(u.Path, "/"), "/")
+			if len(p) >= 2 && (p[0] == "live" || p[0] == "shorts" || p[0] == "embed") {
+				id = p[1]
+			}
+		}
+	default:
+		return "", errors.New("YouTube URL must use youtube.com or youtu.be")
+	}
+	if id == "" || strings.ContainsAny(id, "/?#& ") {
+		return "", errors.New("YouTube URL does not contain a video ID")
+	}
+	return id, nil
+}
 func (c *Client) Name() string { return "youtube" }
 func sleep(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
@@ -42,15 +82,15 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 func (c *Client) request(ctx context.Context, path string, q url.Values, out any) error {
-	if c.APIKey != "" {
-		q.Set("key", c.APIKey)
-	}
 	req, e := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path+"?"+q.Encode(), nil)
 	if e != nil {
 		return e
 	}
 	if c.AccessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+	}
+	if c.APIKey != "" {
+		req.Header.Set("X-Goog-Api-Key", c.APIKey)
 	}
 	r, e := c.HTTP.Do(req)
 	if e != nil {
@@ -70,9 +110,22 @@ func (c *Client) request(ctx context.Context, path string, q url.Values, out any
 		if r.StatusCode == 401 || r.StatusCode == 403 && reason == "forbidden" {
 			kind = chat.Authentication
 		}
+		if kind == chat.Authentication {
+			return &chat.AdapterError{Kind: kind, Op: "YouTube API", Err: fmt.Errorf("credential rejected (HTTP %d, %s); run: streamchat setup youtube", r.StatusCode, reason)}
+		}
 		return &chat.AdapterError{Kind: kind, Op: "YouTube API", Err: fmt.Errorf("HTTP %d (%s)", r.StatusCode, reason)}
 	}
 	return json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(out)
+}
+
+func (c *Client) ValidateCredential(ctx context.Context) error {
+	var v struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	// A single videos.list request costs one quota unit and avoids search.list.
+	return c.request(ctx, "/videos", url.Values{"part": {"id"}, "id": {"jNQXAC9IVRw"}}, &v)
 }
 func errorReason(b []byte) string {
 	var v struct {

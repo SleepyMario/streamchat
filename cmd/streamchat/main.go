@@ -1,17 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/SleepyMario/streamchat/internal/aggregate"
-	"github.com/SleepyMario/streamchat/internal/chat"
-	"github.com/SleepyMario/streamchat/internal/config"
-	"github.com/SleepyMario/streamchat/internal/logging"
-	"github.com/SleepyMario/streamchat/internal/platform/kick"
-	"github.com/SleepyMario/streamchat/internal/platform/youtube"
-	"github.com/SleepyMario/streamchat/internal/render"
 	"io"
 	"net/http"
 	"os"
@@ -19,78 +14,130 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/aggregate"
+	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/config"
+	"github.com/SleepyMario/streamchat/internal/logging"
+	platformreg "github.com/SleepyMario/streamchat/internal/platform"
+	"github.com/SleepyMario/streamchat/internal/platform/kick"
+	"github.com/SleepyMario/streamchat/internal/platform/twitch"
+	"github.com/SleepyMario/streamchat/internal/render"
+	"github.com/SleepyMario/streamchat/internal/setup"
 )
 
-const version = "0.1.0"
-const usage = `Streamchat merges official YouTube and Kick live-chat events.
+const version = "0.2.0"
+const usage = `Streamchat reads and merges live chat from YouTube, Kick, and Twitch.
 
-Usage:
-  streamchat --help
-  streamchat version
-  streamchat demo [--no-color] [--timestamps]
-  streamchat run [platform and output flags]
-  streamchat youtube --youtube-video ID [--youtube-api-key KEY]
-  streamchat kick serve [--kick-listen 127.0.0.1:8788]
-  streamchat kick subscribe [--inspect] --kick-broadcaster-id ID
-  streamchat config check [--config FILE]
+Start here:
+  streamchat setup                 Configure one or more services interactively
+  streamchat run                   Read all configured chat targets
 
-Common flags: --config, --log-file, --timestamps, --no-color
-Run flags: --youtube-video, --youtube-api-key, --kick-broadcaster-id,
-           --kick-listen, --kick-webhook-url
+Useful commands:
+  streamchat setup youtube|kick|twitch
+  streamchat run --youtube-video URL_OR_ID
+  streamchat run --twitch-channel CHANNEL_OR_URL
+  streamchat config show           Show configuration with secrets redacted
+  streamchat config check          Check configuration and recovery steps
+  streamchat demo                  Run an offline demonstration
+
+Advanced compatibility commands:
+  streamchat youtube --youtube-video URL_OR_ID
+  streamchat kick serve
+  streamchat kick subscribe [--inspect]
+
+Configuration precedence: command-line flags override STREAMCHAT_* environment
+variables, which override the JSON file, which overrides safe defaults.
+Default file: ${XDG_CONFIG_HOME:-$HOME/.config}/streamchat/config.json
 `
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() { os.Exit(runWithInput(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 func run(args []string, out, errw io.Writer) int {
-	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+	return runWithInput(args, strings.NewReader(""), out, errw)
+}
+
+func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if len(args) == 0 {
+		c, e := config.Load("")
+		if e == nil {
+			config.ApplyEnv(&c, os.Getenv)
+		}
+		if e == nil && !c.HasUsablePlatform() {
+			w := setup.New(in, out, "")
+			e = w.Run(ctx, nil)
+			return finish(e, errw)
+		}
 		fmt.Fprint(out, usage)
 		return 0
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		fmt.Fprint(out, usage)
+		return 0
+	}
 	var e error
 	switch args[0] {
 	case "version":
 		fmt.Fprintf(out, "streamchat %s\n", version)
 		return 0
+	case "setup":
+		var selected []string
+		selected, e = setup.ParsePlatforms(args[1:])
+		if e == nil {
+			e = setup.New(in, out, "").Run(ctx, selected)
+		}
 	case "demo":
 		e = demo(ctx, args[1:], out)
 	case "youtube":
-		e = platform(ctx, "youtube", args[1:], out, errw)
+		e = runPlatforms(ctx, "youtube", args[1:], in, out, errw)
 	case "run":
-		e = platform(ctx, "run", args[1:], out, errw)
+		e = runPlatforms(ctx, "run", args[1:], in, out, errw)
 	case "kick":
 		if len(args) < 2 {
-			e = errors.New("kick requires serve or subscribe")
+			e = errors.New("choose 'kick serve' or 'kick subscribe'")
 		} else if args[1] == "serve" {
-			e = platform(ctx, "kick", args[2:], out, errw)
+			e = runPlatforms(ctx, "kick", args[2:], in, out, errw)
 		} else if args[1] == "subscribe" {
 			e = subscribe(ctx, args[2:], out)
 		} else {
-			e = errors.New("unknown kick command")
+			e = errors.New("unknown Kick command")
 		}
 	case "config":
-		if len(args) == 2 && args[1] == "check" {
+		if len(args) < 2 {
+			e = errors.New("choose 'config show' or 'config check'")
+		} else if args[1] == "show" {
+			e = showConfig(args[2:], out)
+		} else if args[1] == "check" {
 			e = check(args[2:], out)
 		} else {
-			e = errors.New("config requires check")
+			e = errors.New("unknown config command")
 		}
 	default:
-		e = errors.New("unknown command")
+		e = errors.New("unknown command; run 'streamchat --help'")
 	}
-	if e != nil {
-		fmt.Fprintf(errw, "streamchat: %s\n", safeError(e))
-		var ae *chat.AdapterError
-		if errors.As(e, &ae) && ae.Kind == chat.Authentication {
-			return 4
-		}
-		return 2
+	return finish(e, errw)
+}
+
+func finish(e error, errw io.Writer) int {
+	if e == nil {
+		return 0
 	}
-	return 0
+	if errors.Is(e, setup.ErrCancelled) || errors.Is(e, context.Canceled) {
+		fmt.Fprintln(errw, "Setup cancelled; existing configuration was not changed.")
+		return 130
+	}
+	fmt.Fprintf(errw, "streamchat: %s\n", safeError(e))
+	var ae *chat.AdapterError
+	if errors.As(e, &ae) && ae.Kind == chat.Authentication {
+		return 4
+	}
+	return 2
 }
 
 type opts struct {
-	config, log, video, key, token, broadcaster, listen, webhook string
-	timestamps, noColor                                          bool
+	config, log, video, key, token, broadcaster, listen, webhook, twitchChannel string
+	timestamps, noColor                                                         bool
 }
 
 func flags(name string, args []string) (opts, config.Config, error) {
@@ -99,12 +146,13 @@ func flags(name string, args []string) (opts, config.Config, error) {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&o.config, "config", "", "JSON config file")
 	fs.StringVar(&o.log, "log-file", "", "append normalized JSONL")
-	fs.StringVar(&o.video, "youtube-video", "", "YouTube video/broadcast ID")
-	fs.StringVar(&o.key, "youtube-api-key", "", "YouTube API key")
+	fs.StringVar(&o.video, "youtube-video", "", "YouTube live URL or video ID")
+	fs.StringVar(&o.key, "youtube-api-key", "", "YouTube API key (prefer setup or environment)")
 	fs.StringVar(&o.token, "youtube-access-token", "", "YouTube OAuth access token")
 	fs.StringVar(&o.broadcaster, "kick-broadcaster-id", "", "Kick broadcaster user ID")
-	fs.StringVar(&o.listen, "kick-listen", "", "Kick listen address")
-	fs.StringVar(&o.webhook, "kick-webhook-url", "", "public Kick webhook URL (documentation/diagnostics)")
+	fs.StringVar(&o.listen, "kick-listen", "", "Kick loopback listen address")
+	fs.StringVar(&o.webhook, "kick-webhook-url", "", "public Kick HTTPS webhook URL")
+	fs.StringVar(&o.twitchChannel, "twitch-channel", "", "Twitch channel name or URL")
 	fs.BoolVar(&o.timestamps, "timestamps", false, "show timestamps")
 	fs.BoolVar(&o.noColor, "no-color", false, "disable color")
 	if e := fs.Parse(args); e != nil {
@@ -119,7 +167,9 @@ func flags(name string, args []string) (opts, config.Config, error) {
 		c.LogFile = o.log
 	}
 	if o.video != "" {
-		c.YouTube.VideoID = o.video
+		if e = mustSetTarget(&c, "youtube", o.video); e != nil {
+			return o, c, e
+		}
 	}
 	if o.key != "" {
 		c.YouTube.APIKey = o.key
@@ -136,6 +186,11 @@ func flags(name string, args []string) (opts, config.Config, error) {
 	if o.webhook != "" {
 		c.Kick.WebhookURL = o.webhook
 	}
+	if o.twitchChannel != "" {
+		if e = mustSetTarget(&c, "twitch", o.twitchChannel); e != nil {
+			return o, c, e
+		}
+	}
 	if o.timestamps {
 		c.Timestamps = true
 	}
@@ -144,52 +199,77 @@ func flags(name string, args []string) (opts, config.Config, error) {
 	}
 	return o, c, nil
 }
-func platform(ctx context.Context, mode string, args []string, out, errw io.Writer) error {
-	_, c, e := flags(mode, args)
+
+func mustSetTarget(c *config.Config, name, value string) error {
+	d, ok := platformreg.Default().Find(name)
+	if !ok {
+		return errors.New("unknown platform")
+	}
+	return d.SetTarget(c, value)
+}
+
+func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader, out, errw io.Writer) error {
+	o, c, e := flags(mode, args)
 	if e != nil {
 		return e
 	}
-	ytOn := mode == "youtube" || mode == "run" && c.YouTube.VideoID != ""
-	kickOn := mode == "kick" || mode == "run" && c.Kick.BroadcasterID != ""
-	if !ytOn && !kickOn {
-		return errors.New("configure at least one platform")
-	}
-	if ytOn {
-		if e = c.Validate("youtube"); e != nil {
+	if mode == "run" && c.Twitch.ClientID != "" && c.Twitch.AccessToken != "" {
+		if e = prepareTwitch(ctx, &c, o.config); e != nil {
 			return e
 		}
 	}
-	if kickOn {
-		if e = c.Validate("kick"); e != nil {
-			return e
+	r := platformreg.Default()
+	explicit := map[string]bool{}
+	if mode != "run" {
+		explicit[mode] = true
+	}
+	reader := bufio.NewReader(in)
+	for _, d := range r.Definitions() {
+		if len(explicit) > 0 && !explicit[d.Name] {
+			continue
+		}
+		if !d.Configured(c) {
+			if explicit[d.Name] {
+				return errors.New(d.DisplayName + " is not configured.\nRun:\n    streamchat setup " + d.Name)
+			}
+			continue
+		}
+		if d.TargetPrompt != "" && d.Target(c) == "" {
+			fmt.Fprintf(out, "%s: ", d.TargetPrompt)
+			v, er := reader.ReadString('\n')
+			if er != nil && strings.TrimSpace(v) == "" {
+				return fmt.Errorf("%s is required; rerun with the corresponding flag", d.TargetPrompt)
+			}
+			if er = d.SetTarget(&c, strings.TrimSpace(v)); er != nil {
+				return er
+			}
 		}
 	}
-	key, _ := kick.ParsePublicKey([]byte(kick.OfficialPublicKeyPEM))
-	var adapters []chat.Adapter
-	var writable []chan chat.Message
-	var inputs []<-chan chat.Message
-	if ytOn {
-		ch := make(chan chat.Message, c.QueueSize)
-		writable = append(writable, ch)
-		inputs = append(inputs, ch)
-		adapters = append(adapters, youtube.New(nil, c.YouTube.BaseURL, c.YouTube.APIKey, c.YouTube.AccessToken, c.YouTube.VideoID))
+	adapters, e := r.Select(&c, explicit)
+	if e != nil {
+		return e
 	}
-	if kickOn {
-		ch := make(chan chat.Message, c.QueueSize)
-		writable = append(writable, ch)
-		inputs = append(inputs, ch)
-		adapters = append(adapters, kick.NewServer(c.Kick.Listen, key, ch))
+	if len(adapters) == 0 {
+		return errors.New("no runnable chat target is configured. Run 'streamchat setup' or supply --youtube-video/--twitch-channel")
 	}
+	return runAdapters(ctx, adapters, c, out, errw)
+}
+
+func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, out, errw io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	inputs := make([]<-chan chat.Message, 0, len(adapters))
 	errc := make(chan error, len(adapters))
-	for i, a := range adapters {
-		go func(ad chat.Adapter, dst chan chat.Message) { errc <- ad.Run(ctx, dst); close(dst) }(a, writable[i])
+	for _, a := range adapters {
+		ch := make(chan chat.Message, c.QueueSize)
+		inputs = append(inputs, ch)
+		go func(ad chat.Adapter, dst chan chat.Message) { defer close(dst); errc <- ad.Run(ctx, dst) }(a, ch)
 	}
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: c.QueueSize, DuplicateCapacity: c.DuplicateCapacity, ReorderWindow: 100 * time.Millisecond})
 	merged, aerrs := ag.Run(ctx, inputs...)
 	term := render.New(out, render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor)})
 	var log *logging.Logger
+	var e error
 	if c.LogFile != "" {
 		log, e = logging.Open(c.LogFile)
 		if e != nil {
@@ -198,21 +278,28 @@ func platform(ctx context.Context, mode string, args []string, out, errw io.Writ
 		defer log.Close()
 	}
 	remaining := len(adapters)
+	adapterErrs := (<-chan error)(errc)
+	var firstAdapterError error
 	for remaining > 0 || merged != nil {
 		select {
 		case <-ctx.Done():
 			return nil
-		case e := <-errc:
+		case er := <-adapterErrs:
 			remaining--
-			if e != nil && !errors.Is(e, context.Canceled) {
-				fmt.Fprintf(errw, "adapter error: %s\n", safeError(e))
+			if er != nil && !errors.Is(er, context.Canceled) {
+				fmt.Fprintf(errw, "adapter error: %s\n", safeError(er))
+				if firstAdapterError == nil {
+					firstAdapterError = er
+				}
 			}
 			if remaining == 0 {
-				cancel()
+				adapterErrs = nil
 			}
-		case e, ok := <-aerrs:
-			if ok && e != nil {
-				fmt.Fprintf(errw, "aggregate error: %s\n", e)
+		case er, ok := <-aerrs:
+			if !ok {
+				aerrs = nil
+			} else if er != nil {
+				fmt.Fprintf(errw, "aggregate error: %s\n", er)
 			}
 		case m, ok := <-merged:
 			if !ok {
@@ -229,8 +316,9 @@ func platform(ctx context.Context, mode string, args []string, out, errw io.Writ
 			}
 		}
 	}
-	return nil
+	return firstAdapterError
 }
+
 func demo(ctx context.Context, args []string, out io.Writer) error {
 	o, _, e := flags("demo", args)
 	if e != nil {
@@ -239,11 +327,13 @@ func demo(ctx context.Context, args []string, out io.Writer) error {
 	base := time.Date(2026, 1, 2, 12, 41, 3, 0, time.UTC)
 	a := make(chan chat.Message, 8)
 	b := make(chan chat.Message, 8)
-	msgs := []chat.Message{{ID: "yt-1", Platform: chat.PlatformYouTube, Timestamp: base, AuthorDisplayName: "alice", Badges: []chat.Badge{{Type: "moderator", Text: "MOD"}}, Text: "Good morning!", EventType: chat.EventMessage}, {ID: "k-1", Platform: chat.PlatformKick, Timestamp: base.Add(2 * time.Second), AuthorDisplayName: "bob", Badges: []chat.Badge{{Type: "subscriber", Text: "SUB"}}, Text: "First time watching here [emote:42:WAVE]", Emotes: []chat.Emote{{ID: "42", Name: "WAVE"}}, Reply: &chat.Reply{MessageID: "k-0", AuthorDisplayName: "carol"}, EventType: chat.EventMessage}, {ID: "yt-2", Platform: chat.PlatformYouTube, Timestamp: base.Add(4 * time.Second), AuthorDisplayName: "dana", Text: "Welcome!", EventType: chat.EventPaid, Paid: &chat.Paid{Display: "$5.00", Currency: "USD", AmountMicros: 5000000}}, {ID: "yt-2", Platform: chat.PlatformYouTube, Timestamp: base.Add(4 * time.Second), AuthorDisplayName: "dana", Text: "duplicate", EventType: chat.EventPaid}}
-	a <- msgs[2]
-	a <- msgs[0]
-	a <- msgs[3]
-	b <- msgs[1]
+	msgs := []chat.Message{{ID: "yt-1", Platform: chat.PlatformYouTube, Timestamp: base, AuthorDisplayName: "alice", Badges: []chat.Badge{{Type: "moderator", Text: "MOD"}}, Text: "Good morning!", EventType: chat.EventMessage}, {ID: "k-1", Platform: chat.PlatformKick, Timestamp: base.Add(2 * time.Second), AuthorDisplayName: "bob", Badges: []chat.Badge{{Type: "subscriber", Text: "SUB"}}, Text: "First time watching here", Reply: &chat.Reply{MessageID: "k-0", AuthorDisplayName: "carol"}, EventType: chat.EventMessage}, {ID: "tw-1", Platform: chat.PlatformTwitch, Timestamp: base.Add(3 * time.Second), AuthorDisplayName: "eve", Text: "Hello from Twitch", EventType: chat.EventMessage}, {ID: "yt-2", Platform: chat.PlatformYouTube, Timestamp: base.Add(4 * time.Second), AuthorDisplayName: "dana", Text: "Welcome!", EventType: chat.EventPaid, Paid: &chat.Paid{Display: "$5.00"}}, {ID: "yt-2", Platform: chat.PlatformYouTube, Timestamp: base.Add(4 * time.Second), Text: "duplicate", EventType: chat.EventPaid}}
+	for _, m := range []chat.Message{msgs[3], msgs[0], msgs[4]} {
+		a <- m
+	}
+	for _, m := range []chat.Message{msgs[1], msgs[2]} {
+		b <- m
+	}
 	close(a)
 	close(b)
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: 8, DuplicateCapacity: 16, ReorderWindow: time.Millisecond})
@@ -256,17 +346,45 @@ func demo(ctx context.Context, args []string, out io.Writer) error {
 	}
 	return nil
 }
+
+func showConfig(args []string, out io.Writer) error {
+	_, c, e := flags("config show", args)
+	if e != nil {
+		return e
+	}
+	b, e := config.RedactedJSON(c)
+	if e != nil {
+		return e
+	}
+	_, e = fmt.Fprintln(out, string(b))
+	return e
+}
+
 func check(args []string, out io.Writer) error {
-	_, c, e := flags("check", args)
+	o, c, e := flags("config check", args)
 	if e != nil {
 		return e
 	}
 	if e = c.Validate("check"); e != nil {
 		return e
 	}
-	fmt.Fprintf(out, "configuration valid\nYouTube API key: %s\nKick access token: %s\nKick listen: %s\n", config.Redact(c.YouTube.APIKey), config.Redact(c.Kick.AccessToken), c.Kick.Listen)
+	if e = config.CheckFileMode(o.config); e != nil {
+		return e
+	}
+	fmt.Fprintln(out, "configuration valid (file and structural settings)")
+	for _, d := range platformreg.Default().Definitions() {
+		status := "not configured — run: streamchat setup " + d.Name
+		if d.Configured(c) {
+			status = "configured"
+			if d.TargetPrompt != "" && d.Target(c) == "" {
+				status = "credentials configured; runtime target will be requested"
+			}
+		}
+		fmt.Fprintf(out, "%-8s %s\n", d.DisplayName+":", status)
+	}
 	return nil
 }
+
 func subscribe(ctx context.Context, args []string, out io.Writer) error {
 	inspect := false
 	rest := []string{}
@@ -277,18 +395,30 @@ func subscribe(ctx context.Context, args []string, out io.Writer) error {
 			rest = append(rest, a)
 		}
 	}
-	_, c, e := flags("subscribe", rest)
+	o, c, e := flags("subscribe", rest)
 	if e != nil {
 		return e
 	}
 	if c.Kick.AccessToken == "" {
-		return errors.New("STREAMCHAT_KICK_ACCESS_TOKEN is required; token needs events:subscribe scope")
+		return errors.New("Kick is not authorized. Run: streamchat setup kick (it requests events:subscribe and stores a user access token)")
 	}
 	if c.Kick.BroadcasterID == "" {
-		return errors.New("Kick broadcaster ID is required")
+		return errors.New("Kick broadcaster user ID is missing. Run: streamchat setup kick so Streamchat resolves it from the authorized account")
 	}
-	if e = c.Validate("check"); e != nil {
-		return e
+	if !c.Kick.TokenExpiry.IsZero() && time.Until(c.Kick.TokenExpiry) < time.Minute && c.Kick.RefreshToken != "" {
+		oc := kick.OAuthClient{HTTP: &http.Client{Timeout: 20 * time.Second}, OAuthBaseURL: c.Kick.OAuthBaseURL, APIBaseURL: c.Kick.APIBaseURL, ClientID: c.Kick.ClientID, ClientSecret: c.Kick.ClientSecret}
+		tok, err := oc.Refresh(ctx, c.Kick.RefreshToken)
+		if err != nil {
+			return err
+		}
+		c.Kick.AccessToken = tok.AccessToken
+		c.Kick.RefreshToken = tok.RefreshToken
+		c.Kick.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+		if os.Getenv("STREAMCHAT_KICK_ACCESS_TOKEN") == "" {
+			if err = persistKickTokens(o.config, c.Kick); err != nil {
+				return err
+			}
+		}
 	}
 	method := http.MethodPost
 	if inspect {
@@ -299,14 +429,98 @@ func subscribe(ctx context.Context, args []string, out io.Writer) error {
 	if e != nil {
 		return e
 	}
+	var compact any
+	if json.Unmarshal(b, &compact) == nil {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(compact)
+	}
 	_, e = fmt.Fprintln(out, string(b))
 	return e
 }
+
+func prepareTwitch(ctx context.Context, c *config.Config, path string) error {
+	api := &twitch.API{HTTP: &http.Client{Timeout: 20 * time.Second}, APIBaseURL: c.Twitch.APIBaseURL, OAuthBaseURL: c.Twitch.OAuthBaseURL, ClientID: c.Twitch.ClientID, ClientSecret: c.Twitch.ClientSecret, AccessToken: c.Twitch.AccessToken}
+	refresh := !c.Twitch.TokenExpiry.IsZero() && time.Until(c.Twitch.TokenExpiry) < time.Minute
+	if !refresh {
+		if identity, err := api.ValidateToken(ctx); err != nil {
+			var ae *chat.AdapterError
+			if errors.As(err, &ae) && ae.Kind == chat.Authentication {
+				refresh = true
+			} else {
+				return err
+			}
+		} else {
+			c.Twitch.UserID = identity.UserID
+			c.Twitch.UserLogin = identity.Login
+		}
+	}
+	if !refresh {
+		return nil
+	}
+	if c.Twitch.RefreshToken == "" {
+		return errors.New("Twitch authorization expired and no refresh token is stored. Run: streamchat setup twitch")
+	}
+	tok, err := api.Refresh(ctx, c.Twitch.RefreshToken)
+	if err != nil {
+		return err
+	}
+	c.Twitch.AccessToken = tok.AccessToken
+	c.Twitch.RefreshToken = tok.RefreshToken
+	c.Twitch.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	api.AccessToken = tok.AccessToken
+	identity, err := api.ValidateToken(ctx)
+	if err != nil {
+		return err
+	}
+	c.Twitch.UserID = identity.UserID
+	c.Twitch.UserLogin = identity.Login
+	if os.Getenv("STREAMCHAT_TWITCH_ACCESS_TOKEN") == "" {
+		return persistTwitchTokens(path, c.Twitch)
+	}
+	return nil
+}
+
+func persistTwitchTokens(path string, v config.Twitch) error {
+	c, e := config.Load(path)
+	if e != nil {
+		return e
+	}
+	c.Twitch.AccessToken = v.AccessToken
+	c.Twitch.RefreshToken = v.RefreshToken
+	c.Twitch.TokenExpiry = v.TokenExpiry
+	c.Twitch.UserID = v.UserID
+	c.Twitch.UserLogin = v.UserLogin
+	return config.Save(path, c)
+}
+func persistKickTokens(path string, v config.Kick) error {
+	c, e := config.Load(path)
+	if e != nil {
+		return e
+	}
+	c.Kick.AccessToken = v.AccessToken
+	c.Kick.RefreshToken = v.RefreshToken
+	c.Kick.TokenExpiry = v.TokenExpiry
+	return config.Save(path, c)
+}
+
 func safeError(e error) string {
 	s := e.Error()
-	for _, p := range []string{"key=", "access_token=", "Authorization: Bearer "} {
-		if i := strings.Index(s, p); i >= 0 {
-			s = s[:i] + p + "<redacted>"
+	for _, marker := range []string{"access_token=", "refresh_token=", "client_secret=", "Authorization: Bearer ", "Authorization: OAuth "} {
+		start := 0
+		for start < len(s) {
+			low := strings.ToLower(s[start:])
+			rel := strings.Index(low, strings.ToLower(marker))
+			if rel < 0 {
+				break
+			}
+			i := start + rel
+			end := strings.IndexAny(s[i+len(marker):], "& \n\r\t")
+			if end < 0 {
+				end = len(s) - i - len(marker)
+			}
+			s = s[:i+len(marker)] + "<redacted>" + s[i+len(marker)+end:]
+			start = i + len(marker) + len("<redacted>")
 		}
 	}
 	return s

@@ -11,13 +11,16 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"github.com/SleepyMario/streamchat/internal/chat"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/chat"
 )
 
 const OfficialPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
@@ -240,9 +243,154 @@ type SubscriptionClient struct {
 	BaseURL, AccessToken string
 }
 
+type Token struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	Scope        string `json:"scope"`
+}
+
+type OAuthClient struct {
+	HTTP                     *http.Client
+	OAuthBaseURL, APIBaseURL string
+	ClientID, ClientSecret   string
+}
+
+func (c OAuthClient) token(ctx context.Context, form url.Values) (Token, error) {
+	// Kick-generated client credentials do not contain surrounding whitespace.
+	// Normalize values loaded from hand-edited config files or environment
+	// variables so an invisible newline cannot turn valid credentials into a
+	// misleading invalid-client response.
+	form.Set("client_id", strings.TrimSpace(c.ClientID))
+	form.Set("client_secret", strings.TrimSpace(c.ClientSecret))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.OAuthBaseURL, "/")+"/oauth/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return Token{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r, err := c.HTTP.Do(req)
+	if err != nil {
+		return Token{}, err
+	}
+	defer r.Body.Close()
+	if r.StatusCode/100 != 2 {
+		body, readErr := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if readErr != nil {
+			return Token{}, fmt.Errorf("Kick authorization failed (HTTP %d; error response could not be read); run: streamchat setup kick", r.StatusCode)
+		}
+		detail := oauthErrorDetail(body, sensitiveFormValues(form)...)
+		if detail != "" {
+			return Token{}, fmt.Errorf("Kick authorization failed (HTTP %d: %s); run: streamchat setup kick", r.StatusCode, detail)
+		}
+		if r.StatusCode == http.StatusUnauthorized {
+			return Token{}, fmt.Errorf("Kick authorization failed (HTTP %d: client authentication rejected); run: streamchat setup kick", r.StatusCode)
+		}
+		return Token{}, fmt.Errorf("Kick authorization failed (HTTP %d); run: streamchat setup kick", r.StatusCode)
+	}
+	var tok Token
+	if err = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&tok); err != nil {
+		return Token{}, err
+	}
+	if tok.AccessToken == "" {
+		return Token{}, errors.New("Kick authorization returned no access token")
+	}
+	return tok, nil
+}
+
+// oauthErrorDetail returns only the standard, useful OAuth error fields. It
+// deliberately does not include the raw response body, which may contain token
+// fields or reflected request data.
+func oauthErrorDetail(body []byte, secrets ...string) string {
+	var response struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+		Message          string `json:"message"`
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+	}
+	if json.Unmarshal(body, &response) != nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if response.Error != "" {
+		parts = append(parts, response.Error)
+	}
+	description := response.ErrorDescription
+	if description == "" {
+		description = response.Message
+	}
+	if description != "" && description != response.Error {
+		parts = append(parts, description)
+	}
+	detail := strings.Join(parts, ": ")
+	secrets = append(secrets, response.AccessToken, response.RefreshToken)
+	sort.SliceStable(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	for _, secret := range secrets {
+		if secret != "" {
+			detail = strings.ReplaceAll(detail, secret, "<redacted>")
+		}
+	}
+	detail = strings.Join(strings.Fields(detail), " ")
+	if len(detail) > 512 {
+		detail = detail[:512] + "…"
+	}
+	return detail
+}
+
+func sensitiveFormValues(form url.Values) []string {
+	return []string{
+		form.Get("client_secret"),
+		form.Get("code"),
+		form.Get("code_verifier"),
+		form.Get("refresh_token"),
+		form.Get("access_token"),
+	}
+}
+
+func (c OAuthClient) Exchange(ctx context.Context, code, redirectURI, verifier string) (Token, error) {
+	return c.token(ctx, url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirectURI}, "code_verifier": {verifier}})
+}
+
+func (c OAuthClient) Refresh(ctx context.Context, refresh string) (Token, error) {
+	return c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
+}
+
+func (c OAuthClient) CurrentUser(ctx context.Context, access string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.APIBaseURL, "/")+"/users", nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Accept", "application/json")
+	r, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer r.Body.Close()
+	if r.StatusCode/100 != 2 {
+		return "", "", fmt.Errorf("Kick user lookup failed (HTTP %d); authorization needs user:read", r.StatusCode)
+	}
+	var v struct {
+		Data []struct {
+			UserID int64  `json:"user_id"`
+			Name   string `json:"name"`
+		} `json:"data"`
+	}
+	if err = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&v); err != nil {
+		return "", "", err
+	}
+	if len(v.Data) == 0 || v.Data[0].UserID <= 0 {
+		return "", "", errors.New("Kick did not return the authorized user")
+	}
+	return strconv.FormatInt(v.Data[0].UserID, 10), v.Data[0].Name, nil
+}
+
 func (c SubscriptionClient) Do(ctx context.Context, method, broadcaster string) ([]byte, error) {
 	if c.AccessToken == "" {
 		return nil, errors.New("Kick OAuth access token with events:subscribe scope is required")
+	}
+	if n, err := strconv.ParseInt(broadcaster, 10, 64); err != nil || n <= 0 {
+		return nil, errors.New("Kick broadcaster user ID must be a positive integer")
 	}
 	var body io.Reader
 	if method == http.MethodPost {

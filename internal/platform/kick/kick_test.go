@@ -10,12 +10,15 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
-	"github.com/SleepyMario/streamchat/internal/chat"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/chat"
 )
 
 func fixture(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey) {
@@ -136,5 +139,92 @@ func TestGracefulShutdown(t *testing.T) {
 	cancel()
 	if e := s.Run(ctx, nil); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestOAuthExchangeSuccess(t *testing.T) {
+	const (
+		code     = "authorization-code"
+		verifier = "pkce-verifier"
+	)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Fatalf("unexpected request: %s %q", r.Method, r.Header.Get("Content-Type"))
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		form, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {code},
+			"redirect_uri":  {"http://localhost:8789/oauth/kick/callback"},
+			"code_verifier": {verifier},
+			"client_id":     {"client"},
+			"client_secret": {"secret"},
+		}
+		if form.Encode() != want.Encode() {
+			t.Fatalf("token form mismatch: got %q want %q", form.Encode(), want.Encode())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"access","refresh_token":"refresh","expires_in":3600,"scope":"user:read events:subscribe"}`)
+	}))
+	defer s.Close()
+	c := OAuthClient{HTTP: s.Client(), OAuthBaseURL: s.URL, ClientID: " client\n", ClientSecret: " secret\r\n"}
+	tok, err := c.Exchange(context.Background(), code, "http://localhost:8789/oauth/kick/callback", verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.AccessToken != "access" || tok.RefreshToken != "refresh" || tok.ExpiresIn != 3600 {
+		t.Fatalf("unexpected token: %+v", tok)
+	}
+}
+
+func TestOAuthErrorBodyIsUsefulAndSecretsAreRedacted(t *testing.T) {
+	const (
+		clientSecret = "client-secret-value"
+		code         = "authorization-code-value"
+		verifier     = "pkce-verifier-value"
+	)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":"invalid_client","error_description":"client authentication failed for client-secret-value; code authorization-code-value; verifier pkce-verifier-value; tokens must-not-appear and must-not-appear-either","access_token":"must-not-appear","refresh_token":"must-not-appear-either"}`)
+	}))
+	defer s.Close()
+	c := OAuthClient{HTTP: s.Client(), OAuthBaseURL: s.URL, ClientID: "client", ClientSecret: clientSecret}
+	_, err := c.Exchange(context.Background(), code, "http://localhost:8789/oauth/kick/callback", verifier)
+	if err == nil {
+		t.Fatal("invalid credential accepted")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "HTTP 401: invalid_client: client authentication failed") {
+		t.Fatalf("provider error was not reported: %q", message)
+	}
+	for _, secret := range []string{clientSecret, code, verifier, "must-not-appear", "must-not-appear-either"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("secret %q leaked in %q", secret, message)
+		}
+	}
+}
+
+func TestOAuthEmptyUnauthorizedIdentifiesClientAuthentication(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer s.Close()
+	c := OAuthClient{HTTP: s.Client(), OAuthBaseURL: s.URL, ClientID: "client", ClientSecret: "client-secret"}
+	_, err := c.Exchange(context.Background(), "authorization-code", "http://localhost:8789/oauth/kick/callback", "pkce-verifier")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401: client authentication rejected") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, secret := range []string{"client-secret", "authorization-code", "pkce-verifier"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("secret %q leaked in %q", secret, err)
+		}
 	}
 }

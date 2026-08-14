@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,36 +15,67 @@ import (
 )
 
 type Config struct {
+	Path              string  `json:"-"`
 	YouTube           YouTube `json:"youtube"`
 	Kick              Kick    `json:"kick"`
+	Twitch            Twitch  `json:"twitch"`
 	LogFile           string  `json:"log_file,omitempty"`
 	Timestamps        bool    `json:"timestamps,omitempty"`
 	NoColor           bool    `json:"no_color,omitempty"`
 	QueueSize         int     `json:"queue_size,omitempty"`
 	DuplicateCapacity int     `json:"duplicate_capacity,omitempty"`
 }
+
 type YouTube struct {
 	APIKey      string `json:"api_key,omitempty"`
 	AccessToken string `json:"access_token,omitempty"`
-	VideoID     string `json:"video_id,omitempty"`
-	BaseURL     string `json:"-"`
+	// VideoID is retained for compatibility, but is normally a per-run target.
+	VideoID string `json:"video_id,omitempty"`
+	BaseURL string `json:"-"`
 }
+
 type Kick struct {
 	ClientID      string        `json:"client_id,omitempty"`
 	ClientSecret  string        `json:"client_secret,omitempty"`
 	AccessToken   string        `json:"access_token,omitempty"`
+	RefreshToken  string        `json:"refresh_token,omitempty"`
+	TokenExpiry   time.Time     `json:"token_expiry,omitempty"`
 	BroadcasterID string        `json:"broadcaster_id,omitempty"`
 	WebhookURL    string        `json:"webhook_url,omitempty"`
+	RedirectURI   string        `json:"redirect_uri,omitempty"`
 	Listen        string        `json:"listen,omitempty"`
 	PublicKeyPEM  string        `json:"public_key_pem,omitempty"`
 	APIBaseURL    string        `json:"-"`
+	OAuthBaseURL  string        `json:"-"`
 	MaxBodyBytes  int64         `json:"max_body_bytes,omitempty"`
 	MaxAge        time.Duration `json:"-"`
 }
 
-func Defaults() Config {
-	return Config{YouTube: YouTube{BaseURL: "https://www.googleapis.com/youtube/v3"}, Kick: Kick{Listen: "127.0.0.1:8788", APIBaseURL: "https://api.kick.com/public/v1", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute}, QueueSize: 256, DuplicateCapacity: 10000}
+type Twitch struct {
+	ClientID     string    `json:"client_id,omitempty"`
+	ClientSecret string    `json:"client_secret,omitempty"`
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	TokenExpiry  time.Time `json:"token_expiry,omitempty"`
+	UserID       string    `json:"user_id,omitempty"`
+	UserLogin    string    `json:"user_login,omitempty"`
+	RedirectURI  string    `json:"redirect_uri,omitempty"`
+	// Channel is a convenient default target and may be overridden per run.
+	Channel      string `json:"channel,omitempty"`
+	APIBaseURL   string `json:"-"`
+	OAuthBaseURL string `json:"-"`
+	WebSocketURL string `json:"-"`
 }
+
+func Defaults() Config {
+	return Config{
+		YouTube:   YouTube{BaseURL: "https://www.googleapis.com/youtube/v3"},
+		Kick:      Kick{Listen: "127.0.0.1:8788", RedirectURI: "http://localhost:8789/oauth/kick/callback", APIBaseURL: "https://api.kick.com/public/v1", OAuthBaseURL: "https://id.kick.com", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute},
+		Twitch:    Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
+		QueueSize: 256, DuplicateCapacity: 10000,
+	}
+}
+
 func DefaultPath() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "streamchat", "config.json")
@@ -51,11 +83,13 @@ func DefaultPath() string {
 	h, _ := os.UserHomeDir()
 	return filepath.Join(h, ".config", "streamchat", "config.json")
 }
+
 func Load(path string) (Config, error) {
 	c := Defaults()
 	if path == "" {
 		path = DefaultPath()
 	}
+	c.Path = path
 	b, e := os.ReadFile(path)
 	if errors.Is(e, os.ErrNotExist) {
 		return c, nil
@@ -69,8 +103,10 @@ func Load(path string) (Config, error) {
 		return c, fmt.Errorf("parse config: %w", e)
 	}
 	applyDefaults(&c)
+	c.Path = path
 	return c, nil
 }
+
 func applyDefaults(c *Config) {
 	d := Defaults()
 	if c.YouTube.BaseURL == "" {
@@ -79,14 +115,32 @@ func applyDefaults(c *Config) {
 	if c.Kick.Listen == "" {
 		c.Kick.Listen = d.Kick.Listen
 	}
+	if c.Kick.RedirectURI == "" {
+		c.Kick.RedirectURI = d.Kick.RedirectURI
+	}
 	if c.Kick.APIBaseURL == "" {
 		c.Kick.APIBaseURL = d.Kick.APIBaseURL
+	}
+	if c.Kick.OAuthBaseURL == "" {
+		c.Kick.OAuthBaseURL = d.Kick.OAuthBaseURL
 	}
 	if c.Kick.MaxBodyBytes == 0 {
 		c.Kick.MaxBodyBytes = d.Kick.MaxBodyBytes
 	}
 	if c.Kick.MaxAge == 0 {
 		c.Kick.MaxAge = d.Kick.MaxAge
+	}
+	if c.Twitch.RedirectURI == "" {
+		c.Twitch.RedirectURI = d.Twitch.RedirectURI
+	}
+	if c.Twitch.APIBaseURL == "" {
+		c.Twitch.APIBaseURL = d.Twitch.APIBaseURL
+	}
+	if c.Twitch.OAuthBaseURL == "" {
+		c.Twitch.OAuthBaseURL = d.Twitch.OAuthBaseURL
+	}
+	if c.Twitch.WebSocketURL == "" {
+		c.Twitch.WebSocketURL = d.Twitch.WebSocketURL
 	}
 	if c.QueueSize == 0 {
 		c.QueueSize = d.QueueSize
@@ -95,6 +149,50 @@ func applyDefaults(c *Config) {
 		c.DuplicateCapacity = d.DuplicateCapacity
 	}
 }
+
+// Save writes the complete configuration using atomic replacement where the
+// filesystem supports rename. Both the directory and file are private.
+func Save(path string, c Config) error {
+	if path == "" {
+		path = DefaultPath()
+	}
+	applyDefaults(&c)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	_ = os.Chmod(filepath.Dir(path), 0700)
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	b = append(b, '\n')
+	f, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(b)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
+	}
+	if err = os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("secure config: %w", err)
+	}
+	return nil
+}
+
 func ApplyEnv(c *Config, get func(string) string) {
 	set := func(k string, p *string) {
 		if v := get(k); v != "" {
@@ -107,11 +205,26 @@ func ApplyEnv(c *Config, get func(string) string) {
 	set("STREAMCHAT_KICK_CLIENT_ID", &c.Kick.ClientID)
 	set("STREAMCHAT_KICK_CLIENT_SECRET", &c.Kick.ClientSecret)
 	set("STREAMCHAT_KICK_ACCESS_TOKEN", &c.Kick.AccessToken)
+	set("STREAMCHAT_KICK_REFRESH_TOKEN", &c.Kick.RefreshToken)
 	set("STREAMCHAT_KICK_BROADCASTER_ID", &c.Kick.BroadcasterID)
 	set("STREAMCHAT_KICK_WEBHOOK_URL", &c.Kick.WebhookURL)
+	set("STREAMCHAT_KICK_REDIRECT_URI", &c.Kick.RedirectURI)
 	set("STREAMCHAT_KICK_LISTEN", &c.Kick.Listen)
+	set("STREAMCHAT_TWITCH_CLIENT_ID", &c.Twitch.ClientID)
+	set("STREAMCHAT_TWITCH_CLIENT_SECRET", &c.Twitch.ClientSecret)
+	set("STREAMCHAT_TWITCH_ACCESS_TOKEN", &c.Twitch.AccessToken)
+	set("STREAMCHAT_TWITCH_REFRESH_TOKEN", &c.Twitch.RefreshToken)
+	set("STREAMCHAT_TWITCH_USER_ID", &c.Twitch.UserID)
+	set("STREAMCHAT_TWITCH_USER_LOGIN", &c.Twitch.UserLogin)
+	set("STREAMCHAT_TWITCH_REDIRECT_URI", &c.Twitch.RedirectURI)
+	set("STREAMCHAT_TWITCH_CHANNEL", &c.Twitch.Channel)
 	set("STREAMCHAT_LOG_FILE", &c.LogFile)
 }
+
+func (c Config) HasUsablePlatform() bool {
+	return c.YouTube.APIKey != "" || c.YouTube.AccessToken != "" || (c.Kick.AccessToken != "" && c.Kick.WebhookURL != "") || (c.Twitch.ClientID != "" && c.Twitch.AccessToken != "")
+}
+
 func (c Config) Validate(mode string) error {
 	if c.QueueSize < 1 || c.QueueSize > 65536 {
 		return errors.New("queue_size must be between 1 and 65536")
@@ -131,30 +244,72 @@ func (c Config) Validate(mode string) error {
 		return errors.New("kick.listen must use localhost or a loopback IP by default")
 	}
 	if c.Kick.BroadcasterID != "" {
-		if n, err := strconv.ParseInt(c.Kick.BroadcasterID, 10, 64); err != nil || n <= 0 {
+		if n, e := strconv.ParseInt(c.Kick.BroadcasterID, 10, 64); e != nil || n <= 0 {
 			return errors.New("kick.broadcaster_id must be a positive integer")
 		}
 	}
 	if c.Kick.WebhookURL != "" {
-		u, err := url.Parse(c.Kick.WebhookURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" {
+		u, e := url.Parse(c.Kick.WebhookURL)
+		if e != nil || u.Scheme != "https" || u.Host == "" {
 			return errors.New("kick.webhook_url must be an absolute HTTPS URL")
 		}
-	}
-	if mode == "demo" || mode == "check" {
-		return nil
+		if u.Path != "/webhooks/kick" {
+			return errors.New("kick.webhook_url path must be /webhooks/kick")
+		}
 	}
 	if mode == "youtube" && (c.YouTube.VideoID == "" || (c.YouTube.APIKey == "" && c.YouTube.AccessToken == "")) {
-		return errors.New("YouTube video ID and API key or access token are required")
+		return errors.New("YouTube needs a live URL/video ID and a configured API key; run: streamchat setup youtube")
+	}
+	if mode == "twitch" && (c.Twitch.ClientID == "" || c.Twitch.AccessToken == "" || c.Twitch.Channel == "") {
+		return errors.New("Twitch needs authorization and a channel; run: streamchat setup twitch")
 	}
 	return nil
 }
+
 func Redact(v string) string {
 	if v == "" {
 		return "<unset>"
 	}
-	if len(v) < 8 {
-		return "<redacted>"
+	return "<redacted>"
+}
+
+func Redacted(c Config) Config {
+	r := c
+	r.YouTube.APIKey = Redact(c.YouTube.APIKey)
+	r.YouTube.AccessToken = Redact(c.YouTube.AccessToken)
+	r.Kick.ClientSecret = Redact(c.Kick.ClientSecret)
+	r.Kick.AccessToken = Redact(c.Kick.AccessToken)
+	r.Kick.RefreshToken = Redact(c.Kick.RefreshToken)
+	r.Twitch.ClientSecret = Redact(c.Twitch.ClientSecret)
+	r.Twitch.AccessToken = Redact(c.Twitch.AccessToken)
+	r.Twitch.RefreshToken = Redact(c.Twitch.RefreshToken)
+	return r
+}
+
+func RedactedJSON(c Config) ([]byte, error) {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	e.SetIndent("", "  ")
+	if err := e.Encode(Redacted(c)); err != nil {
+		return nil, err
 	}
-	return v[:3] + "…<redacted>"
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
+}
+
+func CheckFileMode(path string) error {
+	if path == "" {
+		path = DefaultPath()
+	}
+	st, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if st.Mode().Perm()&0077 != 0 {
+		return fmt.Errorf("config file permissions are %04o; secrets require 0600 (run: chmod 600 %s)", st.Mode().Perm(), path)
+	}
+	return nil
 }

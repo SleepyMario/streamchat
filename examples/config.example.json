@@ -1,16 +1,26 @@
 {
   "youtube": {
-    "api_key": "REPLACE_WITH_RESTRICTED_API_KEY",
-    "access_token": "",
-    "video_id": "REPLACE_WITH_VIDEO_ID"
+    "api_key": "REPLACE_WITH_YOUR_RESTRICTED_API_KEY"
   },
   "kick": {
-    "client_id": "REPLACE_WITH_CLIENT_ID",
-    "client_secret": "",
+    "client_id": "REPLACE_WITH_YOUR_CLIENT_ID",
+    "client_secret": "REPLACE_WITH_YOUR_CLIENT_SECRET",
     "access_token": "",
-    "broadcaster_id": "REPLACE_WITH_NUMERIC_USER_ID",
-    "webhook_url": "https://chat.example.com/webhooks/kick",
+    "refresh_token": "",
+    "broadcaster_id": "",
+    "webhook_url": "https://YOUR_PUBLIC_HOST/webhooks/kick",
+    "redirect_uri": "http://localhost:8789/oauth/kick/callback",
     "listen": "127.0.0.1:8788"
+  },
+  "twitch": {
+    "client_id": "REPLACE_WITH_YOUR_CLIENT_ID",
+    "client_secret": "REPLACE_WITH_YOUR_CLIENT_SECRET",
+    "access_token": "",
+    "refresh_token": "",
+    "user_id": "",
+    "user_login": "",
+    "redirect_uri": "http://localhost:8790/oauth/twitch/callback",
+    "channel": ""
   },
   "log_file": "",
   "timestamps": true,

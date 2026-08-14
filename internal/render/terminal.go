@@ -51,6 +51,8 @@ func (t *Terminal) Render(m chat.Message) error {
 	label := "YT"
 	if m.Platform == chat.PlatformKick {
 		label = "KICK"
+	} else if m.Platform == chat.PlatformTwitch {
+		label = "TW"
 	}
 	bs := []string{}
 	for _, b := range m.Badges {
@@ -85,6 +87,8 @@ func (t *Terminal) Render(m chat.Message) error {
 		c := "\x1b[31m"
 		if m.Platform == chat.PlatformKick {
 			c = "\x1b[32m"
+		} else if m.Platform == chat.PlatformTwitch {
+			c = "\x1b[35m"
 		}
 		pl = c + pl + "\x1b[0m"
 	}

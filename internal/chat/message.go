@@ -11,6 +11,7 @@ type Platform string
 const (
 	PlatformYouTube Platform = "youtube"
 	PlatformKick    Platform = "kick"
+	PlatformTwitch  Platform = "twitch"
 )
 
 type EventType string
@@ -78,7 +79,7 @@ func (m Message) Validate() error {
 	if m.ID == "" {
 		return errors.New("message ID is required")
 	}
-	if m.Platform != PlatformYouTube && m.Platform != PlatformKick {
+	if m.Platform != PlatformYouTube && m.Platform != PlatformKick && m.Platform != PlatformTwitch {
 		return errors.New("unsupported platform")
 	}
 	if m.Timestamp.IsZero() {
