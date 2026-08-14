@@ -77,3 +77,19 @@ func TestSecretInputTrimsSurroundingWhitespace(t *testing.T) {
 		t.Fatalf("secret input was not normalized: %q", got)
 	}
 }
+
+func TestKickInstructionsExplainPortalWebhookSourceOfTruth(t *testing.T) {
+	c := config.Defaults()
+	text := kickInstructions(c)
+	for _, want := range []string{
+		"http://localhost:8789/oauth/kick/callback",
+		"Enter that same portal webhook URL below as kick.webhook_url",
+		"does not send it in the Kick event-subscription request",
+		"Changing the JSON value alone does not change Kick's webhook destination",
+		"streamchat kick subscribe",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Kick instructions missing %q:\n%s", want, text)
+		}
+	}
+}

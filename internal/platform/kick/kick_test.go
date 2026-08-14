@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net/http"
@@ -139,6 +140,40 @@ func TestGracefulShutdown(t *testing.T) {
 	cancel()
 	if e := s.Run(ctx, nil); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestSubscriptionUsesPortalWebhookWithoutSendingLocalURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/events/subscriptions" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer access-token" {
+			t.Fatalf("unexpected authorization header")
+		}
+		payload, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err = json.Unmarshal(payload, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["method"] != "webhook" || body["broadcaster_user_id"] != float64(123) {
+			t.Fatalf("unexpected subscription body: %s", payload)
+		}
+		for key := range body {
+			if strings.Contains(strings.ToLower(key), "url") || strings.Contains(strings.ToLower(key), "callback") {
+				t.Fatalf("subscription request must use the developer-portal webhook, got field %q", key)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	client := SubscriptionClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
+	if _, err := client.Do(context.Background(), http.MethodPost, "123"); err != nil {
+		t.Fatal(err)
 	}
 }
 

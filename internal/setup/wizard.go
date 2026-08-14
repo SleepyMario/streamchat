@@ -198,18 +198,7 @@ Streamchat requests public videos.list and liveChatMessages.list data. No OAuth 
 }
 
 func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
-	fmt.Fprintln(w.Out, `Kick delivers official chat.message.sent events to a verified webhook.
-
-1. Sign in to Kick, enable 2FA, and create an app at https://kick.com/settings/developer
-2. A Client ID identifies the app. A Client Secret authenticates it and must remain private.
-3. Register this exact OAuth redirect URI in the app settings:
-   `+c.Kick.RedirectURI+`
-4. Configure a publicly reachable HTTPS webhook whose path is /webhooks/kick.
-   Streamchat listens locally on 127.0.0.1:8788 and handles /webhooks/kick.
-   Kick cannot reach 127.0.0.1; use a trusted HTTPS tunnel or reverse proxy so
-   https://your-host.example/webhooks/kick maps to http://127.0.0.1:8788/webhooks/kick.
-
-Streamchat requests user:read (to obtain your broadcaster user ID) and events:subscribe (to create the chat webhook subscription). It does not request chat write or moderation access.`)
+	fmt.Fprintln(w.Out, kickInstructions(*c))
 	var err error
 	c.Kick.ClientID = strings.TrimSpace(c.Kick.ClientID)
 	c.Kick.ClientSecret = strings.TrimSpace(c.Kick.ClientSecret)
@@ -221,7 +210,7 @@ Streamchat requests user:read (to obtain your broadcaster user ID) and events:su
 	if err != nil {
 		return err
 	}
-	c.Kick.WebhookURL, err = w.value("Public HTTPS webhook URL ending in /webhooks/kick", c.Kick.WebhookURL, false)
+	c.Kick.WebhookURL, err = w.value("Webhook URL configured in the Kick developer portal (must end in /webhooks/kick)", c.Kick.WebhookURL, false)
 	if err != nil {
 		return err
 	}
@@ -247,8 +236,34 @@ Streamchat requests user:read (to obtain your broadcaster user ID) and events:su
 	c.Kick.BroadcasterID = id
 	fmt.Fprintf(w.Out, "Authorized as Kick user %s (broadcaster user ID %s). Streamchat resolved this ID automatically.\n", name, id)
 	cl := kick.SubscriptionClient{HTTP: w.HTTP, BaseURL: c.Kick.APIBaseURL, AccessToken: c.Kick.AccessToken}
-	_, err = cl.Do(ctx, http.MethodPost, id)
-	return err
+	if _, err = cl.Do(ctx, http.MethodPost, id); err != nil {
+		return err
+	}
+	fmt.Fprintln(w.Out, "Kick event subscription created. Delivery uses the webhook URL in the Kick developer portal; the local kick.webhook_url value was not sent.")
+	return nil
+}
+
+func kickInstructions(c config.Config) string {
+	return `Kick delivers official chat.message.sent events to a verified webhook.
+
+1. Sign in to Kick, enable 2FA, and create an app at https://kick.com/settings/developer
+2. A Client ID identifies the app. A Client Secret authenticates it and must remain private.
+3. Register this exact OAuth redirect URI in the app settings:
+   ` + c.Kick.RedirectURI + `
+4. In the Kick developer portal, configure a publicly reachable HTTPS webhook
+   whose path is /webhooks/kick.
+   Streamchat listens locally on 127.0.0.1:8788 and handles /webhooks/kick.
+   Kick cannot reach 127.0.0.1; use a trusted HTTPS tunnel or reverse proxy so
+   https://your-host.example/webhooks/kick maps to http://127.0.0.1:8788/webhooks/kick.
+5. Enter that same portal webhook URL below as kick.webhook_url.
+   This local value is for validation and operator reference.
+   Streamchat does not send it in the Kick event-subscription request.
+   Changing the JSON value alone does not change Kick's webhook destination.
+
+After changing the webhook URL in the Kick developer portal, run:
+  streamchat kick subscribe
+
+Streamchat requests user:read (to obtain your broadcaster user ID) and events:subscribe (to create the chat webhook subscription). It does not request chat write or moderation access.`
 }
 
 func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {

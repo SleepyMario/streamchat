@@ -447,6 +447,11 @@ func check(args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "%-8s %s\n", d.DisplayName+":", status)
 	}
+	if c.Kick.WebhookURL != "" {
+		fmt.Fprintf(out, "Kick URL: %s (must match the webhook URL in the Kick developer portal)\n", c.Kick.WebhookURL)
+		fmt.Fprintln(out, "          This local value is not sent to Kick; changing it alone does not change the destination.")
+		fmt.Fprintln(out, "          After changing the portal URL, run: streamchat kick subscribe")
+	}
 	relayStatus := "not configured"
 	if c.Client.ServerURL != "" && c.RelayAuthToken != "" {
 		relayStatus = "configured for " + c.Client.ServerURL

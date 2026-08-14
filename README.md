@@ -15,7 +15,7 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 | Platform | What Streamchat needs | Where to get it | Setup command |
 | --- | --- | --- | --- |
 | YouTube | A Google Cloud API key restricted to YouTube Data API v3; a live URL or video ID when running | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` |
-| Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe`, and a public HTTPS webhook ending in `/webhooks/kick` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
+| Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
 | Twitch | A Twitch app Client ID and Client Secret and a browser-created user access/refresh token with only `user:read:chat`; a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [EventSub chat authentication](https://dev.twitch.tv/docs/chat/authenticating/) | `streamchat setup twitch` |
 
 No real-looking credentials are included in this repository.
@@ -68,6 +68,12 @@ streamchat serve --config /etc/streamchat/config.json
 
 The default listen address is `127.0.0.1:8788`. An explicit loopback or private IP is accepted; wildcard and public-IP binds are rejected. Streamchat serves plain HTTP/WebSocket only. The VPS must terminate public TLS and forward only `/webhooks/kick` to the utility VM. Do not expose `/relay` through that public proxy. A private encrypted network such as ZeroTier can carry `ws://` relay traffic directly.
 
+In the Kick developer portal, configure the application webhook as `https://streamchat.sleepymario.com/webhooks/kick` (or the equivalent public URL for another deployment), and keep `kick.webhook_url` set to that same value. The local JSON field is only a validated operator reference: Streamchat does not transmit it when creating an event subscription, so changing the JSON alone does not change Kick's destination. After changing the webhook URL in the developer portal, run:
+
+```sh
+streamchat kick subscribe
+```
+
 Main-machine configuration can be merged into the existing user config:
 
 ```json
@@ -114,7 +120,9 @@ Kick requires an application created in Developer settings. Its Client ID identi
 
 The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens.
 
-Kick sends events only to a publicly reachable HTTPS webhook configured for the app. In server/client mode, a trusted TLS reverse proxy forwards only `/webhooks/kick` to the private address running `streamchat serve`. In legacy local-only mode, a tunnel or reverse proxy can still map the public webhook to `http://127.0.0.1:8788/webhooks/kick`.
+Kick sends events only to the publicly reachable HTTPS webhook configured in the Kick developer application. `kick.webhook_url` must match that portal setting, but Streamchat does not send the local value in the `events/subscriptions` request; `streamchat kick subscribe` creates `method=webhook` subscriptions using the destination already held by Kick. Changing only the local JSON does not update that destination. After changing the portal URL, run `streamchat kick subscribe`.
+
+In server/client mode, a trusted TLS reverse proxy forwards only `/webhooks/kick` to the private address running `streamchat serve`. In legacy local-only mode, a tunnel or reverse proxy can still map the public webhook to `http://127.0.0.1:8788/webhooks/kick`.
 
 Webhook verification remains fail-closed. Streamchat verifies Kick's RSA/SHA-256 signature over the documented message ID, timestamp, and raw body, enforces freshness/body limits, and deduplicates deliveries.
 

@@ -115,3 +115,26 @@ func TestEmptyConfigCheck(t *testing.T) {
 		t.Fatalf("%d %s", c, err.String())
 	}
 }
+
+func TestConfigCheckExplainsKickPortalWebhookRelationship(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	c := config.Defaults()
+	c.Kick.WebhookURL = "https://streamchat.sleepymario.com/webhooks/kick"
+	if err := config.Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := run([]string{"config", "check", "--config", p}, &out, &errw); code != 0 {
+		t.Fatalf("%d %s", code, errw.String())
+	}
+	for _, want := range []string{
+		"https://streamchat.sleepymario.com/webhooks/kick",
+		"must match the webhook URL in the Kick developer portal",
+		"local value is not sent to Kick",
+		"streamchat kick subscribe",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("config check missing %q:\n%s", want, out.String())
+		}
+	}
+}
