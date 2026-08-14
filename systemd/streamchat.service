@@ -1,5 +1,5 @@
 [Unit]
-Description=Streamchat live chat merger
+Description=Streamchat Kick webhook and relay server
 After=network-online.target
 Wants=network-online.target
 
@@ -7,10 +7,11 @@ Wants=network-online.target
 Type=simple
 User=streamchat
 Group=streamchat
-EnvironmentFile=/etc/streamchat/streamchat.env
-ExecStart=/usr/local/bin/streamchat run --kick-listen 127.0.0.1:8788 --timestamps --no-color
+EnvironmentFile=-/etc/streamchat/streamchat.env
+ExecStart=/usr/bin/streamchat serve --config /etc/streamchat/config.json
 Restart=on-failure
 RestartSec=5s
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

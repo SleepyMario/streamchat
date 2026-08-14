@@ -43,6 +43,7 @@ install -d \
 	"${package_root}/DEBIAN" \
 	"${package_root}/usr/bin" \
 	"${package_root}/usr/share/doc/${package}/examples" \
+	"${package_root}/usr/share/doc/${package}/examples/systemd" \
 	"${dist_dir}"
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -57,6 +58,8 @@ install -m 0644 LICENSE "${package_root}/usr/share/doc/${package}/LICENSE"
 install -m 0644 LICENSE "${package_root}/usr/share/doc/${package}/copyright"
 install -m 0644 examples/config.example.json \
 	"${package_root}/usr/share/doc/${package}/examples/config.example.json"
+install -m 0644 systemd/streamchat.service \
+	"${package_root}/usr/share/doc/${package}/examples/systemd/streamchat.service"
 
 installed_size=$(du -sk "${package_root}/usr" | awk '{print $1}')
 cat >"${package_root}/DEBIAN/control" <<EOF

@@ -19,6 +19,9 @@ type Config struct {
 	YouTube           YouTube `json:"youtube"`
 	Kick              Kick    `json:"kick"`
 	Twitch            Twitch  `json:"twitch"`
+	Server            Server  `json:"server"`
+	Client            Client  `json:"client"`
+	RelayAuthToken    string  `json:"relay_auth_token,omitempty"`
 	LogFile           string  `json:"log_file,omitempty"`
 	Timestamps        bool    `json:"timestamps,omitempty"`
 	NoColor           bool    `json:"no_color,omitempty"`
@@ -67,11 +70,21 @@ type Twitch struct {
 	WebSocketURL string `json:"-"`
 }
 
+type Server struct {
+	Listen        string `json:"listen,omitempty"`
+	WebSocketPath string `json:"websocket_path,omitempty"`
+}
+
+type Client struct {
+	ServerURL string `json:"server_url,omitempty"`
+}
+
 func Defaults() Config {
 	return Config{
 		YouTube:   YouTube{BaseURL: "https://www.googleapis.com/youtube/v3"},
 		Kick:      Kick{Listen: "127.0.0.1:8788", RedirectURI: "http://localhost:8789/oauth/kick/callback", APIBaseURL: "https://api.kick.com/public/v1", OAuthBaseURL: "https://id.kick.com", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute},
 		Twitch:    Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
+		Server:    Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		QueueSize: 256, DuplicateCapacity: 10000,
 	}
 }
@@ -141,6 +154,12 @@ func applyDefaults(c *Config) {
 	}
 	if c.Twitch.WebSocketURL == "" {
 		c.Twitch.WebSocketURL = d.Twitch.WebSocketURL
+	}
+	if c.Server.Listen == "" {
+		c.Server.Listen = d.Server.Listen
+	}
+	if c.Server.WebSocketPath == "" {
+		c.Server.WebSocketPath = d.Server.WebSocketPath
 	}
 	if c.QueueSize == 0 {
 		c.QueueSize = d.QueueSize
@@ -218,11 +237,15 @@ func ApplyEnv(c *Config, get func(string) string) {
 	set("STREAMCHAT_TWITCH_USER_LOGIN", &c.Twitch.UserLogin)
 	set("STREAMCHAT_TWITCH_REDIRECT_URI", &c.Twitch.RedirectURI)
 	set("STREAMCHAT_TWITCH_CHANNEL", &c.Twitch.Channel)
+	set("STREAMCHAT_SERVER_LISTEN", &c.Server.Listen)
+	set("STREAMCHAT_SERVER_WEBSOCKET_PATH", &c.Server.WebSocketPath)
+	set("STREAMCHAT_CLIENT_SERVER_URL", &c.Client.ServerURL)
+	set("STREAMCHAT_RELAY_AUTH_TOKEN", &c.RelayAuthToken)
 	set("STREAMCHAT_LOG_FILE", &c.LogFile)
 }
 
 func (c Config) HasUsablePlatform() bool {
-	return c.YouTube.APIKey != "" || c.YouTube.AccessToken != "" || (c.Kick.AccessToken != "" && c.Kick.WebhookURL != "") || (c.Twitch.ClientID != "" && c.Twitch.AccessToken != "")
+	return c.YouTube.APIKey != "" || c.YouTube.AccessToken != "" || (c.Kick.AccessToken != "" && c.Kick.WebhookURL != "") || (c.Twitch.ClientID != "" && c.Twitch.AccessToken != "") || (c.Client.ServerURL != "" && c.RelayAuthToken != "")
 }
 
 func (c Config) Validate(mode string) error {
@@ -257,6 +280,38 @@ func (c Config) Validate(mode string) error {
 			return errors.New("kick.webhook_url path must be /webhooks/kick")
 		}
 	}
+	serverHost, _, err := net.SplitHostPort(c.Server.Listen)
+	if err != nil {
+		return errors.New("server.listen must be a host:port address")
+	}
+	serverIP := net.ParseIP(serverHost)
+	if serverHost != "localhost" && (serverIP == nil || (!serverIP.IsLoopback() && !serverIP.IsPrivate())) {
+		return errors.New("server.listen must use localhost, a loopback IP, or a private IP")
+	}
+	if c.Server.WebSocketPath == "" || c.Server.WebSocketPath[0] != '/' || strings.ContainsAny(c.Server.WebSocketPath, "?#") {
+		return errors.New("server.websocket_path must be an absolute path without a query or fragment")
+	}
+	if c.Server.WebSocketPath == "/" || c.Server.WebSocketPath == "/healthz" || c.Server.WebSocketPath == "/webhooks/kick" {
+		return errors.New("server.websocket_path conflicts with a reserved endpoint")
+	}
+	if c.Client.ServerURL != "" {
+		u, e := url.Parse(c.Client.ServerURL)
+		if e != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("client.server_url must be an absolute ws:// or wss:// URL without credentials, query, or fragment")
+		}
+		if u.Path == "" || u.Path == "/" {
+			return errors.New("client.server_url must include the WebSocket endpoint path")
+		}
+	}
+	if c.RelayAuthToken != "" && (len(c.RelayAuthToken) < 32 || strings.TrimSpace(c.RelayAuthToken) != c.RelayAuthToken) {
+		return errors.New("relay_auth_token must contain at least 32 non-whitespace characters")
+	}
+	if mode == "serve" && c.RelayAuthToken == "" {
+		return errors.New("relay_auth_token is required for streamchat serve")
+	}
+	if mode == "run" && c.Client.ServerURL != "" && c.RelayAuthToken == "" {
+		return errors.New("relay_auth_token is required when client.server_url is configured")
+	}
 	if mode == "youtube" && (c.YouTube.VideoID == "" || (c.YouTube.APIKey == "" && c.YouTube.AccessToken == "")) {
 		return errors.New("YouTube needs a live URL/video ID and a configured API key; run: streamchat setup youtube")
 	}
@@ -283,6 +338,7 @@ func Redacted(c Config) Config {
 	r.Twitch.ClientSecret = Redact(c.Twitch.ClientSecret)
 	r.Twitch.AccessToken = Redact(c.Twitch.AccessToken)
 	r.Twitch.RefreshToken = Redact(c.Twitch.RefreshToken)
+	r.RelayAuthToken = Redact(c.RelayAuthToken)
 	return r
 }
 

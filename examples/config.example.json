@@ -22,6 +22,14 @@
     "redirect_uri": "http://localhost:8790/oauth/twitch/callback",
     "channel": ""
   },
+  "server": {
+    "listen": "127.0.0.1:8788",
+    "websocket_path": "/relay"
+  },
+  "client": {
+    "server_url": ""
+  },
+  "relay_auth_token": "",
   "log_file": "",
   "timestamps": true,
   "no_color": false,

@@ -67,11 +67,12 @@ func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 	c.Kick.ClientSecret = "KICK-VERY-SECRET"
 	c.Kick.AccessToken = "KICK-TOKEN"
 	c.Twitch.RefreshToken = "TWITCH-REFRESH"
+	c.RelayAuthToken = "RELAY-VERY-SECRET"
 	b, err := RedactedJSON(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"YT-VERY-SECRET", "KICK-VERY-SECRET", "KICK-TOKEN", "TWITCH-REFRESH"} {
+	for _, secret := range []string{"YT-VERY-SECRET", "KICK-VERY-SECRET", "KICK-TOKEN", "TWITCH-REFRESH", "RELAY-VERY-SECRET"} {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("secret leaked: %s", secret)
 		}
@@ -105,5 +106,62 @@ func TestInvalid(t *testing.T) {
 	c.QueueSize = -1
 	if c.Validate("check") == nil {
 		t.Fatal("expected invalid")
+	}
+}
+
+func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
+	c := Defaults()
+	if c.Server.Listen != "127.0.0.1:8788" || c.Server.WebSocketPath != "/relay" {
+		t.Fatalf("unsafe relay defaults: %+v", c.Server)
+	}
+	ApplyEnv(&c, func(key string) string {
+		switch key {
+		case "STREAMCHAT_SERVER_LISTEN":
+			return "10.20.30.40:8788"
+		case "STREAMCHAT_SERVER_WEBSOCKET_PATH":
+			return "/streamchat"
+		case "STREAMCHAT_CLIENT_SERVER_URL":
+			return "ws://10.20.30.40:8788/streamchat"
+		case "STREAMCHAT_RELAY_AUTH_TOKEN":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return ""
+		}
+	})
+	if err := c.Validate("serve"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate("run"); err != nil {
+		t.Fatal(err)
+	}
+	if !c.HasUsablePlatform() {
+		t.Fatal("remote relay is not considered usable")
+	}
+}
+
+func TestRelayConfigurationRejectsPublicBindURLSecretsAndMissingToken(t *testing.T) {
+	tests := []func(*Config){
+		func(c *Config) { c.Server.Listen = "0.0.0.0:8788" },
+		func(c *Config) { c.Server.Listen = "203.0.113.10:8788" },
+		func(c *Config) { c.Server.WebSocketPath = "/webhooks/kick" },
+		func(c *Config) { c.Client.ServerURL = "wss://token@example.com/relay" },
+		func(c *Config) { c.Client.ServerURL = "wss://example.com/relay?token=secret" },
+		func(c *Config) { c.RelayAuthToken = "too-short" },
+	}
+	for i, mutate := range tests {
+		c := Defaults()
+		c.RelayAuthToken = "0123456789abcdef0123456789abcdef"
+		mutate(&c)
+		if err := c.Validate("check"); err == nil {
+			t.Fatalf("case %d was accepted", i)
+		}
+	}
+	c := Defaults()
+	if err := c.Validate("serve"); err == nil {
+		t.Fatal("serve accepted a missing authentication token")
+	}
+	c.Client.ServerURL = "ws://127.0.0.1:8788/relay"
+	if err := c.Validate("run"); err == nil {
+		t.Fatal("run accepted a missing authentication token")
 	}
 }

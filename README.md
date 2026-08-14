@@ -32,6 +32,61 @@ streamchat config check
 
 `run` activates configured platforms through the internal platform registry. If a configured YouTube or Twitch target is missing, Streamchat asks for the live URL/video ID or channel name rather than asking for a numeric platform ID.
 
+## Minimal server/client mode
+
+For an always-on Kick webhook, run `streamchat serve` on a utility VM and let the interactive machine connect to it. This first server mode relays only new Kick messages; it has no history, database, or outgoing-chat support.
+
+```text
+Kick → public VPS HTTPS reverse proxy → utility VM streamchat serve
+                                          ↓ private WebSocket (for example ZeroTier)
+                                      main machine streamchat run
+```
+
+Generate one shared token and store the same value in private mode-`0600` configuration files on both machines:
+
+```sh
+openssl rand -hex 32
+```
+
+Utility VM configuration (`/etc/streamchat/config.json` in the systemd example):
+
+```json
+{
+  "server": {
+    "listen": "10.147.0.10:8788",
+    "websocket_path": "/relay"
+  },
+  "relay_auth_token": "PASTE_THE_SHARED_RANDOM_TOKEN_HERE"
+}
+```
+
+Start it with:
+
+```sh
+streamchat serve --config /etc/streamchat/config.json
+```
+
+The default listen address is `127.0.0.1:8788`. An explicit loopback or private IP is accepted; wildcard and public-IP binds are rejected. Streamchat serves plain HTTP/WebSocket only. The VPS must terminate public TLS and forward only `/webhooks/kick` to the utility VM. Do not expose `/relay` through that public proxy. A private encrypted network such as ZeroTier can carry `ws://` relay traffic directly.
+
+Main-machine configuration can be merged into the existing user config:
+
+```json
+{
+  "client": {
+    "server_url": "ws://10.147.0.10:8788/relay"
+  },
+  "relay_auth_token": "PASTE_THE_SHARED_RANDOM_TOKEN_HERE"
+}
+```
+
+Then run the usual client command:
+
+```sh
+streamchat run
+```
+
+The client sends the token only in the WebSocket `Authorization: Bearer` header, never in the URL. When a remote server URL is configured, `run` consumes relayed Kick messages instead of opening the local Kick webhook listener; configured YouTube and Twitch adapters still run normally. The legacy local-only `streamchat kick serve` command remains available.
+
 The older expert commands remain available:
 
 ```sh
@@ -59,7 +114,7 @@ Kick requires an application created in Developer settings. Its Client ID identi
 
 The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens.
 
-Kick sends events only to a publicly reachable HTTPS webhook configured for the app. Streamchat deliberately listens on `127.0.0.1:8788`; that address is not reachable by Kick. A trusted HTTPS tunnel or reverse proxy must map, for example, `https://chat.example/webhooks/kick` to `http://127.0.0.1:8788/webhooks/kick`. Only `/webhooks/kick` needs forwarding.
+Kick sends events only to a publicly reachable HTTPS webhook configured for the app. In server/client mode, a trusted TLS reverse proxy forwards only `/webhooks/kick` to the private address running `streamchat serve`. In legacy local-only mode, a tunnel or reverse proxy can still map the public webhook to `http://127.0.0.1:8788/webhooks/kick`.
 
 Webhook verification remains fail-closed. Streamchat verifies Kick's RSA/SHA-256 signature over the documented message ID, timestamp, and raw body, enforces freshness/body limits, and deduplicates deliveries.
 
@@ -95,6 +150,9 @@ Advanced environment variables:
 - YouTube: `STREAMCHAT_YOUTUBE_API_KEY`, `STREAMCHAT_YOUTUBE_ACCESS_TOKEN`, `STREAMCHAT_YOUTUBE_VIDEO_ID`
 - Kick: `STREAMCHAT_KICK_CLIENT_ID`, `STREAMCHAT_KICK_CLIENT_SECRET`, `STREAMCHAT_KICK_ACCESS_TOKEN`, `STREAMCHAT_KICK_REFRESH_TOKEN`, `STREAMCHAT_KICK_BROADCASTER_ID`, `STREAMCHAT_KICK_WEBHOOK_URL`, `STREAMCHAT_KICK_REDIRECT_URI`, `STREAMCHAT_KICK_LISTEN`
 - Twitch: `STREAMCHAT_TWITCH_CLIENT_ID`, `STREAMCHAT_TWITCH_CLIENT_SECRET`, `STREAMCHAT_TWITCH_ACCESS_TOKEN`, `STREAMCHAT_TWITCH_REFRESH_TOKEN`, `STREAMCHAT_TWITCH_USER_ID`, `STREAMCHAT_TWITCH_USER_LOGIN`, `STREAMCHAT_TWITCH_REDIRECT_URI`, `STREAMCHAT_TWITCH_CHANNEL`
+- Server: `STREAMCHAT_SERVER_LISTEN`, `STREAMCHAT_SERVER_WEBSOCKET_PATH`
+- Client: `STREAMCHAT_CLIENT_SERVER_URL`
+- Relay authentication: `STREAMCHAT_RELAY_AUTH_TOKEN`
 - Output: `STREAMCHAT_LOG_FILE`
 
 See `examples/config.example.json` for the manual JSON shape. Environment-provided access tokens are used in memory and are not written back during refresh.
@@ -106,6 +164,7 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/platform/youtube`: official Data/Live Streaming API adapter
 - `internal/platform/kick`: OAuth, subscriptions, verified webhook receiver
 - `internal/platform/twitch`: OAuth/API support and EventSub WebSocket adapter
+- `internal/relay`: authenticated in-memory WebSocket broadcast server/client
 - `internal/setup`: interactive, safely rerunnable setup wizard
 - `internal/config`: JSON/env/defaults, atomic writer, validation, redaction
 - `internal/aggregate`: bounded chronological merge and duplicate cache
@@ -132,7 +191,9 @@ make deb
 sudo apt install ./dist/streamchat_<version>_amd64.deb
 ```
 
-The version is derived from the exact Git tag, or from the commit date and hash when the commit is untagged. Set `VERSION=1.2.3 make deb` to override it for a release build. The package contains a statically linked `/usr/bin/streamchat`, the README and license, and the example configuration under `/usr/share/doc/streamchat/examples/`. It has no Go or libc runtime dependency; only `ca-certificates` is required for trusted HTTPS connections to the platform APIs.
+The version is derived from the exact Git tag, or from the commit date and hash when the commit is untagged. Set `VERSION=1.2.3 make deb` to override it for a release build. The package contains a statically linked `/usr/bin/streamchat`, the README and license, and configuration/systemd examples under `/usr/share/doc/streamchat/examples/`. It has no Go or libc runtime dependency; only `ca-certificates` is required for trusted HTTPS connections to the platform APIs.
+
+The example unit runs as the dedicated `streamchat` user and reads `/etc/streamchat/config.json`; it does not embed secrets. Create the service account and private configuration directory before installing the example as a real unit.
 
 ## License
 

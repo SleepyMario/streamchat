@@ -22,6 +22,7 @@ import (
 	platformreg "github.com/SleepyMario/streamchat/internal/platform"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
+	"github.com/SleepyMario/streamchat/internal/relay"
 	"github.com/SleepyMario/streamchat/internal/render"
 	"github.com/SleepyMario/streamchat/internal/setup"
 )
@@ -32,6 +33,10 @@ const usage = `Streamchat reads and merges live chat from YouTube, Kick, and Twi
 Start here:
   streamchat setup                 Configure one or more services interactively
   streamchat run                   Read all configured chat targets
+
+Server/client mode:
+  streamchat serve                 Receive verified Kick webhooks and relay them
+  streamchat run                   Connect to the configured Streamchat server
 
 Useful commands:
   streamchat setup youtube|kick|twitch
@@ -93,6 +98,8 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 		e = runPlatforms(ctx, "youtube", args[1:], in, out, errw)
 	case "run":
 		e = runPlatforms(ctx, "run", args[1:], in, out, errw)
+	case "serve":
+		e = serve(ctx, args[1:], out)
 	case "kick":
 		if len(args) < 2 {
 			e = errors.New("choose 'kick serve' or 'kick subscribe'")
@@ -137,6 +144,7 @@ func finish(e error, errw io.Writer) int {
 
 type opts struct {
 	config, log, video, key, token, broadcaster, listen, webhook, twitchChannel string
+	serverListen, websocketPath, serverURL                                      string
 	timestamps, noColor                                                         bool
 }
 
@@ -153,6 +161,9 @@ func flags(name string, args []string) (opts, config.Config, error) {
 	fs.StringVar(&o.listen, "kick-listen", "", "Kick loopback listen address")
 	fs.StringVar(&o.webhook, "kick-webhook-url", "", "public Kick HTTPS webhook URL")
 	fs.StringVar(&o.twitchChannel, "twitch-channel", "", "Twitch channel name or URL")
+	fs.StringVar(&o.serverListen, "server-listen", "", "private server listen address")
+	fs.StringVar(&o.websocketPath, "server-websocket-path", "", "server WebSocket endpoint path")
+	fs.StringVar(&o.serverURL, "server-url", "", "remote Streamchat ws:// or wss:// endpoint")
 	fs.BoolVar(&o.timestamps, "timestamps", false, "show timestamps")
 	fs.BoolVar(&o.noColor, "no-color", false, "disable color")
 	if e := fs.Parse(args); e != nil {
@@ -191,6 +202,15 @@ func flags(name string, args []string) (opts, config.Config, error) {
 			return o, c, e
 		}
 	}
+	if o.serverListen != "" {
+		c.Server.Listen = o.serverListen
+	}
+	if o.websocketPath != "" {
+		c.Server.WebSocketPath = o.websocketPath
+	}
+	if o.serverURL != "" {
+		c.Client.ServerURL = o.serverURL
+	}
 	if o.timestamps {
 		c.Timestamps = true
 	}
@@ -211,6 +231,13 @@ func mustSetTarget(c *config.Config, name, value string) error {
 func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader, out, errw io.Writer) error {
 	o, c, e := flags(mode, args)
 	if e != nil {
+		return e
+	}
+	validationMode := "check"
+	if mode == "run" {
+		validationMode = "run"
+	}
+	if e = c.Validate(validationMode); e != nil {
 		return e
 	}
 	if mode == "run" && c.Twitch.ClientID != "" && c.Twitch.AccessToken != "" {
@@ -249,10 +276,48 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 	if e != nil {
 		return e
 	}
+	if mode == "run" && c.Client.ServerURL != "" {
+		adapters = useRemoteServer(adapters, c)
+	}
 	if len(adapters) == 0 {
-		return errors.New("no runnable chat target is configured. Run 'streamchat setup' or supply --youtube-video/--twitch-channel")
+		return errors.New("no runnable chat target is configured. Run 'streamchat setup', configure client.server_url, or supply --youtube-video/--twitch-channel")
 	}
 	return runAdapters(ctx, adapters, c, out, errw)
+}
+
+func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
+	local := adapters[:0]
+	for _, adapter := range adapters {
+		if adapter.Name() != "kick" {
+			local = append(local, adapter)
+		}
+	}
+	return append(local, relay.NewClient(c.Client.ServerURL, c.RelayAuthToken))
+}
+
+func serve(ctx context.Context, args []string, out io.Writer) error {
+	_, c, err := flags("serve", args)
+	if err != nil {
+		return err
+	}
+	if err = c.Validate("serve"); err != nil {
+		return err
+	}
+	publicKey := []byte(kick.OfficialPublicKeyPEM)
+	if c.Kick.PublicKeyPEM != "" {
+		publicKey = []byte(c.Kick.PublicKeyPEM)
+	}
+	key, err := kick.ParsePublicKey(publicKey)
+	if err != nil {
+		return err
+	}
+	messages := make(chan chat.Message, c.QueueSize)
+	webhook := kick.NewServer("", key, messages)
+	webhook.MaxBody = c.Kick.MaxBodyBytes
+	webhook.MaxAge = c.Kick.MaxAge
+	server := relay.NewServer(c.Server.Listen, c.Server.WebSocketPath, c.RelayAuthToken, webhook.Handler())
+	fmt.Fprintf(out, "Streamchat server listening on %s (Kick webhook /webhooks/kick, relay %s)\n", c.Server.Listen, c.Server.WebSocketPath)
+	return server.Run(ctx, messages)
 }
 
 func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, out, errw io.Writer) error {
@@ -382,6 +447,11 @@ func check(args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "%-8s %s\n", d.DisplayName+":", status)
 	}
+	relayStatus := "not configured"
+	if c.Client.ServerURL != "" && c.RelayAuthToken != "" {
+		relayStatus = "configured for " + c.Client.ServerURL
+	}
+	fmt.Fprintf(out, "%-8s %s\n", "Server:", relayStatus)
 	return nil
 }
 
@@ -506,7 +576,7 @@ func persistKickTokens(path string, v config.Kick) error {
 
 func safeError(e error) string {
 	s := e.Error()
-	for _, marker := range []string{"access_token=", "refresh_token=", "client_secret=", "Authorization: Bearer ", "Authorization: OAuth "} {
+	for _, marker := range []string{"access_token=", "refresh_token=", "client_secret=", "relay_auth_token=", "Authorization: Bearer ", "Authorization: OAuth "} {
 		start := 0
 		for start < len(s) {
 			low := strings.ToLower(s[start:])

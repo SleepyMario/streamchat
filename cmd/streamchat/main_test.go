@@ -23,7 +23,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") {
 		t.Fatal(out.String())
 	}
 }
@@ -57,10 +57,31 @@ func TestRunMultipleAdapters(t *testing.T) {
 	}
 }
 
+func TestRemoteServerReplacesLocalKickAdapter(t *testing.T) {
+	c := config.Defaults()
+	c.Client.ServerURL = "ws://127.0.0.1:8788/relay"
+	c.RelayAuthToken = "0123456789abcdef0123456789abcdef"
+	adapters := []chat.Adapter{
+		fakeAdapter{name: "youtube"},
+		fakeAdapter{name: "kick"},
+		fakeAdapter{name: "twitch"},
+	}
+	got := useRemoteServer(adapters, c)
+	names := make([]string, 0, len(got))
+	for _, adapter := range got {
+		names = append(names, adapter.Name())
+	}
+	if strings.Join(names, ",") != "youtube,twitch,server" {
+		t.Fatalf("unexpected adapters: %v", names)
+	}
+}
+
 func TestSafeErrorRedactsSecrets(t *testing.T) {
-	s := safeError(errors.New("request?access_token=secret-token&client_secret=secret-client next"))
-	if strings.Contains(s, "secret-token") || strings.Contains(s, "secret-client") {
-		t.Fatal(s)
+	s := safeError(errors.New("request?access_token=secret-token&client_secret=secret-client relay_auth_token=raw-relay-secret Authorization: Bearer header-relay-secret next"))
+	for _, secret := range []string{"secret-token", "secret-client", "raw-relay-secret", "header-relay-secret"} {
+		if strings.Contains(s, secret) {
+			t.Fatal(s)
+		}
 	}
 }
 
@@ -70,6 +91,7 @@ func TestConfigShowRedactsEverySecret(t *testing.T) {
 	c.YouTube.APIKey = "youtube-private"
 	c.Kick.ClientSecret = "kick-private"
 	c.Twitch.AccessToken = "twitch-private"
+	c.RelayAuthToken = "relay-private"
 	if err := config.Save(p, c); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +99,7 @@ func TestConfigShowRedactsEverySecret(t *testing.T) {
 	if code := run([]string{"config", "show", "--config", p}, &out, &errw); code != 0 {
 		t.Fatalf("%d %s", code, errw.String())
 	}
-	for _, s := range []string{"youtube-private", "kick-private", "twitch-private"} {
+	for _, s := range []string{"youtube-private", "kick-private", "twitch-private", "relay-private"} {
 		if strings.Contains(out.String(), s) {
 			t.Fatalf("leaked %s", s)
 		}
