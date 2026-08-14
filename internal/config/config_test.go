@@ -29,6 +29,20 @@ func TestLoadPrecedenceAndRedaction(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesLegacyYouTubeRedirectURI(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"youtube":{"redirect_uri":"http://localhost:8791/oauth/youtube/callback"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.YouTube.RedirectURI != "http://127.0.0.1:8791" {
+		t.Fatalf("legacy redirect was not migrated: %s", c.YouTube.RedirectURI)
+	}
+}
+
 func TestSaveCreatesPrivateFileAndRoundTripsMergedConfig(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "nested", "streamchat", "config.json")
 	c := Defaults()
@@ -114,6 +128,9 @@ func TestInvalid(t *testing.T) {
 
 func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
 	c := Defaults()
+	if c.YouTube.RedirectURI != "http://127.0.0.1:8791" {
+		t.Fatalf("unexpected YouTube redirect URI: %s", c.YouTube.RedirectURI)
+	}
 	if c.Server.Listen != "127.0.0.1:8788" || c.Server.WebSocketPath != "/relay" || c.Storage.SQLitePath != "/var/lib/streamchat/streamchat.db" {
 		t.Fatalf("unsafe relay defaults: %+v", c.Server)
 	}

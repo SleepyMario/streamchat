@@ -27,6 +27,8 @@ type Request struct {
 
 type Result struct{ Code, Verifier string }
 
+type callback struct{ code, state, oauthErr string }
+
 func randomURLSafe(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -58,6 +60,31 @@ func AuthorizationURL(r Request, state, verifier string) (string, error) {
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+func callbackHandler(path, state string, ch chan<- callback) http.Handler {
+	if path == "" {
+		path = "/"
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(path, func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.URL.Path != path {
+			http.Error(w, "invalid callback", http.StatusBadRequest)
+			return
+		}
+		v := callback{code: req.URL.Query().Get("code"), state: req.URL.Query().Get("state"), oauthErr: req.URL.Query().Get("error")}
+		if v.state != state {
+			http.Error(w, "invalid OAuth state", http.StatusBadRequest)
+			return
+		}
+		select {
+		case ch <- v:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "<!doctype html><title>Streamchat</title><p>%s</p>", html.EscapeString("Authorization received. You may close this tab."))
+	})
+	return mux
 }
 
 func Authorize(ctx context.Context, r Request, out io.Writer, open func(string) error) (Result, error) {
@@ -92,27 +119,8 @@ func Authorize(ctx context.Context, r Request, out io.Writer, open func(string) 
 		return Result{}, fmt.Errorf("start OAuth callback on %s: %w", u.Host, err)
 	}
 	defer ln.Close()
-	type callback struct{ code, state, oauthErr string }
 	ch := make(chan callback, 1)
-	mux := http.NewServeMux()
-	mux.HandleFunc(u.Path, func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodGet || req.URL.Path != u.Path {
-			http.Error(w, "invalid callback", http.StatusBadRequest)
-			return
-		}
-		v := callback{code: req.URL.Query().Get("code"), state: req.URL.Query().Get("state"), oauthErr: req.URL.Query().Get("error")}
-		if v.state != state {
-			http.Error(w, "invalid OAuth state", http.StatusBadRequest)
-			return
-		}
-		select {
-		case ch <- v:
-		default:
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, "<!doctype html><title>Streamchat</title><p>%s</p>", html.EscapeString("Authorization received. You may close this tab."))
-	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: callbackHandler(u.Path, state, ch), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	defer func() {
 		c, cancel := context.WithTimeout(context.Background(), time.Second)

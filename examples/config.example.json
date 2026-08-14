@@ -5,7 +5,7 @@
     "client_secret": "",
     "access_token": "",
     "refresh_token": "",
-    "redirect_uri": "http://localhost:8791/oauth/youtube/callback",
+    "redirect_uri": "http://127.0.0.1:8791",
     "video_id": ""
   },
   "kick": {

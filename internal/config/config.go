@@ -89,9 +89,11 @@ type Storage struct {
 	SQLitePath string `json:"sqlite_path,omitempty"`
 }
 
+const legacyYouTubeRedirectURI = "http://localhost:8791/oauth/youtube/callback"
+
 func Defaults() Config {
 	return Config{
-		YouTube:   YouTube{BaseURL: "https://youtube.googleapis.com/youtube/v3", RedirectURI: "http://localhost:8791/oauth/youtube/callback"},
+		YouTube:   YouTube{BaseURL: "https://youtube.googleapis.com/youtube/v3", RedirectURI: "http://127.0.0.1:8791"},
 		Kick:      Kick{Listen: "127.0.0.1:8788", RedirectURI: "http://localhost:8789/oauth/kick/callback", APIBaseURL: "https://api.kick.com/public/v1", OAuthBaseURL: "https://id.kick.com", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute},
 		Twitch:    Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
 		Server:    Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
@@ -136,7 +138,7 @@ func applyDefaults(c *Config) {
 	if c.YouTube.BaseURL == "" {
 		c.YouTube.BaseURL = d.YouTube.BaseURL
 	}
-	if c.YouTube.RedirectURI == "" {
+	if c.YouTube.RedirectURI == "" || c.YouTube.RedirectURI == legacyYouTubeRedirectURI {
 		c.YouTube.RedirectURI = d.YouTube.RedirectURI
 	}
 	if c.Kick.Listen == "" {
