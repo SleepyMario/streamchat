@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/SleepyMario/streamchat/internal/command"
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
@@ -26,6 +27,7 @@ const (
 	defaultHeight        = 24
 	displayMessageLimit  = 500
 	statusLineCount      = 3
+	maxSuggestionRows    = 5
 	clockRefreshInterval = time.Minute
 	enterAlternateScreen = "\x1b[?1049h\x1b[2J\x1b[H"
 	leaveAlternateScreen = "\x1b[0m\x1b[?1049l"
@@ -63,6 +65,7 @@ type Screen struct {
 	visible       bool
 	images        emote.Backend
 	transientRows int
+	drawnSuggest  int
 	nextImageKey  uint64
 }
 
@@ -71,6 +74,8 @@ type screenLayout struct {
 	topSeparatorRow    int
 	chatTop            int
 	chatBottom         int
+	suggestionTop      int
+	suggestionBottom   int
 	bottomSeparatorRow int
 	inputRow           int
 }
@@ -84,7 +89,7 @@ func newScreen(out io.Writer, width, height func() int) *Screen {
 }
 
 func newScreenWithBackend(out io.Writer, width, height func() int, images emote.Backend) *Screen {
-	return &Screen{out: out, width: width, height: height, now: func() time.Time { return time.Now().In(time.Local) }, target: "NONE", images: images}
+	return &Screen{out: out, width: width, height: height, now: func() time.Time { return time.Now().In(time.Local) }, editor: NewEditor(command.Streamchat()), target: "NONE", images: images}
 }
 
 func (s *Screen) Start() error {
@@ -131,9 +136,24 @@ func (s *Screen) Feed(r rune) Event {
 	defer s.mu.Unlock()
 	event, changed := s.editor.Feed(r)
 	if changed && s.visible {
-		_ = s.redrawInputLocked()
+		_ = s.redrawEditorLocked()
 	}
 	return event
+}
+
+func (s *Screen) DismissSuggestions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.editor.DismissSuggestions() && s.visible {
+		_ = s.redrawEditorLocked()
+	}
+}
+
+func (s *Screen) HasSuggestions() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	suggestions, _ := s.editor.Suggestions()
+	return len(suggestions) > 0
 }
 
 func (s *Screen) SetTarget(command string) {
@@ -293,6 +313,9 @@ func (s *Screen) redrawViewLocked() error {
 			return err
 		}
 	}
+	if err := s.drawSuggestionsLocked(width, height); err != nil {
+		return err
+	}
 	if err := s.drawInputLocked(width, height); err != nil {
 		return err
 	}
@@ -306,11 +329,12 @@ func (s *Screen) redrawChatLocked() error {
 	for index := range s.messages {
 		s.messages[index].leadingRows = 0
 	}
-	layout := layoutForHeight(height)
+	layout := s.layoutLocked(height)
+	baseLayout := layoutForHeight(height)
 	if err := s.setChatRegionLocked(height); err != nil {
 		return err
 	}
-	for row := layout.chatTop; row > 0 && row <= layout.chatBottom; row++ {
+	for row := layout.chatTop; row > 0 && row <= baseLayout.chatBottom; row++ {
 		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K", row); err != nil {
 			return err
 		}
@@ -319,6 +343,9 @@ func (s *Screen) redrawChatLocked() error {
 		if err := s.appendChatLocked([]byte(s.renderedForDisplayLocked(message).Text), height); err != nil {
 			return err
 		}
+	}
+	if err := s.drawSuggestionsLocked(width, height); err != nil {
+		return err
 	}
 	if err := s.drawInputLocked(width, height); err != nil {
 		return err
@@ -387,6 +414,50 @@ func (w screenWriter) Write(p []byte) (int, error) {
 
 func (s *Screen) redrawInputLocked() error {
 	return s.drawInputLocked(s.terminalWidth(), s.terminalHeight())
+}
+
+func (s *Screen) redrawEditorLocked() error {
+	width, height := s.terminalWidth(), s.terminalHeight()
+	if rows := s.suggestionRowsLocked(height); rows != s.drawnSuggest {
+		return s.redrawChatLocked()
+	}
+	if err := s.drawSuggestionsLocked(width, height); err != nil {
+		return err
+	}
+	return s.drawInputLocked(width, height)
+}
+
+func (s *Screen) drawSuggestionsLocked(width, height int) error {
+	suggestions, selected := s.editor.Suggestions()
+	layout := s.layoutLocked(height)
+	rows := 0
+	if layout.suggestionTop > 0 {
+		rows = layout.suggestionBottom - layout.suggestionTop + 1
+	}
+	s.drawnSuggest = rows
+	if rows <= 0 {
+		return nil
+	}
+	start := 0
+	if selected >= rows {
+		start = selected - rows + 1
+	}
+	if start+rows > len(suggestions) {
+		start = max(len(suggestions)-rows, 0)
+	}
+	for index := 0; index < rows; index++ {
+		candidateIndex := start + index
+		marker := "  "
+		if candidateIndex == selected {
+			marker = "> "
+		}
+		line := fitWidth(marker+suggestions[candidateIndex], max(width, 1))
+		row := layout.suggestionTop + index
+		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", row, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Screen) drawInputLocked(width, height int) error {
@@ -481,7 +552,7 @@ func statusValue(value string) string {
 }
 
 func (s *Screen) setChatRegionLocked(height int) error {
-	layout := layoutForHeight(height)
+	layout := s.layoutLocked(height)
 	if layout.chatTop > 0 && layout.chatTop < layout.chatBottom {
 		_, err := fmt.Fprintf(s.out, "\x1b[%d;%dr", layout.chatTop, layout.chatBottom)
 		return err
@@ -491,7 +562,7 @@ func (s *Screen) setChatRegionLocked(height int) error {
 }
 
 func (s *Screen) appendChatLocked(p []byte, height int) error {
-	layout := layoutForHeight(height)
+	layout := s.layoutLocked(height)
 	if layout.chatTop == 0 {
 		return nil
 	}
@@ -518,7 +589,7 @@ func (s *Screen) refreshImagesLocked(width, height int) {
 	if s.images == nil {
 		return
 	}
-	layout := layoutForHeight(height)
+	layout := s.layoutLocked(height)
 	capacity := layout.chatBottom - layout.chatTop + 1
 	if capacity <= 0 {
 		s.images.Update(nil)
@@ -602,6 +673,31 @@ func layoutForHeight(height int) screenLayout {
 		layout.chatBottom = layout.bottomSeparatorRow - 1
 	}
 	return layout
+}
+
+func (s *Screen) layoutLocked(height int) screenLayout {
+	layout := layoutForHeight(height)
+	rows := s.suggestionRowsLocked(height)
+	if rows == 0 {
+		return layout
+	}
+	layout.suggestionBottom = layout.chatBottom
+	layout.suggestionTop = layout.suggestionBottom - rows + 1
+	layout.chatBottom = layout.suggestionTop - 1
+	return layout
+}
+
+func (s *Screen) suggestionRowsLocked(height int) int {
+	suggestions, _ := s.editor.Suggestions()
+	if len(suggestions) == 0 {
+		return 0
+	}
+	layout := layoutForHeight(height)
+	capacity := layout.chatBottom - layout.chatTop + 1
+	if capacity <= 1 {
+		return 0
+	}
+	return min(len(suggestions), maxSuggestionRows, capacity-1)
 }
 
 func (s *Screen) terminalWidth() int {
@@ -716,6 +812,10 @@ func (t *Terminal) Next() (Event, error) {
 	r, _, err := t.reader.ReadRune()
 	if err != nil {
 		return Event{}, err
+	}
+	if r == 0x1b && t.reader.Buffered() == 0 {
+		t.screen.DismissSuggestions()
+		return Event{}, nil
 	}
 	return t.screen.Feed(r), nil
 }

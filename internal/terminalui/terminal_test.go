@@ -465,6 +465,9 @@ func TestScreenVerySmallHeightDegradesWithoutInvalidRegion(t *testing.T) {
 			if err := screen.Start(); err != nil {
 				t.Fatal(err)
 			}
+			for _, r := range "/c" {
+				screen.Feed(r)
+			}
 			if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Line: "small chat"}); err != nil {
 				t.Fatal(err)
 			}
@@ -684,6 +687,112 @@ func TestScreenConcurrentIncomingAndCleanIsRaceSafe(t *testing.T) {
 	wg.Wait()
 	if len(screen.messages) > displayMessageLimit {
 		t.Fatalf("buffer exceeded limit: %d", len(screen.messages))
+	}
+}
+
+func TestScreenSuggestionPopupStaysAboveInputAndSurvivesIncomingChat(t *testing.T) {
+	var output bytes.Buffer
+	height := 12
+	screen := newScreen(&output, func() int { return 32 }, func() int { return height })
+	screen.SetTarget("kick")
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "/cl" {
+		screen.Feed(r)
+	}
+	layout := screen.layoutLocked(height)
+	if layout.suggestionTop != 9 || layout.suggestionBottom != 10 || layout.chatBottom != 8 {
+		t.Fatalf("layout=%+v", layout)
+	}
+	raw := output.String()
+	if !strings.Contains(raw, "\x1b[9;1H\x1b[2K  clean") || !strings.Contains(raw, "\x1b[10;1H\x1b[2K  clear") {
+		t.Fatalf("suggestions not rendered in popup: %q", raw)
+	}
+	if !strings.Contains(raw, "\x1b[11;1H\x1b[2K"+strings.Repeat("-", 32)) || !strings.Contains(raw, "\x1b[12;1H\x1b[2K\x1b[36m[KICK]") {
+		t.Fatalf("fixed bottom layout missing: %q", raw)
+	}
+
+	output.Reset()
+	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Author: "viewer", Line: "incoming while completing"}); err != nil {
+		t.Fatal(err)
+	}
+	raw = output.String()
+	if !strings.Contains(raw, "\x1b[8;1H") || strings.Contains(raw, "\x1b[9;1H") || strings.Contains(raw, "\x1b[10;1H") {
+		t.Fatalf("incoming chat escaped its bounded region: %q", raw)
+	}
+	if screen.Text() != "/cl" || screen.target != "KICK" {
+		t.Fatalf("text=%q target=%q", screen.Text(), screen.target)
+	}
+}
+
+func TestScreenCleanAndResizeRedrawSuggestionsWithoutLosingInput(t *testing.T) {
+	var output bytes.Buffer
+	width, height := 36, 12
+	screen := newScreen(&output, func() int { return width }, func() int { return height })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Author: "viewer", Line: "before clean"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "/open " {
+		screen.Feed(r)
+	}
+	output.Reset()
+	if removed, err := screen.CleanAll(); err != nil || removed != 1 {
+		t.Fatalf("removed=%d error=%v", removed, err)
+	}
+	raw := output.String()
+	for _, candidate := range []string{"kick", "youtube", "twitch"} {
+		if !strings.Contains(raw, "  "+candidate) {
+			t.Fatalf("clean lost %q suggestion: %q", candidate, raw)
+		}
+	}
+	if screen.Text() != "/open " {
+		t.Fatalf("clean lost input: %q", screen.Text())
+	}
+
+	width, height = 24, 9
+	output.Reset()
+	screen.Redraw()
+	layout := screen.layoutLocked(height)
+	// A height of nine leaves one chat row at row five and suggestions at
+	// rows six through seven.
+	if layout.suggestionTop != 6 || layout.suggestionBottom != 7 || layout.chatTop != 5 || layout.chatBottom != 5 {
+		t.Fatalf("resized layout=%+v", layout)
+	}
+	raw = output.String()
+	if !strings.Contains(raw, "\x1b[6;1H\x1b[2K  kick") || !strings.Contains(raw, "\x1b[9;1H") || screen.Text() != "/open " {
+		t.Fatalf("resize redraw=%q text=%q", raw, screen.Text())
+	}
+}
+
+func TestTerminalEscapeDismissesSuggestionsAndArrowKeysNavigate(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 32 }, func() int { return 12 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "/cl" {
+		screen.Feed(r)
+	}
+	terminal := &Terminal{reader: bufio.NewReader(strings.NewReader("\x1b[B")), screen: screen}
+	for range 3 {
+		if _, err := terminal.Next(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, selected := screen.editor.Suggestions(); selected != 0 {
+		t.Fatalf("down selected=%d", selected)
+	}
+
+	terminal.reader = bufio.NewReader(strings.NewReader("\x1b"))
+	if _, err := terminal.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if suggestions, selected := screen.editor.Suggestions(); len(suggestions) != 0 || selected != -1 || screen.Text() != "/cl" {
+		t.Fatalf("suggestions=%v selected=%d text=%q", suggestions, selected, screen.Text())
 	}
 }
 

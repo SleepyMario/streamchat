@@ -1,6 +1,11 @@
 package terminalui
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/SleepyMario/streamchat/internal/command"
+)
 
 func feed(t *testing.T, editor *Editor, input string) Event {
 	t.Helper()
@@ -85,6 +90,140 @@ func TestEditorSubmitsModerationCommandsUnchanged(t *testing.T) {
 		event := feed(t, &editor, command+"\r")
 		if !event.Submit || event.Line != command {
 			t.Fatalf("command=%q event=%+v", command, event)
+		}
+	}
+}
+
+func autocompleteEditor() Editor {
+	return NewEditor(command.Streamchat())
+}
+
+func TestEditorTopLevelAutocompletePrefixes(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  []string
+	}{
+		{input: "/c", want: []string{"category", "clean", "clear"}},
+		{input: "/cl", want: []string{"clean", "clear"}},
+	} {
+		editor := autocompleteEditor()
+		feed(t, &editor, test.input)
+		got, selected := editor.Suggestions()
+		if !reflect.DeepEqual(got, test.want) || selected != -1 {
+			t.Fatalf("input=%q suggestions=%v selected=%d", test.input, got, selected)
+		}
+	}
+}
+
+func TestEditorSingleCandidateCompletesAndEntersHierarchy(t *testing.T) {
+	editor := autocompleteEditor()
+	feed(t, &editor, "/b\t")
+	if editor.Text() != "/ban " {
+		t.Fatalf("text=%q", editor.Text())
+	}
+	want := []string{"kick", "youtube", "twitch"}
+	if got, selected := editor.Suggestions(); !reflect.DeepEqual(got, want) || selected != -1 {
+		t.Fatalf("suggestions=%v selected=%d", got, selected)
+	}
+}
+
+func TestEditorHierarchicalSuggestions(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  []string
+	}{
+		{input: "/clear ", want: []string{"kick", "youtube", "twitch"}},
+		{input: "/open ", want: []string{"kick", "youtube", "twitch"}},
+		{input: "/clean ", want: []string{"streamchat", "kick"}},
+		{input: "/timeout y", want: []string{"youtube"}},
+	} {
+		editor := autocompleteEditor()
+		feed(t, &editor, test.input)
+		got, _ := editor.Suggestions()
+		if !reflect.DeepEqual(got, test.want) {
+			t.Fatalf("input=%q suggestions=%v", test.input, got)
+		}
+	}
+}
+
+func TestEditorSuggestionNavigationAndAcceptance(t *testing.T) {
+	editor := autocompleteEditor()
+	feed(t, &editor, "/cl")
+	feed(t, &editor, "\x1b[B")
+	if _, selected := editor.Suggestions(); selected != 0 {
+		t.Fatalf("down selected=%d", selected)
+	}
+	feed(t, &editor, "\x1b[B")
+	if _, selected := editor.Suggestions(); selected != 1 {
+		t.Fatalf("second down selected=%d", selected)
+	}
+	feed(t, &editor, "\x1b[A")
+	if _, selected := editor.Suggestions(); selected != 0 {
+		t.Fatalf("up selected=%d", selected)
+	}
+	feed(t, &editor, "\x1b[B")
+	event, changed := editor.Feed('\r')
+	if event.Submit || !changed || editor.Text() != "/clear " {
+		t.Fatalf("event=%+v changed=%t text=%q", event, changed, editor.Text())
+	}
+	if got, _ := editor.Suggestions(); !reflect.DeepEqual(got, []string{"kick", "youtube", "twitch"}) {
+		t.Fatalf("hierarchy after acceptance=%v", got)
+	}
+}
+
+func TestEditorEnterWithoutActiveSuggestionSubmitsNormally(t *testing.T) {
+	editor := autocompleteEditor()
+	event := feed(t, &editor, "/cl\r")
+	if !event.Submit || event.Line != "/cl" || editor.Text() != "" {
+		t.Fatalf("event=%+v text=%q", event, editor.Text())
+	}
+}
+
+func TestEditorDismissTypingAndBackspaceRecompute(t *testing.T) {
+	editor := autocompleteEditor()
+	feed(t, &editor, "/cl")
+	if !editor.DismissSuggestions() {
+		t.Fatal("suggestions were not dismissed")
+	}
+	if got, _ := editor.Suggestions(); len(got) != 0 {
+		t.Fatalf("dismissed suggestions=%v", got)
+	}
+	feed(t, &editor, "e")
+	if got, _ := editor.Suggestions(); !reflect.DeepEqual(got, []string{"clean", "clear"}) {
+		t.Fatalf("typing suggestions=%v", got)
+	}
+	feed(t, &editor, "a")
+	if got, _ := editor.Suggestions(); !reflect.DeepEqual(got, []string{"clean", "clear"}) {
+		t.Fatalf("filtered suggestions=%v", got)
+	}
+	feed(t, &editor, "n")
+	if got, _ := editor.Suggestions(); !reflect.DeepEqual(got, []string{"clean"}) {
+		t.Fatalf("single suggestion=%v", got)
+	}
+	feed(t, &editor, "\x7f")
+	if got, _ := editor.Suggestions(); !reflect.DeepEqual(got, []string{"clean", "clear"}) {
+		t.Fatalf("backspace suggestions=%v", got)
+	}
+}
+
+func TestEditorBufferedEscapeDismissesWithoutSwallowingFollowingKey(t *testing.T) {
+	editor := autocompleteEditor()
+	feed(t, &editor, "/cl")
+	feed(t, &editor, "\x1b\x7f")
+	if editor.Text() != "/c" {
+		t.Fatalf("backspace after Escape was swallowed: %q", editor.Text())
+	}
+	if got, _ := editor.Suggestions(); !reflect.DeepEqual(got, []string{"category", "clean", "clear"}) {
+		t.Fatalf("backspace did not recompute suggestions: %v", got)
+	}
+}
+
+func TestEditorDoesNotSuggestRetiredOrFreeFormTokens(t *testing.T) {
+	for _, input := range []string{"/kk", "/title Some title", "/ban kick viewer", "/timeout kick viewer 10m"} {
+		editor := autocompleteEditor()
+		feed(t, &editor, input)
+		if got, _ := editor.Suggestions(); len(got) != 0 {
+			t.Fatalf("input=%q suggestions=%v", input, got)
 		}
 	}
 }
