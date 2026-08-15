@@ -49,8 +49,8 @@ Interactive commands:
   hello                            Send to the selected target
   /title New stream title          Update the Kick stream title
   /category Just Chatting          Update the Kick stream category
-  /ban USER                        Permanently ban a user from Kick chat
-  /timeout USER 10m                Temporarily timeout a user from Kick chat
+  /ban kick USER                   Permanently ban a user from Kick chat
+  /timeout kick USER 10m           Temporarily timeout a user from Kick chat
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
@@ -347,8 +347,9 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		})
 		targets.RegisterControl("title", outbound.ControlFunc(kickClient.Title))
 		targets.RegisterControl("category", outbound.ControlFunc(kickClient.Category))
-		targets.RegisterControl("ban", outbound.ControlFunc(kickClient.Ban))
-		targets.RegisterControl("timeout", outbound.ControlFunc(kickClient.Timeout))
+		moderation := newModerationControls(kickClient)
+		targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
+		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 		registerShutdownControls(targets)
 	}
 	return runAdapters(ctx, adapters, c, input, targets, out, errw)
@@ -736,16 +737,49 @@ func (s *kickOutboundSender) Category(ctx context.Context, argument string) (str
 	return "Category updated: " + category.Name, nil
 }
 
-func (s *kickOutboundSender) Ban(ctx context.Context, argument string) (string, error) {
+type moderationPlatform interface {
+	BanUser(context.Context, string) (string, error)
+	TimeoutUser(context.Context, string, string) (string, error)
+}
+
+type moderationControls struct {
+	platforms map[string]moderationPlatform
+}
+
+func newModerationControls(kickClient *kickOutboundSender) moderationControls {
+	return moderationControls{platforms: map[string]moderationPlatform{"kick": kickClient}}
+}
+
+func (m moderationControls) Ban(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
-	if len(fields) != 1 {
-		return "Usage: /ban USER", nil
+	if len(fields) != 2 {
+		return "Usage: /ban PLATFORM USER (supported: kick)", nil
 	}
+	provider, ok := m.platforms[strings.ToLower(fields[0])]
+	if !ok {
+		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick.", nil
+	}
+	return provider.BanUser(ctx, fields[1])
+}
+
+func (m moderationControls) Timeout(ctx context.Context, argument string) (string, error) {
+	fields := strings.Fields(argument)
+	if len(fields) != 3 {
+		return "Usage: /timeout PLATFORM USER DURATION (example: /timeout kick USER 10m)", nil
+	}
+	provider, ok := m.platforms[strings.ToLower(fields[0])]
+	if !ok {
+		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick.", nil
+	}
+	return provider.TimeoutUser(ctx, fields[1], fields[2])
+}
+
+func (s *kickOutboundSender) BanUser(ctx context.Context, username string) (string, error) {
 	var user kick.ModerationUser
 	err := s.withToken(ctx, func(accessToken string) error {
 		client := kick.ModerationClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
 		var err error
-		user, err = client.Ban(ctx, s.config.BroadcasterID, fields[0])
+		user, err = client.Ban(ctx, s.config.BroadcasterID, username)
 		return err
 	})
 	if err != nil {
@@ -754,25 +788,21 @@ func (s *kickOutboundSender) Ban(ctx context.Context, argument string) (string, 
 	return "Banned: " + user.Username, nil
 }
 
-func (s *kickOutboundSender) Timeout(ctx context.Context, argument string) (string, error) {
-	fields := strings.Fields(argument)
-	if len(fields) != 2 {
-		return "Usage: /timeout USER DURATION (for example, /timeout USER 10m)", nil
-	}
-	minutes, err := kick.ParseTimeoutDuration(fields[1])
+func (s *kickOutboundSender) TimeoutUser(ctx context.Context, username, duration string) (string, error) {
+	minutes, err := kick.ParseTimeoutDuration(duration)
 	if err != nil {
 		return "", err
 	}
 	var user kick.ModerationUser
 	err = s.withToken(ctx, func(accessToken string) error {
 		client := kick.ModerationClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
-		user, err = client.Timeout(ctx, s.config.BroadcasterID, fields[0], minutes)
+		user, err = client.Timeout(ctx, s.config.BroadcasterID, username, minutes)
 		return err
 	})
 	if err != nil {
 		return "", err
 	}
-	return "Timed out: " + user.Username + " for " + strings.ToLower(fields[1]), nil
+	return "Timed out: " + user.Username + " for " + strings.ToLower(duration), nil
 }
 
 func (s *kickOutboundSender) withToken(ctx context.Context, operation func(string) error) error {

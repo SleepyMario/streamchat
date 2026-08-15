@@ -80,7 +80,7 @@ func TestTargetLabel(t *testing.T) {
 }
 
 func TestEditorSubmitsModerationCommandsUnchanged(t *testing.T) {
-	for _, command := range []string{"/ban Viewer", "/timeout Viewer 10m"} {
+	for _, command := range []string{"/ban kick Viewer", "/timeout kick Viewer 10m"} {
 		var editor Editor
 		event := feed(t, &editor, command+"\r")
 		if !event.Submit || event.Line != command {

@@ -30,7 +30,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban USER") || !strings.Contains(out.String(), "/timeout USER 10m") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -211,18 +211,42 @@ func TestCategoryPrintsResolvedNameAfterKickConfirms(t *testing.T) {
 	}
 }
 
-func TestEmptyBanAndTimeoutPrintUsageWithoutAuthorization(t *testing.T) {
+func TestModerationCommandsRequireExplicitPlatform(t *testing.T) {
 	client := &kickOutboundSender{}
+	moderation := newModerationControls(client)
 	targets := outbound.New(map[string]outbound.Sender{"kk": client})
-	targets.RegisterControl("ban", outbound.ControlFunc(client.Ban))
-	targets.RegisterControl("timeout", outbound.ControlFunc(client.Timeout))
+	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
+	targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/ban\n/timeout user\n"), targets, &out, &errw, func() {})
-	if got := out.String(); !strings.Contains(got, "Usage: /ban USER") || !strings.Contains(got, "Usage: /timeout USER DURATION") {
+	runOutboundInput(context.Background(), strings.NewReader("/ban\n/ban user\n/timeout user 10m\n"), targets, &out, &errw, func() {})
+	if got := out.String(); strings.Count(got, "Usage: /ban PLATFORM USER") != 2 || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") {
 		t.Fatalf("output=%q", got)
 	}
 	if errw.Len() != 0 {
 		t.Fatalf("unexpected error=%q", errw.String())
+	}
+}
+
+func TestModerationRejectsUnsupportedPlatformWithoutAPIRequestOrTargetInference(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
+	moderation := newModerationControls(client)
+	sender := &recordingOutboundSender{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
+	targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/kk\n/ban user\n/timeout user 10m\n/ban foo user\n/timeout foo user 10m\n"), targets, &out, &errw, func() {})
+	if requests != 0 || len(sender.messages) != 0 {
+		t.Fatalf("API requests=%d chat=%v", requests, sender.messages)
+	}
+	if got := out.String(); !strings.Contains(got, "Usage: /ban PLATFORM USER") || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") || strings.Count(got, "Unsupported moderation platform: foo. Supported: kick.") != 2 {
+		t.Fatalf("output=%q", got)
+	}
+	if targets.Selected() != "kk" || errw.Len() != 0 {
+		t.Fatalf("selected=%q err=%q", targets.Selected(), errw.String())
 	}
 }
 
@@ -241,12 +265,13 @@ func TestModerationControlsSucceedAndNeverBecomeChat(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
+	moderation := newModerationControls(client)
 	sender := &recordingOutboundSender{}
 	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
-	targets.RegisterControl("ban", outbound.ControlFunc(client.Ban))
-	targets.RegisterControl("timeout", outbound.ControlFunc(client.Timeout))
+	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
+	targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/ban TargetUser\n/kk\n/timeout TargetUser 10m\nhello\n"), targets, &out, &errw, func() {})
+	runOutboundInput(context.Background(), strings.NewReader("/ban kick TargetUser\n/kk\n/timeout kick TargetUser 10m\nhello\n"), targets, &out, &errw, func() {})
 	if moderationRequests != 2 || !reflect.DeepEqual(sender.messages, []string{"hello"}) {
 		t.Fatalf("moderation=%d chat=%v", moderationRequests, sender.messages)
 	}
@@ -277,7 +302,8 @@ func TestModerationCommandDoesNotDeleteArchiveRows(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
-	if result, moderationErr := client.Ban(context.Background(), "targetuser"); moderationErr != nil || result != "Banned: targetuser" {
+	moderation := newModerationControls(client)
+	if result, moderationErr := moderation.Ban(context.Background(), "kick targetuser"); moderationErr != nil || result != "Banned: targetuser" {
 		t.Fatalf("result=%q err=%v", result, moderationErr)
 	}
 	stats, err := store.Stats(context.Background())
@@ -300,8 +326,9 @@ func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
+	moderation := newModerationControls(client)
 	targets := outbound.New(map[string]outbound.Sender{"kk": client})
-	targets.RegisterControl("ban", outbound.ControlFunc(client.Ban))
+	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writes := make(chan string, 2)
@@ -309,7 +336,7 @@ func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	go func() {
-		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban targetuser\n"), targets, channelWriter{writes: writes}, io.Discard)
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban kick targetuser\n"), targets, channelWriter{writes: writes}, io.Discard)
 	}()
 	select {
 	case line := <-writes:

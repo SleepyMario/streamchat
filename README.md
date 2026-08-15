@@ -60,11 +60,11 @@ Basic channel controls currently target Kick only and are independent of `/kk` s
 Basic moderation controls also currently target Kick only and are independent of `/kk` selection:
 
 ```text
-/ban USER
-/timeout USER 10m
+/ban kick USER
+/timeout kick USER 10m
 ```
 
-`/ban` permanently bans the resolved Kick user. `/timeout` accepts `s`, `m`, or `h` syntax but must resolve to the official API's whole-minute range of 1–10,080 minutes; for example, `10m`, `1h`, and `60s` are valid, while `1s` and `30s` are not. Kick may remove affected messages from visible chat. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
+The platform is always explicit and is not inferred from `/kk` or any future outbound target; only `kick` is currently supported. `/ban kick` permanently bans the resolved Kick user. `/timeout kick` accepts `s`, `m`, or `h` syntax but must resolve to the official API's whole-minute range of 1–10,080 minutes; for example, `10m`, `1h`, and `60s` are valid, while `1s` and `30s` are not. Kick may remove affected messages from visible chat. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
 
 Exit the interactive client cleanly with either command:
 
