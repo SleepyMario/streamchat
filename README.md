@@ -57,6 +57,15 @@ Basic channel controls currently target Kick only and are independent of `/kk` s
 
 `/title` updates the authenticated Kick channel after Kick confirms the request. `/category` accepts a positive numeric category ID or searches official Kick categories by name. A single case-insensitive exact match is preferred, a sole search result is accepted, and multiple plausible results are listed with IDs without changing the category.
 
+Exit the interactive client cleanly with either command:
+
+```text
+/exit
+/quit
+```
+
+Both commands work regardless of the selected outbound target, are never sent to chat, and apply only to `streamchat run`. They cancel active adapters so relay/WebSocket connections use their normal shutdown path before the client exits successfully.
+
 ## Server/client mode and archive
 
 Run `streamchat serve` on the utility VM and let the interactive machine connect to it. The server receives verified Kick webhooks, discovers and streams the authenticated YouTube account's active live chat, writes every accepted normalized Kick/YouTube event to SQLite, then relays it live. Twitch remains on the interactive client for now. There is no history replay. Kick chatback is sent directly from the interactive client to Kick's official API using its locally stored OAuth token; it does not pass through `/relay` and adds no public endpoint.

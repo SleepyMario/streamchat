@@ -42,12 +42,14 @@ Server/client mode:
   streamchat serve                 Ingest, archive, and relay Kick/YouTube chat
   streamchat run                   Connect to the configured Streamchat server
 
-Interactive Kick commands:
+Interactive commands:
   /kk                              Select Kick as the outbound target
   /kk hello                        Select Kick and send "hello"
   hello                            Send to the selected target
   /title New stream title          Update the Kick stream title
   /category Just Chatting          Update the Kick stream category
+  /exit                            Exit the interactive client cleanly
+  /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
 Title and category commands currently target Kick only.
 
@@ -338,6 +340,7 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		})
 		targets.RegisterControl("title", outbound.ControlFunc(kickClient.Title))
 		targets.RegisterControl("category", outbound.ControlFunc(kickClient.Category))
+		registerShutdownControls(targets)
 	}
 	return runAdapters(ctx, adapters, c, input, targets, out, errw)
 }
@@ -463,8 +466,22 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	defer cancel()
 	safeOut := &lockedWriter{writer: out}
 	safeErr := &lockedWriter{writer: errw}
+	var shutdownRequests <-chan struct{}
+	var inputDone <-chan struct{}
 	if in != nil && targets != nil {
-		go runOutboundInput(ctx, in, targets, safeOut, safeErr)
+		requests := make(chan struct{}, 1)
+		done := make(chan struct{})
+		shutdownRequests = requests
+		inputDone = done
+		go func() {
+			defer close(done)
+			runOutboundInput(ctx, in, targets, safeOut, safeErr, func() {
+				select {
+				case requests <- struct{}{}:
+				default:
+				}
+			})
+		}()
 	}
 	inputs := make([]<-chan chat.Message, 0, len(adapters))
 	errc := make(chan error, len(adapters))
@@ -490,6 +507,14 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	var firstAdapterError error
 	for remaining > 0 || merged != nil {
 		select {
+		case <-shutdownRequests:
+			cancel()
+			<-inputDone
+			for remaining > 0 {
+				<-errc
+				remaining--
+			}
+			return nil
 		case <-ctx.Done():
 			return nil
 		case er := <-adapterErrs:
@@ -538,12 +563,15 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	return w.writer.Write(p)
 }
 
-func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Session, out, errw io.Writer) {
+func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Session, out, errw io.Writer, requestShutdown func()) {
 	scanner := bufio.NewScanner(in)
 	for scanner.Scan() {
 		result, err := targets.Process(ctx, scanner.Text())
 		if err != nil {
-			if errors.Is(err, outbound.ErrNoTarget) {
+			if errors.Is(err, outbound.ErrShutdownRequested) {
+				requestShutdown()
+				return
+			} else if errors.Is(err, outbound.ErrNoTarget) {
 				fmt.Fprintln(errw, outbound.NoTargetInstruction)
 			} else if !errors.Is(err, context.Canceled) {
 				var controlErr *outbound.ControlError
@@ -563,6 +591,14 @@ func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Sessi
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(errw, "terminal input failed: %s\n", safeError(err))
 	}
+}
+
+func registerShutdownControls(targets *outbound.Session) {
+	shutdown := outbound.ControlFunc(func(context.Context, string) (string, error) {
+		return "", outbound.ErrShutdownRequested
+	})
+	targets.RegisterControl("exit", shutdown)
+	targets.RegisterControl("quit", shutdown)
 }
 
 func sanitizeLocalOutput(value string) string {

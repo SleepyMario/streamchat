@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -145,7 +146,7 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 
 func TestOutboundInputDisplaysNoTargetInstruction(t *testing.T) {
 	var errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), io.Discard, &errw)
+	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), io.Discard, &errw, func() {})
 	if got := strings.TrimSpace(errw.String()); got != outbound.NoTargetInstruction {
 		t.Fatalf("got %q", got)
 	}
@@ -156,7 +157,7 @@ func TestEmptyTitlePrintsUsageWithoutAuthorization(t *testing.T) {
 	targets := outbound.New(map[string]outbound.Sender{"kk": client})
 	targets.RegisterControl("title", outbound.ControlFunc(client.Title))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/title\n"), targets, &out, &errw)
+	runOutboundInput(context.Background(), strings.NewReader("/title\n"), targets, &out, &errw, func() {})
 	if got := strings.TrimSpace(out.String()); got != "Usage: /title NEW STREAM TITLE" {
 		t.Fatalf("output=%q", got)
 	}
@@ -179,7 +180,7 @@ func TestTitlePrintsSuccessOnlyAfterKickConfirms(t *testing.T) {
 	targets := outbound.New(map[string]outbound.Sender{"kk": client})
 	targets.RegisterControl("title", outbound.ControlFunc(client.Title))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/title New title\n"), targets, &out, &errw)
+	runOutboundInput(context.Background(), strings.NewReader("/title New title\n"), targets, &out, &errw, func() {})
 	if !confirmed || strings.TrimSpace(out.String()) != "Title updated: New title" || errw.Len() != 0 {
 		t.Fatalf("confirmed=%v out=%q err=%q", confirmed, out.String(), errw.String())
 	}
@@ -201,7 +202,7 @@ func TestCategoryPrintsResolvedNameAfterKickConfirms(t *testing.T) {
 	targets := outbound.New(map[string]outbound.Sender{"kk": client})
 	targets.RegisterControl("category", outbound.ControlFunc(client.Category))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/category Just Chatting\n"), targets, &out, &errw)
+	runOutboundInput(context.Background(), strings.NewReader("/category Just Chatting\n"), targets, &out, &errw, func() {})
 	if strings.TrimSpace(out.String()) != "Category updated: Just Chatting" || errw.Len() != 0 {
 		t.Fatalf("out=%q err=%q", out.String(), errw.String())
 	}
@@ -212,6 +213,56 @@ type recordingOutboundSender struct{ messages []string }
 func (s *recordingOutboundSender) Send(_ context.Context, message string) error {
 	s.messages = append(s.messages, message)
 	return nil
+}
+
+type shutdownAdapter struct{ stopped chan struct{} }
+
+func (a shutdownAdapter) Name() string { return "test" }
+func (a shutdownAdapter) Run(ctx context.Context, _ chan<- chat.Message) error {
+	<-ctx.Done()
+	close(a.stopped)
+	return nil
+}
+
+func TestInteractiveShutdownCommandsStopAdaptersAndDoNotSendChat(t *testing.T) {
+	for _, command := range []string{"exit", "quit"} {
+		for _, selected := range []bool{false, true} {
+			name := command + "_without_target"
+			if selected {
+				name = command + "_after_kick_selection"
+			}
+			t.Run(name, func(t *testing.T) {
+				sender := &recordingOutboundSender{}
+				targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+				registerShutdownControls(targets)
+				stopped := make(chan struct{})
+				c := config.Defaults()
+				var out, errw bytes.Buffer
+				input := "/" + command + "\nnot sent\n"
+				var wantMessages []string
+				wantTarget := ""
+				if selected {
+					input = "/kk\nhello\n" + input
+					wantMessages = []string{"hello"}
+					wantTarget = "kk"
+				}
+				if err := runAdapters(context.Background(), []chat.Adapter{shutdownAdapter{stopped: stopped}}, c, strings.NewReader(input), targets, &out, &errw); err != nil {
+					t.Fatalf("shutdown returned an error: %v", err)
+				}
+				select {
+				case <-stopped:
+				default:
+					t.Fatal("adapter was not stopped before shutdown returned")
+				}
+				if !reflect.DeepEqual(sender.messages, wantMessages) {
+					t.Fatalf("chat messages=%v", sender.messages)
+				}
+				if targets.Selected() != wantTarget || out.Len() != 0 || errw.Len() != 0 {
+					t.Fatalf("selected=%q out=%q err=%q", targets.Selected(), out.String(), errw.String())
+				}
+			})
+		}
+	}
 }
 
 func TestRemoteServerReplacesServerOwnedAdapters(t *testing.T) {

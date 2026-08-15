@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-var ErrNoTarget = errors.New("no outbound target selected")
+var (
+	ErrNoTarget          = errors.New("no outbound target selected")
+	ErrShutdownRequested = errors.New("interactive shutdown requested")
+)
 
 type ControlError struct{ Err error }
 
@@ -70,6 +73,9 @@ func (s *Session) Process(ctx context.Context, line string) (string, error) {
 		if control, ok := s.controls[command]; ok {
 			result, err := control.Execute(ctx, message)
 			if err != nil {
+				if errors.Is(err, ErrShutdownRequested) {
+					return "", err
+				}
 				return "", &ControlError{Err: err}
 			}
 			return result, nil
