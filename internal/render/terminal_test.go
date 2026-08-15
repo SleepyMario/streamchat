@@ -2,6 +2,9 @@ package render
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/gif"
 	"io"
 	"net/http"
 	"os"
@@ -67,7 +70,12 @@ func TestOlderKickRelayEmoteReachesCacheAndBecomesImage(t *testing.T) {
 		if request.URL.String() != "https://files.kick.com/emotes/1730755/fullsize" {
 			t.Fatalf("URL=%s", request.URL)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/gif"}}, Body: io.NopCloser(bytes.NewReader([]byte("GIF89a-streamchat")))}, nil
+		var asset bytes.Buffer
+		picture := image.NewPaletted(image.Rect(0, 0, 2, 2), color.Palette{color.Transparent, color.White})
+		if err := gif.Encode(&asset, picture, nil); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/gif"}}, Body: io.NopCloser(bytes.NewReader(asset.Bytes()))}, nil
 	})}
 	cache, err := emote.NewCache(emote.CacheOptions{Directory: directory, HTTP: client})
 	if err != nil {

@@ -26,7 +26,7 @@ func TestFormatTextUsesProviderNeutralResolver(t *testing.T) {
 		}
 		return "/cache/kick/7.img", true
 	})
-	if line.Text != "a    z" || len(line.Images) != 1 || line.Images[0].Column != 2 || line.Images[0].Width != 2 {
+	if line.Text != "a :WAVE: z" || line.GraphicalText != "a     z" || len(line.Images) != 1 || line.Images[0].Column != 2 || line.Images[0].Width != 3 {
 		t.Fatalf("unexpected image line: %+v", line)
 	}
 }

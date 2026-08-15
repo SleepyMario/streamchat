@@ -1,6 +1,7 @@
 package emote
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,21 @@ type UeberzugBackend struct {
 	socket       string
 	temporaryDir string
 	pid          int
+	debug        bool
+	trace        func(string)
+	stderrDone   <-chan struct{}
+	confirmed    map[string]Placement
+	sway         interface {
+		Correct(pid int, identifier string, expected int, requireNew bool) error
+		MoveRows(pid int, identifier string, rows int) (bool, error)
+		Forget(identifier string)
+	}
+}
+
+type UeberzugBackendOptions struct {
+	TerminalOutput io.Writer
+	Debug          bool
+	Trace          func(string)
 }
 
 func DetectUeberzug() (string, bool) {
@@ -50,6 +66,10 @@ func detectUeberzug(lookPath func(string) (string, error), getenv func(string) s
 }
 
 func NewUeberzugBackend(terminalOutput io.Writer) (*UeberzugBackend, error) {
+	return newUeberzugBackend(UeberzugBackendOptions{TerminalOutput: terminalOutput})
+}
+
+func newUeberzugBackend(options UeberzugBackendOptions) (*UeberzugBackend, error) {
 	executable, ok := DetectUeberzug()
 	if !ok {
 		return nil, errors.New("Überzug++ is unavailable")
@@ -59,21 +79,45 @@ func NewUeberzugBackend(terminalOutput io.Writer) (*UeberzugBackend, error) {
 		return nil, errors.New("create Überzug++ runtime directory")
 	}
 	pidFile := filepath.Join(temporaryDir, "pid")
-	arguments := []string{"layer", "--no-stdin", "--silent", "--pid-file", pidFile}
-	if output := ueberzugOutput(os.Getenv); output != "" {
-		arguments = append(arguments, "--output", output)
+	output := ueberzugOutput(os.Getenv)
+	sway, err := newSwayCorrector(output, os.Getenv, options.Trace)
+	if err != nil {
+		_ = os.RemoveAll(temporaryDir)
+		return nil, errors.New("prepare Sway overlay placement")
 	}
+	arguments := ueberzugArguments(pidFile, output, options.Debug)
 	command := exec.Command(executable, arguments...)
 	command.Env = replaceEnvironment(os.Environ(), "UEBERZUGPP_TMPDIR", temporaryDir)
 	command.Stdin = nil
-	if terminalOutput == nil {
-		terminalOutput = os.Stdout
+	if options.TerminalOutput == nil {
+		options.TerminalOutput = os.Stdout
 	}
-	command.Stdout = terminalOutput
-	command.Stderr = io.Discard
+	command.Stdout = options.TerminalOutput
+	var stderrRead, stderrWrite *os.File
+	var stderrDone chan struct{}
+	if options.Debug {
+		stderrRead, stderrWrite, err = os.Pipe()
+		if err != nil {
+			_ = os.RemoveAll(temporaryDir)
+			return nil, errors.New("capture Überzug++ stderr")
+		}
+		command.Stderr = stderrWrite
+		stderrDone = make(chan struct{})
+		go captureUeberzugStderr(stderrRead, options.Trace, stderrDone)
+	} else {
+		command.Stderr = io.Discard
+	}
+	traceUeberzug(options.Trace, "helper startup: executable=%s output=%s", filepath.Base(executable), ueberzugOutput(os.Getenv))
 	if err = command.Start(); err != nil {
+		if stderrWrite != nil {
+			_ = stderrWrite.Close()
+		}
+		waitUeberzugStderr(stderrDone)
 		_ = os.RemoveAll(temporaryDir)
 		return nil, errors.New("start Überzug++")
+	}
+	if stderrWrite != nil {
+		_ = stderrWrite.Close()
 	}
 	launcherDone := make(chan error, 1)
 	go func() {
@@ -85,12 +129,49 @@ func NewUeberzugBackend(terminalOutput io.Writer) (*UeberzugBackend, error) {
 		if pid > 0 {
 			stopDaemon(pid, socket)
 		}
+		waitUeberzugStderr(stderrDone)
+		captureUeberzugLog(temporaryDir, options.Trace)
 		_ = os.RemoveAll(temporaryDir)
 		return nil, err
 	}
-	backend := &UeberzugBackend{available: true, updates: make(chan []Placement, 1), stop: make(chan struct{}), done: make(chan struct{}), socket: socket, temporaryDir: temporaryDir, pid: pid}
+	traceUeberzug(options.Trace, "helper ready: pid=%d socket=%s", pid, filepath.Base(socket))
+	backend := &UeberzugBackend{available: true, updates: make(chan []Placement, 1), stop: make(chan struct{}), done: make(chan struct{}), socket: socket, temporaryDir: temporaryDir, pid: pid, debug: options.Debug, trace: options.Trace, stderrDone: stderrDone, confirmed: make(map[string]Placement), sway: sway}
 	go backend.run()
 	return backend, nil
+}
+
+func ueberzugArguments(pidFile, output string, debug bool) []string {
+	// Streamchat owns its persistent, content-validated asset cache. Disabling
+	// Überzug++'s resized derivative cache prevents an old two-cell preview
+	// from being reused after the requested terminal geometry changes.
+	arguments := []string{"layer", "--no-stdin", "--no-cache", "--pid-file", pidFile}
+	if !debug {
+		arguments = append(arguments, "--silent")
+	}
+	if output != "" {
+		arguments = append(arguments, "--output", output)
+	}
+	return arguments
+}
+
+func captureUeberzugStderr(reader *os.File, trace func(string), done chan<- struct{}) {
+	defer close(done)
+	defer reader.Close()
+	scanner := bufio.NewScanner(io.LimitReader(reader, 1<<20))
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	for scanner.Scan() {
+		traceUeberzug(trace, "helper stderr: %s", sanitizeUeberzugDiagnostic(scanner.Text()))
+	}
+}
+
+func waitUeberzugStderr(done <-chan struct{}) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+	}
 }
 
 func ueberzugOutput(getenv func(string) string) string {
@@ -162,6 +243,13 @@ func (b *UeberzugBackend) PID() int {
 	return b.pid
 }
 
+func (b *UeberzugBackend) Confirmed(identifier string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, ok := b.confirmed[identifier]
+	return ok && b.available && !b.closed
+}
+
 func (b *UeberzugBackend) clearPID() {
 	b.mu.Lock()
 	b.pid = 0
@@ -219,26 +307,38 @@ func (b *UeberzugBackend) run() {
 	active := make([]Placement, 0)
 	monitor := time.NewTicker(250 * time.Millisecond)
 	defer monitor.Stop()
+	monitorC := monitor.C
 	for {
 		select {
 		case placements := <-b.updates:
-			if err := sendUeberzugUpdate(b.socket, active, placements); err != nil {
-				b.fail(err)
+			if err := b.sendUpdate(active, placements); err != nil {
+				b.tracef("socket error: %s", err)
 				stopDaemon(b.PID(), b.socket)
+				waitUeberzugStderr(b.stderrDone)
+				b.captureFailureEvidence()
+				b.fail(err)
 				b.clearPID()
 				_ = os.RemoveAll(b.temporaryDir)
-				continue
+				return
 			}
 			active = placements
-		case <-monitor.C:
+			b.setConfirmed(placements)
+		case <-monitorC:
 			if !processAlive(b.PID()) {
+				pid := b.PID()
+				b.tracef("process disappearance: pid=%d", pid)
+				waitUeberzugStderr(b.stderrDone)
+				b.captureFailureEvidence()
 				b.fail(errors.New("Überzug++ helper exited"))
 				b.clearPID()
 				_ = os.RemoveAll(b.temporaryDir)
+				return
 			}
 		case <-b.stop:
-			_ = sendUeberzugUpdate(b.socket, active, nil)
+			_ = sendUeberzugUpdateWithTrace(b.socket, active, nil, b.trace)
+			b.tracef("helper shutdown requested: pid=%d", b.PID())
 			stopDaemon(b.PID(), b.socket)
+			waitUeberzugStderr(b.stderrDone)
 			b.clearPID()
 			_ = os.RemoveAll(b.temporaryDir)
 			return
@@ -246,10 +346,101 @@ func (b *UeberzugBackend) run() {
 	}
 }
 
+// Überzug++ 2.9's Wayland backend creates one XDG surface per add. On Sway,
+// submitting several adds in one burst can overlap its surface/config IPC and
+// corrupt a JSON response. Multi-output placement therefore submits and
+// verifies one surface at a time. Other backends retain the compact batch.
+func (b *UeberzugBackend) sendUpdate(old, next []Placement) error {
+	if b.sway == nil {
+		return sendUeberzugUpdateWithTrace(b.socket, old, next, b.trace)
+	}
+	removed, updated := placementChanges(old, next)
+	working := make(map[string]Placement, len(old)+len(updated))
+	for _, placement := range old {
+		if validPlacement(placement) {
+			working[placement.Identifier] = placement
+		}
+	}
+	for _, placement := range removed {
+		if err := sendUeberzugUpdateWithTrace(b.socket, []Placement{placement}, nil, b.trace); err != nil {
+			return err
+		}
+		b.sway.Forget(placement.Identifier)
+		delete(working, placement.Identifier)
+	}
+	for _, placement := range updated {
+		if previous, exists := working[placement.Identifier]; exists && rowOnlyPlacementChange(previous, placement) {
+			moved, err := b.sway.MoveRows(b.PID(), placement.Identifier, placement.Y-previous.Y)
+			if err != nil {
+				return err
+			}
+			if moved {
+				working[placement.Identifier] = placement
+				continue
+			}
+		}
+		if err := sendUeberzugUpdateWithTrace(b.socket, nil, []Placement{placement}, b.trace); err != nil {
+			return err
+		}
+		working[placement.Identifier] = placement
+		if err := b.sway.Correct(b.PID(), placement.Identifier, len(working), true); err != nil {
+			b.tracef("Sway correction error: %s", err)
+			return errors.New("correct Überzug++ Sway placement")
+		}
+	}
+	return nil
+}
+
+func rowOnlyPlacementChange(previous, next Placement) bool {
+	return previous.Identifier == next.Identifier &&
+		previous.Path == next.Path &&
+		previous.X == next.X &&
+		previous.Width == next.Width &&
+		previous.Height == next.Height &&
+		previous.Y != next.Y
+}
+
+func (b *UeberzugBackend) setConfirmed(placements []Placement) {
+	next := make(map[string]Placement, len(placements))
+	for _, placement := range placements {
+		if validPlacement(placement) {
+			next[placement.Identifier] = placement
+		}
+	}
+	b.mu.Lock()
+	changed := len(next) != len(b.confirmed)
+	if !changed {
+		for identifier, placement := range next {
+			if b.confirmed[identifier] != placement {
+				changed = true
+				break
+			}
+		}
+	}
+	b.confirmed = next
+	invalidation := b.invalidation
+	b.mu.Unlock()
+	if changed && invalidation != nil {
+		invalidation()
+	}
+}
+
+func (b *UeberzugBackend) tracef(format string, values ...any) {
+	traceUeberzug(b.trace, format, values...)
+}
+
+func (b *UeberzugBackend) captureFailureEvidence() {
+	if !b.debug {
+		return
+	}
+	captureUeberzugLog(b.temporaryDir, b.trace)
+}
+
 func (b *UeberzugBackend) fail(err error) {
 	b.mu.Lock()
 	wasAvailable := b.available
 	b.available = false
+	b.confirmed = make(map[string]Placement)
 	invalidation := b.invalidation
 	diagnostic := b.diagnostic
 	b.mu.Unlock()
@@ -262,6 +453,10 @@ func (b *UeberzugBackend) fail(err error) {
 }
 
 func sendUeberzugUpdate(socket string, old, next []Placement) error {
+	return sendUeberzugUpdateWithTrace(socket, old, next, nil)
+}
+
+func sendUeberzugUpdateWithTrace(socket string, old, next []Placement, trace func(string)) error {
 	removed, updated := placementChanges(old, next)
 	if len(removed) == 0 && len(updated) == 0 {
 		return nil
@@ -274,6 +469,7 @@ func sendUeberzugUpdate(socket string, old, next []Placement) error {
 	_ = connection.SetWriteDeadline(time.Now().Add(ueberzugSocketTimeout))
 	encoder := json.NewEncoder(connection)
 	for _, placement := range removed {
+		traceUeberzugPlacement(trace, "remove", placement)
 		if err = encoder.Encode(map[string]any{"action": "remove", "identifier": placement.Identifier}); err != nil {
 			return errors.New("remove Überzug++ image")
 		}
@@ -282,12 +478,89 @@ func sendUeberzugUpdate(socket string, old, next []Placement) error {
 		if placement.Identifier == "" || placement.Path == "" || placement.Width < 1 || placement.Height < 1 {
 			continue
 		}
+		traceUeberzugPlacement(trace, "add", placement)
 		command := map[string]any{"action": "add", "identifier": placement.Identifier, "path": placement.Path, "x": max(placement.X, 0), "y": max(placement.Y, 0), "max_width": placement.Width, "max_height": placement.Height}
 		if err = encoder.Encode(command); err != nil {
 			return errors.New("add Überzug++ image")
 		}
 	}
 	return nil
+}
+
+func traceUeberzugPlacement(trace func(string), action string, placement Placement) {
+	if trace == nil {
+		return
+	}
+	traceUeberzug(trace, "socket command: action=%s identifier=%s cache=%s x=%d y=%d max_width=%d max_height=%d", action, sanitizeUeberzugIdentifier(placement.Identifier), sanitizedCachePath(placement.Path), max(placement.X, 0), max(placement.Y, 0), placement.Width, placement.Height)
+}
+
+func traceUeberzug(trace func(string), format string, values ...any) {
+	if trace != nil {
+		trace(sanitizeUeberzugDiagnostic(fmt.Sprintf(format, values...)))
+	}
+}
+
+func sanitizeUeberzugIdentifier(value string) string {
+	var result strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			result.WriteRune(r)
+		}
+	}
+	if result.Len() == 0 {
+		return "invalid"
+	}
+	return result.String()
+}
+
+func sanitizedCachePath(path string) string {
+	base := filepath.Base(path)
+	provider := filepath.Base(filepath.Dir(path))
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	stem = strings.TrimSuffix(stem, ".static")
+	if !safeKey(stem) || !safeKey(provider) {
+		return "invalid"
+	}
+	return provider + "/" + base
+}
+
+func sanitizeUeberzugDiagnostic(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\t' {
+			return ' '
+		}
+		if r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.TrimSpace(value)
+	if len(value) > 2048 {
+		value = value[:2048] + "…"
+	}
+	return value
+}
+
+func captureUeberzugLog(directory string, trace func(string)) {
+	if trace == nil {
+		return
+	}
+	paths, _ := filepath.Glob(filepath.Join(directory, "ueberzugpp-*.log"))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if len(data) > 64<<10 {
+			data = data[len(data)-(64<<10):]
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = sanitizeUeberzugDiagnostic(line)
+			if line != "" {
+				traceUeberzug(trace, "helper log: %s", line)
+			}
+		}
+	}
 }
 
 // placementChanges preserves overlays that are still valid. Überzug++'s

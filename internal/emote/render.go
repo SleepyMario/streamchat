@@ -9,7 +9,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const inlineWidth = 2
+const inlineWidth = 3
 
 type Resolver func(chat.Platform, chat.Emote) (string, bool)
 
@@ -20,8 +20,9 @@ type InlineImage struct {
 }
 
 type Line struct {
-	Text   string
-	Images []InlineImage
+	Text          string
+	GraphicalText string
+	Images        []InlineImage
 }
 
 // FormatText replaces structured emote ranges with readable text or image
@@ -40,10 +41,11 @@ func FormatText(platform chat.Platform, text string, structured []chat.Emote, sa
 	runes := []rune(text)
 	cursor := 0
 	result := Line{}
-	var rendered strings.Builder
+	var readable, graphical strings.Builder
 	appendText := func(value string) {
 		value = sanitize(value)
-		rendered.WriteString(value)
+		readable.WriteString(value)
+		graphical.WriteString(value)
 	}
 	for _, item := range emotes {
 		if item.Start < cursor || item.Start < 0 || item.End < item.Start || item.End >= len(runes) {
@@ -51,15 +53,19 @@ func FormatText(platform chat.Platform, text string, structured []chat.Emote, sa
 		}
 		appendText(string(runes[cursor:item.Start]))
 		if path, ok := resolveImage(resolve, platform, item); ok {
-			result.Images = append(result.Images, InlineImage{Path: path, Column: runewidth.StringWidth(rendered.String()), Width: inlineWidth})
-			rendered.WriteString(strings.Repeat(" ", inlineWidth))
+			result.Images = append(result.Images, InlineImage{Path: path, Column: runewidth.StringWidth(graphical.String()), Width: inlineWidth})
+			readable.WriteString(fallback(item, sanitize))
+			graphical.WriteString(strings.Repeat(" ", inlineWidth))
 		} else {
 			appendText(fallback(item, sanitize))
 		}
 		cursor = item.End + 1
 	}
 	appendText(string(runes[cursor:]))
-	result.Text = rendered.String()
+	result.Text = readable.String()
+	if len(result.Images) > 0 {
+		result.GraphicalText = graphical.String()
+	}
 	return result
 }
 

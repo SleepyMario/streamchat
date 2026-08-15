@@ -97,7 +97,12 @@ func NewDefaultControllerWithOptions(options DefaultControllerOptions) *Controll
 	if options.Debug {
 		diagnostic, _ = newDiagnosticLog(cache.directory)
 	}
-	backend, err := NewUeberzugBackend(options.TerminalOutput)
+	trace := func(message string) {
+		if diagnostic != nil {
+			diagnostic.write("ueberzug: " + message)
+		}
+	}
+	backend, err := newUeberzugBackend(UeberzugBackendOptions{TerminalOutput: options.TerminalOutput, Debug: options.Debug, Trace: trace})
 	if err != nil {
 		controller := NewController(ControllerOptions{Mode: mode, Cache: cache})
 		controller.diagnostic = diagnostic
@@ -138,6 +143,14 @@ func (c *Controller) Resolve(platform chat.Platform, item chat.Emote) (string, b
 	switch state {
 	case CacheHit:
 		c.debugOnce(key+":hit", fmt.Sprintf("cache hit: provider=%s id=%s", platform, item.ID))
+		if ok {
+			staticPath, staticErr := staticAsset(path)
+			if staticErr != nil {
+				c.debugOnce(key+":static-failed", fmt.Sprintf("static preview failed: provider=%s id=%s error=%s", platform, item.ID, staticErr))
+				return "", false
+			}
+			path = staticPath
+		}
 	case CacheQueued:
 		c.debugOnce(key+":queued", fmt.Sprintf("download queued: provider=%s id=%s", platform, item.ID))
 	case CacheInvalid:
@@ -146,6 +159,16 @@ func (c *Controller) Resolve(platform chat.Platform, item chat.Emote) (string, b
 		c.debugOnce(key+":backoff", fmt.Sprintf("download retry deferred: provider=%s id=%s", platform, item.ID))
 	}
 	return path, ok
+}
+
+func (c *Controller) Confirmed(identifier string) bool {
+	if c == nil {
+		return false
+	}
+	if backend, ok := c.backend.(interface{ Confirmed(string) bool }); ok {
+		return backend.Confirmed(identifier)
+	}
+	return false
 }
 
 func (c *Controller) Available() bool {

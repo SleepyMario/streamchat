@@ -204,7 +204,7 @@ func (s *Screen) AppendMessage(message DisplayMessage) error {
 		return nil
 	}
 	width, height := s.terminalWidth(), s.terminalHeight()
-	if err := s.appendChatLocked([]byte(message.rendered().Text), height); err != nil {
+	if err := s.appendChatLocked([]byte(s.renderedForDisplayLocked(message).Text), height); err != nil {
 		return err
 	}
 	if err := s.drawInputLocked(width, height); err != nil {
@@ -289,7 +289,7 @@ func (s *Screen) redrawViewLocked() error {
 		return err
 	}
 	for _, message := range s.messages {
-		if err := s.appendChatLocked([]byte(message.rendered().Text), height); err != nil {
+		if err := s.appendChatLocked([]byte(s.renderedForDisplayLocked(message).Text), height); err != nil {
 			return err
 		}
 	}
@@ -316,7 +316,7 @@ func (s *Screen) redrawChatLocked() error {
 		}
 	}
 	for _, message := range s.messages {
-		if err := s.appendChatLocked([]byte(message.rendered().Text), height); err != nil {
+		if err := s.appendChatLocked([]byte(s.renderedForDisplayLocked(message).Text), height); err != nil {
 			return err
 		}
 	}
@@ -332,6 +332,24 @@ func (m DisplayMessage) rendered() emote.Line {
 		return m.Render()
 	}
 	return emote.Line{Text: m.Line}
+}
+
+func (s *Screen) renderedForDisplayLocked(message DisplayMessage) emote.Line {
+	line := message.rendered()
+	if line.GraphicalText == "" || len(line.Images) == 0 {
+		return line
+	}
+	confirmations, ok := s.images.(interface{ Confirmed(string) bool })
+	if !ok {
+		return line
+	}
+	for imageIndex := range line.Images {
+		if !confirmations.Confirmed(imageIdentifier(message, imageIndex)) {
+			return line
+		}
+	}
+	line.Text = line.GraphicalText
+	return line
 }
 
 func (s *Screen) Writer(destination io.Writer) io.Writer {
@@ -517,7 +535,11 @@ func (s *Screen) refreshImagesLocked(width, height int) {
 	for _, message := range s.messages {
 		totalRows += message.leadingRows
 		line := message.rendered()
-		displayWidth := runewidth.StringWidth(terminalANSI.ReplaceAllString(strings.TrimRight(line.Text, "\r\n"), ""))
+		layoutText := line.Text
+		if line.GraphicalText != "" {
+			layoutText = line.GraphicalText
+		}
+		displayWidth := runewidth.StringWidth(terminalANSI.ReplaceAllString(strings.TrimRight(layoutText, "\r\n"), ""))
 		rows := max((max(displayWidth, 1)-1)/max(width, 1)+1, 1)
 		rendered = append(rendered, renderedMessage{message: message, line: line, start: totalRows, rows: rows})
 		totalRows += rows
@@ -539,11 +561,15 @@ func (s *Screen) refreshImagesLocked(width, height int) {
 				continue
 			}
 			y := layout.chatTop + bottomPadding + globalRow - visibleStart
-			digest := sha256.Sum256([]byte(item.message.Platform + "\x00" + item.message.ID + "\x00" + strconv.FormatUint(item.message.imageKey, 10)))
-			placements = append(placements, emote.Placement{Identifier: fmt.Sprintf("streamchat-%x-%d", digest[:8], imageIndex), Path: image.Path, X: x, Y: y - 1, Width: max(image.Width, 1), Height: 1})
+			placements = append(placements, emote.Placement{Identifier: imageIdentifier(item.message, imageIndex), Path: image.Path, X: x, Y: y - 1, Width: max(image.Width, 1), Height: 1})
 		}
 	}
 	s.images.Update(placements)
+}
+
+func imageIdentifier(message DisplayMessage, imageIndex int) string {
+	digest := sha256.Sum256([]byte(message.Platform + "\x00" + message.ID + "\x00" + strconv.FormatUint(message.imageKey, 10)))
+	return fmt.Sprintf("streamchat-%x-%d", digest[:8], imageIndex)
 }
 
 func wrappedRows(value string, width int) int {

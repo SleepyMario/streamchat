@@ -123,9 +123,9 @@ Kick emotes use their structured webhook metadata. In an interactive Linux termi
 }
 ```
 
-Images are fetched asynchronously from Kick's provider-derived official asset URL, limited to 2 MiB, deduplicated while downloading, and persisted under `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/kick/` using numeric emote IDs rather than names. Image overlays are recomputed from the bounded visible-message model during chat scroll, resize, and `/clean`, and are removed before alternate-screen exit. Emote presentation never rewrites or deletes archived message data.
+Images are fetched asynchronously from Kick's provider-derived official asset URL, limited to 2 MiB, deduplicated while downloading, and persisted under `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/kick/` using numeric emote IDs rather than names. Animated GIF assets use a cached first-frame PNG preview in the terminal so repeated viewport repositioning stays lightweight and stable. Streamchat disables Überzug++'s separate resized-image cache so stale low-resolution derivatives cannot override the current terminal-cell size. Image overlays are recomputed from the bounded visible-message model during chat scroll, resize, and `/clean`, and are removed before alternate-screen exit. A readable `:emoteName:` backing remains until the image placement has been submitted successfully. Emote presentation never rewrites or deletes archived message data.
 
-For troubleshooting, set `emotes.debug` to `true` or `STREAMCHAT_EMOTES_DEBUG=true`. Sanitized backend/cache events are written privately to `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/debug.log`; normal chat output is unchanged. The log contains provider names, numeric emote IDs, cache outcomes, and generic helper/download failures, but no OAuth or relay credentials.
+For troubleshooting, set `emotes.debug` to `true` or `STREAMCHAT_EMOTES_DEBUG=true`. Sanitized backend/cache events are written privately to `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/debug.log`; normal chat output is unchanged. Debug mode captures Überzug++ startup, PID, sanitized placement commands, socket/process failures, and helper stderr. Normal mode keeps the helper silent. The log never includes OAuth or relay credentials.
 
 ## Server/client mode and archive
 

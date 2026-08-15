@@ -128,6 +128,9 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 	padding := max(identityWidth-runewidth.StringWidth(identity), 0)
 	prefix := fmt.Sprintf("%s%-6s %s%s%s", p, pl, identity, strings.Repeat(" ", padding+2), textPrefix)
 	line := emote.Line{Text: prefix + body.Text, Images: append([]emote.InlineImage(nil), body.Images...)}
+	if body.GraphicalText != "" {
+		line.GraphicalText = prefix + body.GraphicalText
+	}
 	offset := runewidth.StringWidth(Sanitize(prefix))
 	for index := range line.Images {
 		line.Images[index].Column += offset

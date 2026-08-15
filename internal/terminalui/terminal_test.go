@@ -827,6 +827,27 @@ type recordingImageBackend struct {
 	closed  int
 }
 
+type confirmingImageBackend struct {
+	recordingImageBackend
+	muConfirmed sync.RWMutex
+	confirmed   map[string]bool
+}
+
+func (b *confirmingImageBackend) Confirmed(identifier string) bool {
+	b.muConfirmed.RLock()
+	defer b.muConfirmed.RUnlock()
+	return b.confirmed[identifier]
+}
+
+func (b *confirmingImageBackend) setConfirmed(identifier string, value bool) {
+	b.muConfirmed.Lock()
+	if b.confirmed == nil {
+		b.confirmed = make(map[string]bool)
+	}
+	b.confirmed[identifier] = value
+	b.muConfirmed.Unlock()
+}
+
 func (*recordingImageBackend) Available() bool { return true }
 func (b *recordingImageBackend) Update(value []emote.Placement) {
 	b.mu.Lock()
@@ -852,6 +873,49 @@ func imageMessage(id string, column int) DisplayMessage {
 	return DisplayMessage{ID: id, Platform: "kick", Author: "viewer", Render: func() emote.Line {
 		return emote.Line{Text: "[KICK] viewer  hello  ", Images: []emote.InlineImage{{Path: "/cache/" + id + ".img", Column: column, Width: 2}}}
 	}}
+}
+
+func TestCachedEmoteKeepsReadableBackingUntilPlacementAndAfterBackendFailure(t *testing.T) {
+	backend := &confirmingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	message := DisplayMessage{ID: "emote", Platform: "kick", Render: func() emote.Line {
+		return emote.Line{
+			Text:          "[KICK] viewer  :emojiCheerful:",
+			GraphicalText: "[KICK] viewer    ",
+			Images:        []emote.InlineImage{{Path: "/cache/kick/1730756.static.png", Column: 15, Width: 2}},
+		}
+	}}
+	if err := screen.AppendMessage(message); err != nil {
+		t.Fatal(err)
+	}
+	placements := backend.latest()
+	if len(placements) != 1 {
+		t.Fatalf("placements=%+v", placements)
+	}
+	screen.mu.Lock()
+	before := screen.renderedForDisplayLocked(screen.messages[0]).Text
+	screen.mu.Unlock()
+	if before != "[KICK] viewer  :emojiCheerful:" {
+		t.Fatalf("cache hit hid fallback before placement: %q", before)
+	}
+	backend.setConfirmed(placements[0].Identifier, true)
+	screen.mu.Lock()
+	placed := screen.renderedForDisplayLocked(screen.messages[0]).Text
+	screen.mu.Unlock()
+	if placed != "[KICK] viewer    " {
+		t.Fatalf("confirmed placement did not expose image backing: %q", placed)
+	}
+	backend.setConfirmed(placements[0].Identifier, false)
+	screen.Redraw()
+	screen.mu.Lock()
+	afterFailure := screen.renderedForDisplayLocked(screen.messages[0]).Text
+	screen.mu.Unlock()
+	if afterFailure != before {
+		t.Fatalf("backend failure did not restore readable fallback: %q", afterFailure)
+	}
 }
 
 func TestImagePlacementTracksVisibleChatRowsAndNeverUsesFixedUI(t *testing.T) {
