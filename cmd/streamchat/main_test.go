@@ -18,6 +18,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/outbound"
+	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
 func TestDemoOfflineAndHelp(t *testing.T) {
@@ -63,7 +64,7 @@ func TestRunMultipleAdapters(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	var out, errw bytes.Buffer
-	if err := runAdapters(context.Background(), adapters, c, nil, nil, &out, &errw); err != nil {
+	if err := runAdapters(context.Background(), adapters, c, nil, nil, nil, &out, &errw); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "[YT]") || !strings.Contains(out.String(), "[TW]") {
@@ -123,7 +124,7 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	go func() {
-		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kk sending\n"), targets, channelWriter{writes: writes}, io.Discard)
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kk sending\n"), targets, nil, channelWriter{writes: writes}, io.Discard)
 	}()
 	select {
 	case line := <-writes:
@@ -152,6 +153,115 @@ func TestNonTTYFallbackDisplaysNoTargetInstructionWithoutANSI(t *testing.T) {
 	}
 	if strings.Contains(errw.String(), "\x1b") {
 		t.Fatalf("non-TTY fallback emitted terminal controls: %q", errw.String())
+	}
+}
+
+func TestNonTTYRunDoesNotFetchOrRenderStatusArea(t *testing.T) {
+	provider := &scriptedStatusProvider{statuses: []terminalui.StreamStatus{{Title: "should not render"}}}
+	message := chat.Message{ID: "1", Platform: chat.PlatformKick, Timestamp: time.Now(), AuthorDisplayName: "viewer", Text: "hello", EventType: chat.EventMessage}
+	var out bytes.Buffer
+	if err := runAdapters(context.Background(), []chat.Adapter{fakeAdapter{name: "kick", message: message}}, config.Defaults(), nil, nil, provider, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if provider.callCount() != 0 || strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), "Title:") {
+		t.Fatalf("calls=%d output=%q", provider.callCount(), out.String())
+	}
+}
+
+type scriptedStatusProvider struct {
+	mu       sync.Mutex
+	statuses []terminalui.StreamStatus
+	errors   []error
+	calls    int
+}
+
+func (p *scriptedStatusProvider) StreamStatus(context.Context) (terminalui.StreamStatus, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	index := p.calls
+	p.calls++
+	var status terminalui.StreamStatus
+	if len(p.statuses) > 0 {
+		status = p.statuses[min(index, len(p.statuses)-1)]
+	}
+	var err error
+	if len(p.errors) > 0 {
+		err = p.errors[min(index, len(p.errors)-1)]
+	}
+	return status, err
+}
+
+func (p *scriptedStatusProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+type recordingStatusDisplay struct {
+	mu       sync.Mutex
+	statuses []terminalui.StreamStatus
+}
+
+func (d *recordingStatusDisplay) SetStatus(status terminalui.StreamStatus) {
+	d.mu.Lock()
+	d.statuses = append(d.statuses, status)
+	d.mu.Unlock()
+}
+
+func (d *recordingStatusDisplay) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.statuses)
+}
+
+func TestStatusRefresherRunsImmediatelyPeriodicallyAndPreservesPriorOnFailure(t *testing.T) {
+	known := terminalui.StreamStatus{Title: "Known", Category: "Games", Live: true, ViewerCount: 9}
+	provider := &scriptedStatusProvider{statuses: []terminalui.StreamStatus{known}, errors: []error{nil, errors.New("temporary failure")}}
+	display := &recordingStatusDisplay{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runStatusRefresher(ctx, 5*time.Millisecond, make(chan struct{}), provider, display)
+		close(done)
+	}()
+	deadline := time.After(time.Second)
+	for provider.callCount() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("periodic status refresh did not run")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+	if display.count() != 1 {
+		t.Fatalf("transient failure replaced prior status; updates=%d", display.count())
+	}
+}
+
+func TestSuccessfulTitleAndCategoryTriggerImmediateStatusRefresh(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/categories":
+			_, _ = io.WriteString(w, `{"data":[{"id":123,"name":"Just Chatting"}]}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/channels":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "token", APIBaseURL: server.URL}, http: server.Client()}
+	refreshes := make(chan struct{}, 2)
+	client.setStatusRefresh(func() { refreshes <- struct{}{} })
+	if _, err := client.Title(context.Background(), "New title"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Category(context.Background(), "Just Chatting"); err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshes) != 2 {
+		t.Fatalf("immediate refresh signals=%d", len(refreshes))
 	}
 }
 
@@ -660,7 +770,7 @@ func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	go func() {
-		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban kick targetuser\n"), targets, channelWriter{writes: writes}, io.Discard)
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban kick targetuser\n"), targets, nil, channelWriter{writes: writes}, io.Discard)
 	}()
 	select {
 	case line := <-writes:
@@ -720,7 +830,7 @@ func TestInteractiveShutdownCommandsStopAdaptersAndDoNotSendChat(t *testing.T) {
 					wantMessages = []string{"hello"}
 					wantTarget = "kk"
 				}
-				if err := runAdapters(context.Background(), []chat.Adapter{shutdownAdapter{stopped: stopped}}, c, strings.NewReader(input), targets, &out, &errw); err != nil {
+				if err := runAdapters(context.Background(), []chat.Adapter{shutdownAdapter{stopped: stopped}}, c, strings.NewReader(input), targets, nil, &out, &errw); err != nil {
 					t.Fatalf("shutdown returned an error: %v", err)
 				}
 				select {

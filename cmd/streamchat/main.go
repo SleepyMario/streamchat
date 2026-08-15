@@ -35,6 +35,7 @@ import (
 )
 
 const version = "0.3.0"
+const statusRefreshInterval = 30 * time.Second
 const usage = `Streamchat reads and merges live chat from YouTube, Kick, and Twitch.
 
 Start here:
@@ -64,7 +65,7 @@ Selection lasts for this run until another target command is used.
 Title, category, and moderation commands currently target Kick only.
 /clean kick is local-only; /clear kick uses archived IDs for remote deletion.
 Neither command deletes Streamchat archive records.
-On a terminal, an alternate-screen bottom bar provides basic cursor editing.
+On a terminal, the alternate screen keeps Kick status at top and input at bottom.
 
 Useful commands:
   streamchat setup youtube|kick|twitch [--config PATH]
@@ -345,12 +346,14 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 	}
 	var input io.Reader
 	var targets *outbound.Session
+	var status statusProvider
 	if mode == "run" {
 		input = reader
 		if inputFile, ok := in.(*os.File); ok {
 			input = &terminalInput{Reader: reader, file: inputFile}
 		}
 		kickClient := &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}}
+		status = kickClient
 		targets = outbound.New(map[string]outbound.Sender{
 			"kk": kickClient,
 		})
@@ -363,7 +366,7 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		targets.RegisterControl("clear", remoteClear)
 		registerShutdownControls(targets)
 	}
-	return runAdapters(ctx, adapters, c, input, targets, out, errw)
+	return runAdapters(ctx, adapters, c, input, targets, status, out, errw)
 }
 
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
@@ -482,7 +485,7 @@ func archiveStats(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, out, errw io.Writer) (result error) {
+func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, status statusProvider, out, errw io.Writer) (result error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var safeOut io.Writer = &lockedWriter{writer: out}
@@ -508,6 +511,30 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 					result = fmt.Errorf("restore terminal: %w", err)
 				}
 			}()
+			if status != nil {
+				statusCtx, stopStatus := context.WithCancel(ctx)
+				trigger := make(chan struct{}, 1)
+				done := make(chan struct{})
+				if setter, ok := status.(interface{ setStatusRefresh(func()) }); ok {
+					setter.setStatusRefresh(func() {
+						select {
+						case trigger <- struct{}{}:
+						default:
+						}
+					})
+				}
+				go func() {
+					defer close(done)
+					runStatusRefresher(statusCtx, statusRefreshInterval, trigger, status, terminal)
+				}()
+				defer func() {
+					stopStatus()
+					<-done
+					if setter, ok := status.(interface{ setStatusRefresh(func()) }); ok {
+						setter.setStatusRefresh(nil)
+					}
+				}()
+			}
 		}
 	}
 	var shutdownRequests <-chan struct{}
@@ -627,6 +654,36 @@ type lockedWriter struct {
 type terminalInput struct {
 	io.Reader
 	file *os.File
+}
+
+type statusProvider interface {
+	StreamStatus(context.Context) (terminalui.StreamStatus, error)
+}
+
+type statusDisplay interface {
+	SetStatus(terminalui.StreamStatus)
+}
+
+func runStatusRefresher(ctx context.Context, interval time.Duration, trigger <-chan struct{}, provider statusProvider, display statusDisplay) {
+	refresh := func() {
+		status, err := provider.StreamStatus(ctx)
+		if err == nil {
+			display.SetStatus(status)
+		}
+	}
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		case <-trigger:
+			refresh()
+		}
+	}
 }
 
 type localDisplay interface {
@@ -866,6 +923,8 @@ func sanitizeLocalOutput(value string) string {
 
 type kickOutboundSender struct {
 	mu         sync.Mutex
+	refreshMu  sync.RWMutex
+	refreshNow func()
 	config     config.Kick
 	configPath string
 	http       *http.Client
@@ -889,6 +948,7 @@ func (s *kickOutboundSender) Title(ctx context.Context, title string) (string, e
 	if err != nil {
 		return "", err
 	}
+	s.requestStatusRefresh()
 	return "Title updated: " + title, nil
 }
 
@@ -912,7 +972,34 @@ func (s *kickOutboundSender) Category(ctx context.Context, argument string) (str
 	if err != nil {
 		return "", err
 	}
+	s.requestStatusRefresh()
 	return "Category updated: " + category.Name, nil
+}
+
+func (s *kickOutboundSender) StreamStatus(ctx context.Context) (terminalui.StreamStatus, error) {
+	var status kick.ChannelStatus
+	err := s.withToken(ctx, func(accessToken string) error {
+		client := kick.ChannelClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		var err error
+		status, err = client.GetStatus(ctx)
+		return err
+	})
+	return terminalui.StreamStatus{Title: status.Title, Category: status.Category, ViewerCount: status.ViewerCount, Live: status.Live}, err
+}
+
+func (s *kickOutboundSender) setStatusRefresh(refresh func()) {
+	s.refreshMu.Lock()
+	s.refreshNow = refresh
+	s.refreshMu.Unlock()
+}
+
+func (s *kickOutboundSender) requestStatusRefresh() {
+	s.refreshMu.RLock()
+	refresh := s.refreshNow
+	s.refreshMu.RUnlock()
+	if refresh != nil {
+		refresh()
+	}
 }
 
 type moderationPlatform interface {

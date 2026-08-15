@@ -96,7 +96,17 @@ Exit the interactive client cleanly with either command:
 
 Both commands work regardless of the selected outbound target, are never sent to chat, and apply only to `streamchat run`. They cancel active adapters so relay/WebSocket connections use their normal shutdown path before the client exits successfully.
 
-When standard input and output are terminals, `streamchat run` uses the terminal's alternate screen with a persistent single-line input bar beneath incoming chat. It starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are printed above the bar without discarding the current input or cursor position. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without alternate-screen or redraw sequences.
+When standard input and output are terminals, `streamchat run` uses the terminal's alternate screen with three fixed Kick status lines at the top, scrolling chat in the middle, and a persistent single-line input bar at the bottom:
+
+```text
+Title:    Current stream title
+Category: Just Chatting
+Viewers:  42
+```
+
+Status is fetched immediately from Kick's official authenticated channel endpoint, refreshed every 30 seconds, and refreshed after successful `/title` and `/category` commands. Offline streams show `Viewers:  OFFLINE`; until the first successful fetch, all three values show `unavailable`. Transient refresh failures preserve the previous status.
+
+The input starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are confined below status and above input without discarding the current input or cursor position. `/clean` redraws only the chat region while retaining status and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, or redraw sequences.
 
 ## Server/client mode and archive
 
@@ -215,7 +225,7 @@ Kick requires an application created in Developer settings. Its Client ID identi
 - `events:subscribe` to create the `chat.message.sent` version 1 subscription;
 - `chat:write` to send chat messages from the interactive CLI;
 - `channel:write` to update the authenticated channel's stream title and category;
-- `channel:read` to resolve moderation targets through official channel slugs;
+- `channel:read` to fetch channel status and resolve moderation targets through official channel slugs;
 - `moderation:ban` to ban and timeout users;
 - `moderation:chat_message:manage` to delete known messages from visible Kick chat with `/clear kick`.
 

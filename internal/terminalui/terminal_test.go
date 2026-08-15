@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
 )
 
 var ansiSequence = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
@@ -41,7 +43,7 @@ func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 		t.Fatalf("input was lost: %q", screen.Text())
 	}
 	got := plainTerminalOutput(output.String())
-	if !strings.Contains(got, "[KICK] viewer  incoming\r\n") || !strings.Contains(got, "[KICK] > hello everyone") {
+	if !strings.Contains(got, "[KICK] viewer  incoming") || !strings.Contains(got, "[KICK] > hello everyone") {
 		t.Fatalf("chat/input redraw missing: %q", got)
 	}
 }
@@ -70,11 +72,11 @@ func TestScreenConsecutiveMessagesStartAtColumnOneWithoutDecoration(t *testing.T
 		t.Fatalf("separator leaked into output: %q", raw)
 	}
 	for _, message := range []string{"first chat", "second is longer", "third"} {
-		if !strings.Contains(raw, "\r\x1b[2K\r"+message+"\r\n") {
+		if !strings.Contains(raw, "\x1bD\r\x1b[2K"+message) {
 			t.Fatalf("chat did not start at column one with CRLF termination: %q", raw)
 		}
 	}
-	const coloredPrompt = "\r\x1b[36m[KICK]\x1b[39m \x1b[32m>\x1b[39m partially typed"
+	const coloredPrompt = "\x1b[24;1H\x1b[2K\x1b[36m[KICK]\x1b[39m \x1b[32m>\x1b[39m partially typed"
 	if count := strings.Count(raw, coloredPrompt); count != 3 {
 		t.Fatalf("prompt redraw count=%d; output=%q", count, raw)
 	}
@@ -97,7 +99,7 @@ func TestScreenStartsAtColumnOneAndUsesDefaultNamedColors(t *testing.T) {
 	if !strings.Contains(raw, "cursor is not at column one"+enterAlternateScreen) {
 		t.Fatalf("alternate screen was not entered first: %q", raw)
 	}
-	if !strings.Contains(raw, "\x1b[999B\r\x1b[2K\r") {
+	if !strings.Contains(raw, "\x1b[2J\x1b[H") {
 		t.Fatalf("screen did not reset to column one: %q", raw)
 	}
 	if !strings.Contains(raw, "\x1b[36m[KICK]\x1b[39m \x1b[32m>\x1b[39m ") {
@@ -129,7 +131,7 @@ func TestScreenResizeThenIncomingUnicodePreservesInput(t *testing.T) {
 		t.Fatalf("Unicode input changed after resize/redraw: %q", screen.Text())
 	}
 	raw := output.String()
-	if !strings.Contains(raw, "\r\x1b[2K\r[KICK] viewer  世界\r\n") {
+	if !strings.Contains(raw, "\x1bD\r\x1b[2K[KICK] viewer  世界") {
 		t.Fatalf("incoming message drifted after resize: %q", raw)
 	}
 	if strings.Contains(raw, "─") {
@@ -154,6 +156,135 @@ func TestScreenLongUnicodeInputStaysWithinDisplayWindow(t *testing.T) {
 	}
 }
 
+func TestScreenRendersThreeFixedStatusLinesAndLiveOfflineViewers(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	raw := output.String()
+	for row, want := range []string{"Title:    unavailable", "Category: unavailable", "Viewers:  unavailable"} {
+		if !strings.Contains(plainTerminalOutput(raw), want) || !strings.Contains(raw, fmt.Sprintf("\x1b[%d;1H", row+1)) {
+			t.Fatalf("missing status row %d %q: %q", row+1, want, raw)
+		}
+	}
+	if !strings.Contains(raw, "\x1b[4;9r") || !strings.Contains(raw, "\x1b[10;1H") {
+		t.Fatalf("fixed chat/input layout missing: %q", raw)
+	}
+	output.Reset()
+	screen.SetStatus(StreamStatus{Title: "Live title", Category: "Just Chatting", ViewerCount: 42, Live: true})
+	plain := plainTerminalOutput(output.String())
+	for _, want := range []string{"Title:    Live title", "Category: Just Chatting", "Viewers:  42"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing live status %q: %q", want, plain)
+		}
+	}
+	output.Reset()
+	screen.SetStatus(StreamStatus{Title: "Offline title", Category: "Games", ViewerCount: 99, Live: false})
+	if plain = plainTerminalOutput(output.String()); !strings.Contains(plain, "Viewers:  OFFLINE") || strings.Contains(plain, "Viewers:  99") {
+		t.Fatalf("offline viewers=%q", plain)
+	}
+}
+
+func TestScreenStatusTruncatesLongUnicodeByDisplayWidth(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 18 }, func() int { return 8 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	screen.SetStatus(StreamStatus{Title: "世界🙂 very long title", Category: "超長分類🙂tail", Live: true, ViewerCount: 7})
+	raw := output.String()
+	for row := 1; row <= 2; row++ {
+		startMarker := fmt.Sprintf("\x1b[%d;1H", row)
+		endMarker := fmt.Sprintf("\x1b[%d;1H", row+1)
+		start := strings.Index(raw, startMarker)
+		end := strings.Index(raw, endMarker)
+		if start < 0 || end <= start {
+			t.Fatalf("status row markers missing: %q", raw)
+		}
+		line := plainTerminalOutput(raw[start+len(startMarker) : end])
+		if width := runewidth.StringWidth(line); width > 18 {
+			t.Fatalf("row %d width=%d line=%q", row, width, line)
+		}
+	}
+}
+
+func TestIncomingChatUsesOnlyMiddleScrollRegion(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetStatus(StreamStatus{Title: "Fixed", Category: "Games", Live: true, ViewerCount: 3})
+	output.Reset()
+	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Line: "[KICK] Alice  hello"}); err != nil {
+		t.Fatal(err)
+	}
+	raw := output.String()
+	if !strings.Contains(raw, "\x1b[9;1H\x1bD\r\x1b[2K[KICK] Alice  hello") || !strings.Contains(raw, "\x1b[10;1H") {
+		t.Fatalf("chat/input rows incorrect: %q", raw)
+	}
+	if strings.Contains(raw, "\x1b[1;1H") || strings.Contains(raw, "\x1b[2;1H") || strings.Contains(raw, "\x1b[3;1H") {
+		t.Fatalf("incoming chat touched fixed status rows: %q", raw)
+	}
+}
+
+func TestStatusRedrawAndCleanPreserveInputCursorAndFixedRows(t *testing.T) {
+	var output bytes.Buffer
+	height := 10
+	screen := newScreen(&output, func() int { return 32 }, func() int { return height })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "partly 你好🙂" {
+		screen.Feed(r)
+	}
+	for _, r := range "\x1b[D\x1b[D" {
+		screen.Feed(r)
+	}
+	cursor := screen.editor.Cursor()
+	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Author: "Alice", Line: "chat one"}); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	screen.SetStatus(StreamStatus{Title: "Updated", Category: "Games", Live: true, ViewerCount: 5})
+	if screen.Text() != "partly 你好🙂" || screen.editor.Cursor() != cursor {
+		t.Fatalf("status redraw changed editor text=%q cursor=%d", screen.Text(), screen.editor.Cursor())
+	}
+	if !strings.Contains(output.String(), "\x1b[10;1H") || !strings.Contains(plainTerminalOutput(output.String()), "[NONE] > partly 你好🙂") {
+		t.Fatalf("input was not restored: %q", output.String())
+	}
+	output.Reset()
+	if _, err := screen.CleanAll(); err != nil {
+		t.Fatal(err)
+	}
+	plain := plainTerminalOutput(output.String())
+	if !strings.Contains(plain, "Title:    Updated") || !strings.Contains(plain, "Category: Games") || !strings.Contains(plain, "Viewers:  5") {
+		t.Fatalf("clean removed status: %q", plain)
+	}
+	height = 6
+	output.Reset()
+	screen.Redraw()
+	if raw := output.String(); !strings.Contains(raw, "\x1b[4;5r") || !strings.Contains(raw, "\x1b[6;1H") {
+		t.Fatalf("resize layout incorrect: %q", raw)
+	}
+}
+
+func TestScreenVerySmallHeightDegradesWithoutInvalidRegion(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 12 }, func() int { return 3 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Line: "hidden chat"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "\x1b[4;2r") {
+		t.Fatalf("invalid scroll region emitted: %q", output.String())
+	}
+}
+
 func TestScreenSerializesConcurrentInputAndMessages(t *testing.T) {
 	var destination synchronizedBuffer
 	screen := NewScreen(&destination, func() int { return 50 })
@@ -162,11 +293,17 @@ func TestScreenSerializesConcurrentInputAndMessages(t *testing.T) {
 	}
 	writer := screen.Writer(&destination)
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		for _, r := range "concurrent unicode 世界" {
 			screen.Feed(r)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			screen.SetStatus(StreamStatus{Title: fmt.Sprintf("title %d", i), Category: "Games", Live: true, ViewerCount: i})
 		}
 	}()
 	go func() {
@@ -215,7 +352,7 @@ func TestScreenCleanAllPreservesPartialUnicodeInput(t *testing.T) {
 		t.Fatalf("cursor changed: got=%d want=%d", screen.editor.Cursor(), cursorBefore)
 	}
 	raw := output.String()
-	if !strings.Contains(raw, "\x1b[2J\x1b[H\x1b[999B\r") || !strings.Contains(plainTerminalOutput(raw), "[KICK] > partly 你好🙂") {
+	if !strings.Contains(raw, "\x1b[2J\x1b[H") || !strings.Contains(plainTerminalOutput(raw), "[KICK] > partly 你好🙂") {
 		t.Fatalf("view/input redraw missing: %q", raw)
 	}
 	if strings.Contains(raw, "Alice") || strings.Contains(raw, "Bob") {

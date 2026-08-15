@@ -17,6 +17,7 @@ const ChannelWriteScope = "channel:write"
 
 var (
 	ErrChannelAuthentication  = errors.New("Kick channel authentication failed")
+	ErrChannelReadPermission  = errors.New("Kick channel-read permission is missing; reauthorize Kick with channel:read")
 	ErrChannelWritePermission = errors.New("Kick channel-update permission is missing; reauthorize Kick with channel:write")
 	ErrChannelRateLimit       = errors.New("Kick channel API rate limit exceeded; try again later")
 	ErrCategoryNotFound       = errors.New("Kick category not found")
@@ -25,6 +26,13 @@ var (
 type Category struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+}
+
+type ChannelStatus struct {
+	Title       string
+	Category    string
+	ViewerCount int
+	Live        bool
 }
 
 type AmbiguousCategoryError struct {
@@ -61,6 +69,62 @@ func (c ChannelClient) UpdateCategory(ctx context.Context, categoryID int64) err
 	return c.patch(ctx, struct {
 		CategoryID int64 `json:"category_id"`
 	}{CategoryID: categoryID})
+}
+
+func (c ChannelClient) GetStatus(ctx context.Context) (ChannelStatus, error) {
+	if c.AccessToken == "" {
+		return ChannelStatus{}, fmt.Errorf("%w; run: streamchat setup kick", ErrChannelAuthentication)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+"/channels", nil)
+	if err != nil {
+		return ChannelStatus{}, errors.New("create Kick channel-status request")
+	}
+	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return ChannelStatus{}, errors.New("Kick channel-status request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		switch response.StatusCode {
+		case http.StatusUnauthorized:
+			return ChannelStatus{}, fmt.Errorf("%w (HTTP 401); run: streamchat setup kick", ErrChannelAuthentication)
+		case http.StatusForbidden:
+			return ChannelStatus{}, fmt.Errorf("%w (HTTP 403); run: streamchat setup kick", ErrChannelReadPermission)
+		case http.StatusTooManyRequests:
+			return ChannelStatus{}, fmt.Errorf("%w (HTTP 429)", ErrChannelRateLimit)
+		default:
+			return ChannelStatus{}, fmt.Errorf("Kick channel-status API failed (HTTP %d)", response.StatusCode)
+		}
+	}
+	var payload struct {
+		Data []struct {
+			StreamTitle string `json:"stream_title"`
+			Category    struct {
+				Name string `json:"name"`
+			} `json:"category"`
+			Stream *struct {
+				IsLive      bool `json:"is_live"`
+				ViewerCount int  `json:"viewer_count"`
+			} `json:"stream"`
+		} `json:"data"`
+	}
+	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil || len(payload.Data) == 0 {
+		return ChannelStatus{}, errors.New("Kick channel-status API returned an invalid response")
+	}
+	channel := payload.Data[0]
+	status := ChannelStatus{Title: channel.StreamTitle, Category: channel.Category.Name}
+	if channel.Stream != nil {
+		status.Live = channel.Stream.IsLive
+		status.ViewerCount = channel.Stream.ViewerCount
+	}
+	return status, nil
 }
 
 func (c ChannelClient) patch(ctx context.Context, update any) error {

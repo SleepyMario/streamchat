@@ -167,3 +167,40 @@ func TestCategoryAPIFailuresAreSanitized(t *testing.T) {
 		})
 	}
 }
+
+func TestGetChannelStatusLiveAndOffline(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response string
+		want     ChannelStatus
+	}{
+		{"live", `{"data":[{"stream_title":"Live title","category":{"name":"Just Chatting"},"stream":{"is_live":true,"viewer_count":42}}]}`, ChannelStatus{Title: "Live title", Category: "Just Chatting", Live: true, ViewerCount: 42}},
+		{"offline", `{"data":[{"stream_title":"Offline title","category":{"name":"Games"},"stream":null}]}`, ChannelStatus{Title: "Offline title", Category: "Games"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/channels" || r.URL.RawQuery != "" {
+					t.Fatalf("request=%s %s", r.Method, r.URL.String())
+				}
+				_, _ = io.WriteString(w, test.response)
+			}))
+			defer server.Close()
+			got, err := (ChannelClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "token"}).GetStatus(context.Background())
+			if err != nil || got != test.want {
+				t.Fatalf("status=%+v err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestGetChannelStatusFailureIsSanitized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"access_token=provider-secret"}`)
+	}))
+	defer server.Close()
+	_, err := (ChannelClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "token"}).GetStatus(context.Background())
+	if !errors.Is(err, ErrChannelReadPermission) || strings.Contains(err.Error(), "provider-secret") || strings.Contains(err.Error(), "access_token") {
+		t.Fatalf("error=%v", err)
+	}
+}

@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"unicode"
 
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
@@ -17,7 +19,9 @@ import (
 
 const (
 	defaultWidth         = 80
+	defaultHeight        = 24
 	displayMessageLimit  = 500
+	statusLineCount      = 3
 	enterAlternateScreen = "\x1b[?1049h\x1b[2J\x1b[H"
 	leaveAlternateScreen = "\x1b[0m\x1b[?1049l"
 )
@@ -29,18 +33,33 @@ type DisplayMessage struct {
 	Line     string
 }
 
+// StreamStatus is provider-neutral metadata displayed above chat.
+type StreamStatus struct {
+	Title       string
+	Category    string
+	ViewerCount int
+	Live        bool
+}
+
 type Screen struct {
 	mu       sync.Mutex
 	out      io.Writer
 	width    func() int
+	height   func() int
 	editor   Editor
 	target   string
 	messages []DisplayMessage
+	status   StreamStatus
+	known    bool
 	visible  bool
 }
 
 func NewScreen(out io.Writer, width func() int) *Screen {
-	return &Screen{out: out, width: width, target: "NONE"}
+	return newScreen(out, width, func() int { return defaultHeight })
+}
+
+func newScreen(out io.Writer, width, height func() int) *Screen {
+	return &Screen{out: out, width: width, height: height, target: "NONE"}
 }
 
 func (s *Screen) Start() error {
@@ -50,10 +69,10 @@ func (s *Screen) Start() error {
 		return nil
 	}
 	s.visible = true
-	if _, err := io.WriteString(s.out, enterAlternateScreen+"\x1b[999B\r\x1b[2K\r"); err != nil {
+	if _, err := io.WriteString(s.out, enterAlternateScreen); err != nil {
 		return err
 	}
-	return s.drawInputLocked(s.terminalWidth())
+	return s.redrawViewLocked()
 }
 
 func (s *Screen) Close() error {
@@ -63,7 +82,7 @@ func (s *Screen) Close() error {
 		return nil
 	}
 	s.visible = false
-	_, err := io.WriteString(s.out, "\r\x1b[2K\r"+leaveAlternateScreen)
+	_, err := io.WriteString(s.out, "\x1b[r\x1b[0m"+leaveAlternateScreen)
 	return err
 }
 
@@ -96,9 +115,19 @@ func (s *Screen) Redraw() {
 	if !s.visible {
 		return
 	}
-	_ = s.clearLocked()
-	_, _ = io.WriteString(s.out, "\x1b[999B\r")
-	_ = s.drawInputLocked(s.terminalWidth())
+	_ = s.redrawViewLocked()
+}
+
+func (s *Screen) SetStatus(status StreamStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = status
+	s.known = true
+	if !s.visible {
+		return
+	}
+	_ = s.drawStatusLocked(s.terminalWidth(), s.terminalHeight())
+	_ = s.drawInputLocked(s.terminalWidth(), s.terminalHeight())
 }
 
 func (s *Screen) Text() string {
@@ -118,13 +147,10 @@ func (s *Screen) AppendMessage(message DisplayMessage) error {
 	if !s.visible {
 		return nil
 	}
-	if err := s.clearLocked(); err != nil {
+	if err := s.appendChatLocked([]byte(message.Line), s.terminalHeight()); err != nil {
 		return err
 	}
-	if _, err := writeTerminalLine(s.out, []byte(message.Line)); err != nil {
-		return err
-	}
-	return s.drawInputLocked(s.terminalWidth())
+	return s.drawInputLocked(s.terminalWidth(), s.terminalHeight())
 }
 
 func (s *Screen) CleanAll() (int, error) {
@@ -184,20 +210,22 @@ func (s *Screen) cleanMessages(matches func(DisplayMessage) bool) (int, error) {
 }
 
 func (s *Screen) redrawViewLocked() error {
-	if _, err := io.WriteString(s.out, "\r\x1b[2J\x1b[H\x1b[999B\r"); err != nil {
+	width, height := s.terminalWidth(), s.terminalHeight()
+	if _, err := io.WriteString(s.out, "\x1b[r\x1b[2J\x1b[H"); err != nil {
 		return err
 	}
-	if len(s.messages) > 0 {
-		if _, err := fmt.Fprintf(s.out, "\x1b[%dA", len(s.messages)); err != nil {
-			return err
-		}
+	if err := s.drawStatusLocked(width, height); err != nil {
+		return err
+	}
+	if err := s.setChatRegionLocked(height); err != nil {
+		return err
 	}
 	for _, message := range s.messages {
-		if _, err := writeTerminalLine(s.out, []byte(message.Line)); err != nil {
+		if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
 			return err
 		}
 	}
-	return s.drawInputLocked(s.terminalWidth())
+	return s.drawInputLocked(width, height)
 }
 
 func (s *Screen) Writer(destination io.Writer) io.Writer {
@@ -219,29 +247,22 @@ func (w screenWriter) Write(p []byte) (int, error) {
 	if !s.visible {
 		return w.destination.Write(p)
 	}
-	if err := s.clearLocked(); err != nil {
+	if err := s.appendChatLocked(p, s.terminalHeight()); err != nil {
 		return 0, err
 	}
-	n, err := writeTerminalLine(w.destination, p)
-	if drawErr := s.drawInputLocked(s.terminalWidth()); err == nil {
+	n := len(p)
+	var err error
+	if drawErr := s.drawInputLocked(s.terminalWidth(), s.terminalHeight()); err == nil {
 		err = drawErr
 	}
 	return n, err
 }
 
-func (s *Screen) clearLocked() error {
-	_, err := io.WriteString(s.out, "\r\x1b[2K\r")
-	return err
-}
-
 func (s *Screen) redrawInputLocked() error {
-	if _, err := io.WriteString(s.out, "\r\x1b[2K\r"); err != nil {
-		return err
-	}
-	return s.drawInputLocked(s.terminalWidth())
+	return s.drawInputLocked(s.terminalWidth(), s.terminalHeight())
 }
 
-func (s *Screen) drawInputLocked(width int) error {
+func (s *Screen) drawInputLocked(width, height int) error {
 	plainPrefix := "[" + s.target + "] > "
 	prefix := fitWidth(plainPrefix, max(width-1, 1))
 	prefixWidth := runewidth.StringWidth(prefix)
@@ -250,7 +271,8 @@ func (s *Screen) drawInputLocked(width int) error {
 	if prefix == plainPrefix {
 		displayPrefix = "\x1b[36m[" + s.target + "]\x1b[39m \x1b[32m>\x1b[39m "
 	}
-	if _, err := io.WriteString(s.out, "\r"+displayPrefix+text+"\r"); err != nil {
+	row := max(height, 1)
+	if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s%s\r", row, displayPrefix, text); err != nil {
 		return err
 	}
 	column := prefixWidth + cursor
@@ -261,21 +283,68 @@ func (s *Screen) drawInputLocked(width int) error {
 	return nil
 }
 
-func writeTerminalLine(destination io.Writer, p []byte) (int, error) {
-	normalized := make([]byte, 0, len(p)+2)
-	for i, b := range p {
-		if b == '\n' && (i == 0 || p[i-1] != '\r') {
-			normalized = append(normalized, '\r')
+func (s *Screen) drawStatusLocked(width, height int) error {
+	values := []string{"unavailable", "unavailable", "unavailable"}
+	if s.known {
+		values[0] = statusValue(s.status.Title)
+		values[1] = statusValue(s.status.Category)
+		if s.status.Live {
+			values[2] = strconv.Itoa(max(s.status.ViewerCount, 0))
+		} else {
+			values[2] = "OFFLINE"
 		}
-		normalized = append(normalized, b)
 	}
-	if len(normalized) == 0 || normalized[len(normalized)-1] != '\n' {
-		normalized = append(normalized, '\r', '\n')
+	labels := []string{"Title:    ", "Category: ", "Viewers:  "}
+	rows := min(statusLineCount, max(height-1, 0))
+	for i := 0; i < rows; i++ {
+		plain := fitWidth(labels[i]+values[i], max(width, 1))
+		display := plain
+		if strings.HasPrefix(plain, labels[i]) {
+			display = "\x1b[36m" + strings.TrimRight(labels[i], " ") + "\x1b[39m" + labels[i][len(strings.TrimRight(labels[i], " ")):] + strings.TrimPrefix(plain, labels[i])
+		}
+		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", i+1, display); err != nil {
+			return err
+		}
 	}
-	if _, err := destination.Write(normalized); err != nil {
-		return 0, err
+	return nil
+}
+
+func statusValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unavailable"
 	}
-	return len(p), nil
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '�'
+		}
+		return r
+	}, value)
+}
+
+func (s *Screen) setChatRegionLocked(height int) error {
+	if height >= statusLineCount+2 {
+		_, err := fmt.Fprintf(s.out, "\x1b[%d;%dr", statusLineCount+1, height-1)
+		return err
+	}
+	_, err := io.WriteString(s.out, "\x1b[r")
+	return err
+}
+
+func (s *Screen) appendChatLocked(p []byte, height int) error {
+	if height < statusLineCount+2 {
+		return nil
+	}
+	bottom := height - 1
+	value := strings.TrimRight(string(p), "\r\n")
+	lines := strings.Split(value, "\n")
+	for _, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1bD\r\x1b[2K%s", bottom, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Screen) terminalWidth() int {
@@ -286,6 +355,16 @@ func (s *Screen) terminalWidth() int {
 		return width
 	}
 	return defaultWidth
+}
+
+func (s *Screen) terminalHeight() int {
+	if s.height == nil {
+		return defaultHeight
+	}
+	if height := s.height(); height > 0 {
+		return height
+	}
+	return defaultHeight
 }
 
 func fitWidth(value string, width int) string {
@@ -323,12 +402,18 @@ func Open(in, out *os.File, reader io.Reader) (*Terminal, error) {
 		return nil, err
 	}
 	restore := func() error { return term.Restore(int(in.Fd()), state) }
-	screen := NewScreen(out, func() int {
+	screen := newScreen(out, func() int {
 		width, _, err := term.GetSize(int(out.Fd()))
 		if err != nil {
 			return defaultWidth
 		}
 		return width
+	}, func() int {
+		_, height, err := term.GetSize(int(out.Fd()))
+		if err != nil {
+			return defaultHeight
+		}
+		return height
 	})
 	if err = startScreen(screen, restore); err != nil {
 		return nil, err
@@ -356,7 +441,8 @@ func (t *Terminal) Next() (Event, error) {
 	return t.screen.Feed(r), nil
 }
 
-func (t *Terminal) SetTarget(command string) { t.screen.SetTarget(command) }
+func (t *Terminal) SetTarget(command string)      { t.screen.SetTarget(command) }
+func (t *Terminal) SetStatus(status StreamStatus) { t.screen.SetStatus(status) }
 func (t *Terminal) AppendMessage(message DisplayMessage) error {
 	return t.screen.AppendMessage(message)
 }

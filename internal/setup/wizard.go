@@ -318,7 +318,7 @@ func kickInstructions(c config.Config) string {
 After changing the webhook URL in the Kick developer portal, run:
   streamchat kick subscribe
 
-Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), chat:write (to send messages), channel:write (to update your Kick stream title and category), channel:read (to resolve moderation targets by channel slug), moderation:ban (to ban or timeout users), and moderation:chat_message:manage (to delete known Kick messages with /clear kick). It does not request stream-key or rewards access.`
+Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), chat:write (to send messages), channel:write (to update your Kick stream title and category), channel:read (to fetch channel status and resolve moderation targets by channel slug), moderation:ban (to ban or timeout users), and moderation:chat_message:manage (to delete known Kick messages with /clear kick). It does not request stream-key or rewards access.`
 }
 
 func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {
