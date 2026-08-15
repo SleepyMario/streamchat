@@ -42,11 +42,14 @@ Server/client mode:
   streamchat serve                 Ingest, archive, and relay Kick/YouTube chat
   streamchat run                   Connect to the configured Streamchat server
 
-Interactive Kick chatback:
+Interactive Kick commands:
   /kk                              Select Kick as the outbound target
   /kk hello                        Select Kick and send "hello"
   hello                            Send to the selected target
+  /title New stream title          Update the Kick stream title
+  /category Just Chatting          Update the Kick stream category
 Selection lasts for this run until another target command is used.
+Title and category commands currently target Kick only.
 
 Useful commands:
   streamchat setup youtube|kick|twitch [--config PATH]
@@ -329,9 +332,12 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 	var targets *outbound.Session
 	if mode == "run" {
 		input = reader
+		kickClient := &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}}
 		targets = outbound.New(map[string]outbound.Sender{
-			"kk": &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}},
+			"kk": kickClient,
 		})
+		targets.RegisterControl("title", outbound.ControlFunc(kickClient.Title))
+		targets.RegisterControl("category", outbound.ControlFunc(kickClient.Category))
 	}
 	return runAdapters(ctx, adapters, c, input, targets, out, errw)
 }
@@ -458,7 +464,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	safeOut := &lockedWriter{writer: out}
 	safeErr := &lockedWriter{writer: errw}
 	if in != nil && targets != nil {
-		go runOutboundInput(ctx, in, targets, safeErr)
+		go runOutboundInput(ctx, in, targets, safeOut, safeErr)
 	}
 	inputs := make([]<-chan chat.Message, 0, len(adapters))
 	errc := make(chan error, len(adapters))
@@ -532,15 +538,23 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	return w.writer.Write(p)
 }
 
-func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Session, errw io.Writer) {
+func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Session, out, errw io.Writer) {
 	scanner := bufio.NewScanner(in)
 	for scanner.Scan() {
-		if err := targets.Handle(ctx, scanner.Text()); err != nil {
+		result, err := targets.Process(ctx, scanner.Text())
+		if err != nil {
 			if errors.Is(err, outbound.ErrNoTarget) {
 				fmt.Fprintln(errw, outbound.NoTargetInstruction)
 			} else if !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(errw, "send failed: %s\n", safeError(err))
+				var controlErr *outbound.ControlError
+				if errors.As(err, &controlErr) {
+					fmt.Fprintf(errw, "control failed: %s\n", sanitizeLocalOutput(safeError(err)))
+				} else {
+					fmt.Fprintf(errw, "send failed: %s\n", safeError(err))
+				}
 			}
+		} else if result != "" {
+			fmt.Fprintln(out, sanitizeLocalOutput(result))
 		}
 		if ctx.Err() != nil {
 			return
@@ -551,6 +565,14 @@ func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Sessi
 	}
 }
 
+func sanitizeLocalOutput(value string) string {
+	lines := strings.Split(value, "\n")
+	for i := range lines {
+		lines[i] = render.Sanitize(lines[i])
+	}
+	return strings.Join(lines, "\n")
+}
+
 type kickOutboundSender struct {
 	mu         sync.Mutex
 	config     config.Kick
@@ -559,6 +581,50 @@ type kickOutboundSender struct {
 }
 
 func (s *kickOutboundSender) Send(ctx context.Context, message string) error {
+	return s.withToken(ctx, func(accessToken string) error {
+		client := kick.ChatClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		return client.Send(ctx, s.config.BroadcasterID, message)
+	})
+}
+
+func (s *kickOutboundSender) Title(ctx context.Context, title string) (string, error) {
+	if title == "" {
+		return "Usage: /title NEW STREAM TITLE", nil
+	}
+	err := s.withToken(ctx, func(accessToken string) error {
+		client := kick.ChannelClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		return client.UpdateTitle(ctx, title)
+	})
+	if err != nil {
+		return "", err
+	}
+	return "Title updated: " + title, nil
+}
+
+func (s *kickOutboundSender) Category(ctx context.Context, argument string) (string, error) {
+	if argument == "" {
+		return "Usage: /category CATEGORY NAME OR ID", nil
+	}
+	var category kick.Category
+	err := s.withToken(ctx, func(accessToken string) error {
+		client := kick.ChannelClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		resolved, err := client.ResolveCategory(ctx, argument)
+		if err != nil {
+			return err
+		}
+		if err = client.UpdateCategory(ctx, resolved.ID); err != nil {
+			return err
+		}
+		category = resolved
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return "Category updated: " + category.Name, nil
+}
+
+func (s *kickOutboundSender) withToken(ctx context.Context, operation func(string) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	refreshed := false
@@ -571,16 +637,18 @@ func (s *kickOutboundSender) Send(ctx context.Context, message string) error {
 		}
 		refreshed = true
 	}
-	client := kick.ChatClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: s.config.AccessToken}
-	err := client.Send(ctx, s.config.BroadcasterID, message)
-	if !refreshed && errors.Is(err, kick.ErrChatAuthentication) && s.config.RefreshToken != "" {
+	err := operation(s.config.AccessToken)
+	if !refreshed && kickAuthenticationError(err) && s.config.RefreshToken != "" {
 		if refreshErr := s.refresh(ctx); refreshErr != nil {
 			return refreshErr
 		}
-		client.AccessToken = s.config.AccessToken
-		return client.Send(ctx, s.config.BroadcasterID, message)
+		return operation(s.config.AccessToken)
 	}
 	return err
+}
+
+func kickAuthenticationError(err error) bool {
+	return errors.Is(err, kick.ErrChatAuthentication) || errors.Is(err, kick.ErrChannelAuthentication)
 }
 
 func (s *kickOutboundSender) refresh(ctx context.Context) error {

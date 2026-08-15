@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,7 +29,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -143,9 +145,65 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 
 func TestOutboundInputDisplaysNoTargetInstruction(t *testing.T) {
 	var errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), &errw)
+	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), io.Discard, &errw)
 	if got := strings.TrimSpace(errw.String()); got != outbound.NoTargetInstruction {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEmptyTitlePrintsUsageWithoutAuthorization(t *testing.T) {
+	client := &kickOutboundSender{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets.RegisterControl("title", outbound.ControlFunc(client.Title))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/title\n"), targets, &out, &errw)
+	if got := strings.TrimSpace(out.String()); got != "Usage: /title NEW STREAM TITLE" {
+		t.Fatalf("output=%q", got)
+	}
+	if errw.Len() != 0 {
+		t.Fatalf("unexpected error: %s", errw.String())
+	}
+}
+
+func TestTitlePrintsSuccessOnlyAfterKickConfirms(t *testing.T) {
+	confirmed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/channels" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		confirmed = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
+	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets.RegisterControl("title", outbound.ControlFunc(client.Title))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/title New title\n"), targets, &out, &errw)
+	if !confirmed || strings.TrimSpace(out.String()) != "Title updated: New title" || errw.Len() != 0 {
+		t.Fatalf("confirmed=%v out=%q err=%q", confirmed, out.String(), errw.String())
+	}
+}
+
+func TestCategoryPrintsResolvedNameAfterKickConfirms(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/categories":
+			_, _ = io.WriteString(w, `{"data":[{"id":123,"name":"Just Chatting"}]}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/channels":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
+	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets.RegisterControl("category", outbound.ControlFunc(client.Category))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/category Just Chatting\n"), targets, &out, &errw)
+	if strings.TrimSpace(out.String()) != "Category updated: Just Chatting" || errw.Len() != 0 {
+		t.Fatalf("out=%q err=%q", out.String(), errw.String())
 	}
 }
 

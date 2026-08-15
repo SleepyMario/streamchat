@@ -14,6 +14,16 @@ func (s *recordingSender) Send(_ context.Context, message string) error {
 	return nil
 }
 
+type recordingControl struct {
+	arguments []string
+	result    string
+}
+
+func (c *recordingControl) Execute(_ context.Context, argument string) (string, error) {
+	c.arguments = append(c.arguments, argument)
+	return c.result, nil
+}
+
 func TestKickSelectionAndSending(t *testing.T) {
 	kick := &recordingSender{}
 	s := New(map[string]Sender{"kk": kick})
@@ -63,5 +73,44 @@ func TestSelectionIsSessionLocalAndSwitchable(t *testing.T) {
 	}
 	if err := second.Handle(context.Background(), "not sent"); !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestKickControlsParseArgumentsAndNeverBecomeChat(t *testing.T) {
+	kick := &recordingSender{}
+	title := &recordingControl{result: "title result"}
+	category := &recordingControl{result: "category result"}
+	s := New(map[string]Sender{"kk": kick})
+	s.RegisterControl("title", title)
+	s.RegisterControl("/category", category)
+	if err := s.Handle(context.Background(), "/kk"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Process(context.Background(), "/title New title")
+	if err != nil || result != "title result" {
+		t.Fatalf("result=%q err=%v", result, err)
+	}
+	result, err = s.Process(context.Background(), "/title")
+	if err != nil || result != "title result" {
+		t.Fatalf("empty title result=%q err=%v", result, err)
+	}
+	result, err = s.Process(context.Background(), "/category Just Chatting")
+	if err != nil || result != "category result" {
+		t.Fatalf("result=%q err=%v", result, err)
+	}
+	if !reflect.DeepEqual(title.arguments, []string{"New title", ""}) {
+		t.Fatalf("title arguments=%v", title.arguments)
+	}
+	if !reflect.DeepEqual(category.arguments, []string{"Just Chatting"}) {
+		t.Fatalf("category arguments=%v", category.arguments)
+	}
+	if len(kick.messages) != 0 || s.Selected() != "kk" {
+		t.Fatalf("controls reached chat or changed target: messages=%v selected=%q", kick.messages, s.Selected())
+	}
+	if err = s.Handle(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(kick.messages, []string{"hello"}) {
+		t.Fatalf("existing /kk behavior changed: %v", kick.messages)
 	}
 }
