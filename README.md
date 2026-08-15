@@ -76,6 +76,14 @@ Local display cleaning is available in the interactive terminal:
 
 `/clean streamchat` removes all messages from the current local view, `/clean kick` removes displayed Kick messages, and `/clean USER` removes displayed messages from a case-insensitive author match. The words `streamchat`, `kick`, `youtube`, and `twitch` are reserved clean targets rather than usernames; YouTube and Twitch display cleaning are not implemented yet. `/clean` affects only the current Streamchat display. It never changes platform chat and never deletes archived messages. The interactive view keeps only the latest 500 rendered messages for local redraws; it does not retrieve history from SQLite.
 
+Remote visible-chat cleanup is a separate, explicit command:
+
+```text
+/clear kick
+```
+
+`/clear kick` snapshots the valid Kick message IDs in the current bounded display buffer and deletes them individually from Kick using the official moderation API. Duplicate IDs are sent once, messages arriving after the snapshot are not included, and an already-absent message counts as cleared. The command does not automatically remove messages from the local display. `/clear youtube` and `/clear twitch` are not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
+
 Exit the interactive client cleanly with either command:
 
 ```text
@@ -205,9 +213,10 @@ Kick requires an application created in Developer settings. Its Client ID identi
 - `chat:write` to send chat messages from the interactive CLI;
 - `channel:write` to update the authenticated channel's stream title and category;
 - `channel:read` to resolve moderation targets through official channel slugs;
-- `moderation:ban` to ban and timeout users.
+- `moderation:ban` to ban and timeout users;
+- `moderation:chat_message:manage` to delete known messages from visible Kick chat with `/clear kick`.
 
-The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens. Existing installations must rerun `streamchat setup kick` after enabling `channel:read` and `moderation:ban` in the Kick developer portal. Category lookup uses Kick's category endpoints with the same user token. Streamchat does not request chat-message deletion, stream-key, or rewards scopes.
+The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens. Existing installations must enable the listed scopes in the Kick developer portal and rerun `streamchat setup kick`; `/clear kick` specifically requires `moderation:chat_message:manage`. Category lookup uses Kick's category endpoints with the same user token. Streamchat does not request stream-key or rewards scopes.
 
 Kick sends events only to the publicly reachable HTTPS webhook configured in the Kick developer application. `kick.webhook_url` must match that portal setting, but Streamchat does not send the local value in the `events/subscriptions` request; `streamchat kick subscribe` creates `method=webhook` subscriptions using the destination already held by Kick. Changing only the local JSON does not update that destination. After changing the portal URL, run `streamchat kick subscribe`.
 

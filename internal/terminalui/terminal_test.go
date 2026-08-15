@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -289,6 +290,30 @@ func TestScreenDisplayBufferIsBounded(t *testing.T) {
 	}
 	if len(screen.messages) != displayMessageLimit || screen.messages[0].Line != "message 25\n" {
 		t.Fatalf("buffer len=%d first=%q", len(screen.messages), screen.messages[0].Line)
+	}
+}
+
+func TestScreenKnownMessageIDsFiltersAndDeduplicatesProviderIDs(t *testing.T) {
+	screen := NewScreen(io.Discard, func() int { return 40 })
+	for _, message := range []DisplayMessage{
+		{ID: "kick-1", Platform: "kick"},
+		{ID: "youtube-1", Platform: "youtube"},
+		{ID: "kick-1", Platform: "KICK"},
+		{ID: "", Platform: "kick"},
+		{ID: "kick-2", Platform: "kick"},
+	} {
+		if err := screen.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := screen.KnownMessageIDs("kick"); !reflect.DeepEqual(got, []string{"kick-1", "kick-2"}) {
+		t.Fatalf("IDs=%v", got)
+	}
+	if _, err := screen.CleanPlatform("kick"); err != nil {
+		t.Fatal(err)
+	}
+	if got := screen.KnownMessageIDs("kick"); len(got) != 0 {
+		t.Fatalf("cleaned IDs remain: %v", got)
 	}
 }
 

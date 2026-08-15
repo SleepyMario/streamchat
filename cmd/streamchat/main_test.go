@@ -18,6 +18,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/outbound"
+	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
 func TestDemoOfflineAndHelp(t *testing.T) {
@@ -30,7 +31,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -63,7 +64,7 @@ func TestRunMultipleAdapters(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	var out, errw bytes.Buffer
-	if err := runAdapters(context.Background(), adapters, c, nil, nil, &out, &errw); err != nil {
+	if err := runAdapters(context.Background(), adapters, c, nil, nil, nil, &out, &errw); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "[YT]") || !strings.Contains(out.String(), "[TW]") {
@@ -123,7 +124,7 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	go func() {
-		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kk sending\n"), targets, channelWriter{writes: writes}, io.Discard)
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kk sending\n"), targets, nil, channelWriter{writes: writes}, io.Discard)
 	}()
 	select {
 	case line := <-writes:
@@ -414,6 +415,172 @@ func TestEveryCleanTargetPreservesArchiveRows(t *testing.T) {
 	}
 }
 
+type mutableKnownMessages struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (s *mutableKnownMessages) KnownMessageIDs(string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ids...)
+}
+
+type recordingRemoteClear struct {
+	mu      sync.Mutex
+	ids     []string
+	result  remoteClearResult
+	err     error
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *recordingRemoteClear) ClearMessages(_ context.Context, ids []string) (remoteClearResult, error) {
+	p.mu.Lock()
+	p.ids = append([]string(nil), ids...)
+	p.mu.Unlock()
+	if p.started != nil {
+		close(p.started)
+	}
+	if p.release != nil {
+		<-p.release
+	}
+	return p.result, p.err
+}
+
+func TestRemoteClearKickSyntaxNoMessagesAndUnsupportedPlatforms(t *testing.T) {
+	controller := &remoteClearController{source: &mutableKnownMessages{}, platforms: map[string]remoteClearPlatform{"kick": &recordingRemoteClear{}}}
+	tests := []struct {
+		argument string
+		want     string
+	}{
+		{"", "Usage: /clear PLATFORM (supported: kick)"},
+		{"kick", "No known Kick messages to clear."},
+		{"youtube", "Remote chat clearing is not implemented for: youtube"},
+		{"twitch", "Remote chat clearing is not implemented for: twitch"},
+		{"foo", "Unsupported clear platform: foo. Supported: kick."},
+	}
+	for _, test := range tests {
+		got, err := controller.Execute(context.Background(), test.argument)
+		if err != nil || got != test.want {
+			t.Fatalf("argument=%q got=%q err=%v", test.argument, got, err)
+		}
+	}
+}
+
+func TestRemoteClearKickReportsPartialFailure(t *testing.T) {
+	controller := &remoteClearController{
+		source:    &mutableKnownMessages{ids: []string{"one", "two", "three"}},
+		platforms: map[string]remoteClearPlatform{"kick": &recordingRemoteClear{result: remoteClearResult{Deleted: 2, Failed: 1}}},
+	}
+	result, err := controller.Execute(context.Background(), "kick")
+	if err != nil || result != "Cleared Kick chat: 2 deleted, 1 failed" {
+		t.Fatalf("result=%q err=%v", result, err)
+	}
+}
+
+func TestRemoteClearKickUsesSnapshotAndPreservesOutboundTarget(t *testing.T) {
+	source := terminalui.NewScreen(io.Discard, func() int { return 80 })
+	if err := source.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"first", "second"} {
+		if err := source.AppendMessage(terminalui.DisplayMessage{ID: id, Platform: "kick", Line: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &recordingRemoteClear{result: remoteClearResult{Deleted: 2}, started: make(chan struct{}), release: make(chan struct{})}
+	controller := &remoteClearController{source: source, platforms: map[string]remoteClearPlatform{"kick": provider}}
+	chatSender := &recordingOutboundSender{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": chatSender})
+	targets.RegisterControl("clear", controller)
+	if _, err := targets.Process(context.Background(), "/kk"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		result, err := targets.Process(context.Background(), "/clear kick")
+		if err == nil && result != "Cleared Kick chat: 2 messages" {
+			err = errors.New("unexpected clear result: " + result)
+		}
+		done <- err
+	}()
+	<-provider.started
+	if err := source.AppendMessage(terminalui.DisplayMessage{ID: "arrived-after-snapshot", Platform: "kick", Line: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	close(provider.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(provider.ids, []string{"first", "second"}) {
+		t.Fatalf("clear IDs=%v", provider.ids)
+	}
+	if got := source.KnownMessageIDs("kick"); !reflect.DeepEqual(got, []string{"first", "second", "arrived-after-snapshot"}) {
+		t.Fatalf("remote clear changed local display IDs: %v", got)
+	}
+	if targets.Selected() != "kk" {
+		t.Fatalf("selected target changed: %q", targets.Selected())
+	}
+	if _, err := targets.Process(context.Background(), "still chat"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(chatSender.messages, []string{"still chat"}) {
+		t.Fatalf("control became chat: %v", chatSender.messages)
+	}
+}
+
+func TestKickClearMultipleMessagesPartialFailureAndAlreadyDeleted(t *testing.T) {
+	var requested []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		switch r.URL.Path {
+		case "/chat/gone":
+			w.WriteHeader(http.StatusNotFound)
+		case "/chat/fails":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"access_token=provider-secret"}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	sender := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
+	result, err := sender.ClearMessages(context.Background(), []string{"one", "gone", "fails"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (remoteClearResult{Deleted: 2, Failed: 1}) {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(requested, []string{"/chat/one", "/chat/gone", "/chat/fails"}) {
+		t.Fatalf("requests=%v", requested)
+	}
+}
+
+func TestRemoteClearNeverDeletesArchiveRows(t *testing.T) {
+	store, err := archivepkg.Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	message := chat.Message{ID: "historical", Platform: chat.PlatformKick, Timestamp: time.Now(), AuthorDisplayName: "viewer", Text: "keep forever", EventType: chat.EventMessage}
+	if inserted, storeErr := store.Store(context.Background(), message); storeErr != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, storeErr)
+	}
+	controller := &remoteClearController{
+		source:    &mutableKnownMessages{ids: []string{"historical"}},
+		platforms: map[string]remoteClearPlatform{"kick": &recordingRemoteClear{result: remoteClearResult{Deleted: 1}}},
+	}
+	if result, clearErr := controller.Execute(context.Background(), "kick"); clearErr != nil || result != "Cleared Kick chat: 1 message" {
+		t.Fatalf("result=%q err=%v", result, clearErr)
+	}
+	stats, err := store.Stats(context.Background())
+	if err != nil || stats.Total != 1 {
+		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+}
+
 func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -438,7 +605,7 @@ func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	go func() {
-		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban kick targetuser\n"), targets, channelWriter{writes: writes}, io.Discard)
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban kick targetuser\n"), targets, nil, channelWriter{writes: writes}, io.Discard)
 	}()
 	select {
 	case line := <-writes:
@@ -498,7 +665,7 @@ func TestInteractiveShutdownCommandsStopAdaptersAndDoNotSendChat(t *testing.T) {
 					wantMessages = []string{"hello"}
 					wantTarget = "kk"
 				}
-				if err := runAdapters(context.Background(), []chat.Adapter{shutdownAdapter{stopped: stopped}}, c, strings.NewReader(input), targets, &out, &errw); err != nil {
+				if err := runAdapters(context.Background(), []chat.Adapter{shutdownAdapter{stopped: stopped}}, c, strings.NewReader(input), targets, nil, &out, &errw); err != nil {
 					t.Fatalf("shutdown returned an error: %v", err)
 				}
 				select {

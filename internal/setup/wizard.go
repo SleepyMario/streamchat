@@ -250,7 +250,7 @@ Streamchat requests public videos.list and liveChatMessages.list data. No OAuth 
 	return nil
 }
 
-var kickOAuthScopes = []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope, kick.ChannelReadScope, kick.ModerationBanScope}
+var kickOAuthScopes = []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope, kick.ChannelReadScope, kick.ModerationBanScope, kick.ChatMessageManageScope}
 
 func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	fmt.Fprintln(w.Out, kickInstructions(*c))
@@ -318,7 +318,7 @@ func kickInstructions(c config.Config) string {
 After changing the webhook URL in the Kick developer portal, run:
   streamchat kick subscribe
 
-Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), chat:write (to send messages), channel:write (to update your Kick stream title and category), channel:read (to resolve moderation targets by channel slug), and moderation:ban (to ban or timeout users from streamchat run). It does not request chat-message deletion, stream-key, or rewards access.`
+Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), chat:write (to send messages), channel:write (to update your Kick stream title and category), channel:read (to resolve moderation targets by channel slug), moderation:ban (to ban or timeout users), and moderation:chat_message:manage (to delete known Kick messages with /clear kick). It does not request stream-key or rewards access.`
 }
 
 func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {

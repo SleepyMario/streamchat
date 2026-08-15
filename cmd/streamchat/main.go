@@ -55,10 +55,13 @@ Interactive commands:
   /clean streamchat                Clear the current local chat view
   /clean kick                      Hide displayed Kick messages locally
   /clean USER                      Hide a user's displayed messages locally
+  /clear kick                      Delete known messages from Kick chat
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
 Title, category, and moderation commands currently target Kick only.
+/clean kick is local-only; /clear kick deletes known messages from Kick.
+Neither command deletes Streamchat archive records.
 On a terminal, an alternate-screen bottom bar provides basic cursor editing.
 
 Useful commands:
@@ -354,9 +357,12 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		moderation := newModerationControls(kickClient)
 		targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
+		remoteClear := newRemoteClearController(kickClient)
+		targets.RegisterControl("clear", remoteClear)
 		registerShutdownControls(targets)
+		return runAdapters(ctx, adapters, c, input, targets, remoteClear, out, errw)
 	}
-	return runAdapters(ctx, adapters, c, input, targets, out, errw)
+	return runAdapters(ctx, adapters, c, input, targets, nil, out, errw)
 }
 
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
@@ -475,7 +481,7 @@ func archiveStats(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, out, errw io.Writer) (result error) {
+func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, remoteClear *remoteClearController, out, errw io.Writer) (result error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var safeOut io.Writer = &lockedWriter{writer: out}
@@ -509,6 +515,9 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		clean := cleanController{}
 		if terminal != nil {
 			clean.display = terminal
+			if remoteClear != nil {
+				remoteClear.source = terminal
+			}
 		}
 		targets.RegisterControl("clean", outbound.ControlFunc(clean.Clean))
 		requests := make(chan struct{}, 1)
@@ -596,7 +605,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 					if author == "" {
 						author = "system"
 					}
-					e = terminal.AppendMessage(terminalui.DisplayMessage{Platform: string(m.Platform), Author: author, Line: line.String()})
+					e = terminal.AppendMessage(terminalui.DisplayMessage{ID: m.ID, Platform: string(m.Platform), Author: author, Line: line.String()})
 				}
 			}
 			if e != nil {
@@ -660,6 +669,62 @@ func (c cleanController) Clean(_ context.Context, argument string) (string, erro
 		return "No displayed messages matched: " + target, nil
 	}
 	return "", nil
+}
+
+type knownMessageSource interface {
+	KnownMessageIDs(string) []string
+}
+
+type remoteClearResult struct {
+	Deleted int
+	Failed  int
+}
+
+type remoteClearPlatform interface {
+	ClearMessages(context.Context, []string) (remoteClearResult, error)
+}
+
+type remoteClearController struct {
+	source    knownMessageSource
+	platforms map[string]remoteClearPlatform
+}
+
+func newRemoteClearController(kickClient *kickOutboundSender) *remoteClearController {
+	return &remoteClearController{platforms: map[string]remoteClearPlatform{"kick": kickClient}}
+}
+
+func (c *remoteClearController) Execute(ctx context.Context, argument string) (string, error) {
+	fields := strings.Fields(argument)
+	if len(fields) != 1 {
+		return "Usage: /clear PLATFORM (supported: kick)", nil
+	}
+	platform := strings.ToLower(fields[0])
+	provider, ok := c.platforms[platform]
+	if !ok {
+		if platform == "youtube" || platform == "twitch" {
+			return "Remote chat clearing is not implemented for: " + platform, nil
+		}
+		return "Unsupported clear platform: " + fields[0] + ". Supported: kick.", nil
+	}
+	if c.source == nil {
+		return "No known Kick messages to clear.", nil
+	}
+	ids := c.source.KnownMessageIDs(platform)
+	if len(ids) == 0 {
+		return "No known Kick messages to clear.", nil
+	}
+	result, err := provider.ClearMessages(ctx, ids)
+	if err != nil {
+		return "", err
+	}
+	if result.Failed > 0 {
+		return fmt.Sprintf("Cleared Kick chat: %d deleted, %d failed", result.Deleted, result.Failed), nil
+	}
+	noun := "messages"
+	if result.Deleted == 1 {
+		noun = "message"
+	}
+	return fmt.Sprintf("Cleared Kick chat: %d %s", result.Deleted, noun), nil
 }
 
 func (w *lockedWriter) Write(p []byte) (int, error) {
@@ -867,6 +932,27 @@ func (s *kickOutboundSender) TimeoutUser(ctx context.Context, username, duration
 	return "Timed out: " + user.Username + " for " + strings.ToLower(duration), nil
 }
 
+func (s *kickOutboundSender) ClearMessages(ctx context.Context, messageIDs []string) (remoteClearResult, error) {
+	var result remoteClearResult
+	err := s.withToken(ctx, func(accessToken string) error {
+		result = remoteClearResult{}
+		client := kick.ChatDeleteClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		for _, messageID := range messageIDs {
+			err := client.DeleteMessage(ctx, messageID)
+			switch {
+			case err == nil, errors.Is(err, kick.ErrChatDeleteNotFound):
+				result.Deleted++
+			case errors.Is(err, kick.ErrChatDeleteAuthentication), errors.Is(err, kick.ErrChatDeleteScope):
+				return err
+			default:
+				result.Failed++
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
 func (s *kickOutboundSender) withToken(ctx context.Context, operation func(string) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -891,7 +977,7 @@ func (s *kickOutboundSender) withToken(ctx context.Context, operation func(strin
 }
 
 func kickAuthenticationError(err error) bool {
-	return errors.Is(err, kick.ErrChatAuthentication) || errors.Is(err, kick.ErrChannelAuthentication) || errors.Is(err, kick.ErrModerationAuthentication)
+	return errors.Is(err, kick.ErrChatAuthentication) || errors.Is(err, kick.ErrChannelAuthentication) || errors.Is(err, kick.ErrModerationAuthentication) || errors.Is(err, kick.ErrChatDeleteAuthentication)
 }
 
 func (s *kickOutboundSender) refresh(ctx context.Context) error {

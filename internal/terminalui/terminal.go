@@ -23,6 +23,7 @@ const (
 )
 
 type DisplayMessage struct {
+	ID       string
 	Platform string
 	Author   string
 	Line     string
@@ -140,6 +141,27 @@ func (s *Screen) CleanAuthor(author string) (int, error) {
 	return s.cleanMessages(func(message DisplayMessage) bool {
 		return strings.EqualFold(message.Author, author)
 	})
+}
+
+// KnownMessageIDs returns a point-in-time, deduplicated snapshot of provider
+// message IDs in the bounded display buffer.
+func (s *Screen) KnownMessageIDs(platform string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, message := range s.messages {
+		id := strings.TrimSpace(message.ID)
+		if id == "" || !strings.EqualFold(message.Platform, platform) {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (s *Screen) cleanMessages(matches func(DisplayMessage) bool) (int, error) {
@@ -344,6 +366,9 @@ func (t *Terminal) CleanPlatform(platform string) (int, error) {
 }
 func (t *Terminal) CleanAuthor(author string) (int, error) {
 	return t.screen.CleanAuthor(author)
+}
+func (t *Terminal) KnownMessageIDs(platform string) []string {
+	return t.screen.KnownMessageIDs(platform)
 }
 func (t *Terminal) Writer(destination io.Writer) io.Writer {
 	return t.screen.Writer(destination)
