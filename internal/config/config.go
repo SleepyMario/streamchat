@@ -91,7 +91,8 @@ type Storage struct {
 }
 
 type Emotes struct {
-	Mode string `json:"mode,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	Debug bool   `json:"debug,omitempty"`
 }
 
 const legacyYouTubeRedirectURI = "http://localhost:8791/oauth/youtube/callback"
@@ -274,6 +275,11 @@ func ApplyEnv(c *Config, get func(string) string) {
 	set("STREAMCHAT_CLIENT_SERVER_URL", &c.Client.ServerURL)
 	set("STREAMCHAT_STORAGE_SQLITE_PATH", &c.Storage.SQLitePath)
 	set("STREAMCHAT_EMOTES_MODE", &c.Emotes.Mode)
+	if value := get("STREAMCHAT_EMOTES_DEBUG"); value != "" {
+		if enabled, err := strconv.ParseBool(value); err == nil {
+			c.Emotes.Debug = enabled
+		}
+	}
 	set("STREAMCHAT_RELAY_AUTH_TOKEN", &c.RelayAuthToken)
 	set("STREAMCHAT_LOG_FILE", &c.LogFile)
 }

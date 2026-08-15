@@ -117,6 +117,25 @@ func TestParseKickEmotePositionsUseRunesWithUnicodeText(t *testing.T) {
 	}
 }
 
+func TestEnrichEmotesRepairsOlderRelayPayload(t *testing.T) {
+	content := "hello [emote:1730755:ppJedi]"
+	emotes := EnrichEmotes(content, []chat.Emote{{ID: "1730755", Start: 6, End: 27}})
+	if len(emotes) != 1 {
+		t.Fatalf("emotes=%+v", emotes)
+	}
+	got := emotes[0]
+	if got.Name != "ppJedi" || got.URL != "https://files.kick.com/emotes/1730755/fullsize" || got.Start != 6 || got.End != 27 {
+		t.Fatalf("enriched=%+v", got)
+	}
+}
+
+func TestEnrichEmotesPreservesProviderName(t *testing.T) {
+	emotes := EnrichEmotes("[emote:1579033:visibleName]", []chat.Emote{{ID: "1579033", Name: "ProviderName", Start: 0, End: 27}})
+	if len(emotes) != 1 || emotes[0].Name != "ProviderName" {
+		t.Fatalf("emotes=%+v", emotes)
+	}
+}
+
 func TestParseMapsOnlyExplicitKickRolesAndNeverVerified(t *testing.T) {
 	payload := []byte(`{"message_id":"roles","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":1,"username":"channel","is_verified":true,"identity":{"badges":[{"type":"subscriber"},{"type":"verified","text":"Verified Channel"},{"type":"og"},{"type":"vip"},{"type":"partner"},{"type":"moderator"},{"type":"follower"},{"type":"sub_gifter"}]}},"content":"hello","created_at":"2026-01-01T00:00:00Z"}`)
 	message, err := Parse(payload, "event")

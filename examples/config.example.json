@@ -39,7 +39,8 @@
     "sqlite_path": "/var/lib/streamchat/streamchat.db"
   },
   "emotes": {
-    "mode": "auto"
+    "mode": "auto",
+    "debug": false
   },
   "relay_auth_token": "",
   "log_file": "",

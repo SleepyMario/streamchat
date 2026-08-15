@@ -6,11 +6,11 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -68,21 +68,83 @@ func TestUeberzugSocketUpdateRemovesOldAndAddsCellPlacement(t *testing.T) {
 	}
 }
 
-func TestStopProcessLeavesNoHelper(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process signal semantics differ")
+func TestAwaitUeberzugSocketAcceptsExpectedDaemonizingLauncherExit(t *testing.T) {
+	directory := t.TempDir()
+	pid := 4242
+	pidFile := filepath.Join(directory, "pid")
+	if err := os.WriteFile(pidFile, []byte("4242"), 0600); err != nil {
+		t.Fatal(err)
 	}
+	socket := filepath.Join(directory, "ueberzugpp-4242.socket")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	launcherDone := make(chan error, 1)
+	launcherDone <- nil
+	close(launcherDone)
+	gotPID, gotSocket, err := awaitUeberzugSocket(pidFile, directory, launcherDone)
+	if err != nil || gotPID != pid || gotSocket != socket {
+		t.Fatalf("pid=%d socket=%q err=%v", gotPID, gotSocket, err)
+	}
+}
+
+func TestUeberzugExitUsesVersion210SocketProtocol(t *testing.T) {
+	directory := t.TempDir()
+	socket := filepath.Join(directory, "control.socket")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	payload := make(chan string, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		data, _ := io.ReadAll(connection)
+		payload <- string(data)
+	}()
+	if err = sendUeberzugExit(socket); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-payload; got != "EXIT" {
+		t.Fatalf("exit payload=%q", got)
+	}
+}
+
+func TestStopDaemonUsesSocketExitAndLeavesNoProcess(t *testing.T) {
 	command := exec.Command("sleep", "30")
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
+	directory := t.TempDir()
+	socket := filepath.Join(directory, "control.socket")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
-	go func() { _ = command.Wait(); close(done) }()
-	stopProcess(command, done)
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("helper process remained alive")
+	go func() {
+		defer close(done)
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_, _ = io.ReadAll(connection)
+			_ = connection.Close()
+		}
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	}()
+	stopDaemon(command.Process.Pid, socket)
+	_ = listener.Close()
+	<-done
+	if processAlive(command.Process.Pid) {
+		t.Fatal("helper remains alive")
 	}
 }
 
@@ -131,12 +193,19 @@ func TestUeberzugIntegrationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend.Update([]Placement{{Identifier: "streamchat-smoke", Path: imagePath, X: 0, Y: 0, Width: 1, Height: 1}})
-	time.Sleep(50 * time.Millisecond)
+	hold := 50 * time.Millisecond
+	if configured := os.Getenv("STREAMCHAT_UEBERZUG_SMOKE_HOLD"); configured != "" {
+		if parsed, parseErr := time.ParseDuration(configured); parseErr == nil {
+			hold = parsed
+		}
+	}
+	time.Sleep(hold)
+	pid := backend.PID()
 	if err = backend.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if backend.command.ProcessState == nil || !backend.command.ProcessState.Exited() {
-		t.Fatal("Überzug++ helper did not exit")
+	if processAlive(pid) {
+		t.Fatal("Überzug++ daemon did not exit")
 	}
 	if _, err = os.Stat(backend.temporaryDir); !os.IsNotExist(err) {
 		t.Fatalf("runtime directory remains: %v", err)

@@ -501,7 +501,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	if inFile != nil {
 		if outFile, outputOK := out.(*os.File); outputOK && terminalui.IsInteractive(inFile, outFile) {
 			var err error
-			emotes := emote.NewDefaultController(c.Emotes.Mode, outFile)
+			emotes := emote.NewDefaultControllerWithOptions(emote.DefaultControllerOptions{Mode: c.Emotes.Mode, TerminalOutput: outFile, Debug: c.Emotes.Debug})
 			terminal, err = terminalui.OpenWithBackend(inFile, outFile, in, emotes)
 			if err != nil {
 				return fmt.Errorf("initialize interactive terminal: %w", err)
@@ -625,6 +625,9 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 			if !ok {
 				merged = nil
 				continue
+			}
+			if m.Platform == chat.PlatformKick {
+				m.Emotes = kick.EnrichEmotes(m.Text, m.Emotes)
 			}
 			if terminal == nil {
 				e = term.Render(m)

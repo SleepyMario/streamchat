@@ -117,12 +117,15 @@ Kick emotes use their structured webhook metadata. In an interactive Linux termi
 ```json
 {
   "emotes": {
-    "mode": "auto"
+    "mode": "auto",
+    "debug": false
   }
 }
 ```
 
 Images are fetched asynchronously from Kick's provider-derived official asset URL, limited to 2 MiB, deduplicated while downloading, and persisted under `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/kick/` using numeric emote IDs rather than names. Image overlays are recomputed from the bounded visible-message model during chat scroll, resize, and `/clean`, and are removed before alternate-screen exit. Emote presentation never rewrites or deletes archived message data.
+
+For troubleshooting, set `emotes.debug` to `true` or `STREAMCHAT_EMOTES_DEBUG=true`. Sanitized backend/cache events are written privately to `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/debug.log`; normal chat output is unchanged. The log contains provider names, numeric emote IDs, cache outcomes, and generic helper/download failures, but no OAuth or relay credentials.
 
 ## Server/client mode and archive
 
@@ -290,7 +293,7 @@ Advanced environment variables:
 - Relay authentication: `STREAMCHAT_RELAY_AUTH_TOKEN`
 - Storage: `STREAMCHAT_STORAGE_SQLITE_PATH`
 - Output: `STREAMCHAT_LOG_FILE`
-- Emotes: `STREAMCHAT_EMOTES_MODE` (`auto`, `text`, or `off`)
+- Emotes: `STREAMCHAT_EMOTES_MODE` (`auto`, `text`, or `off`), `STREAMCHAT_EMOTES_DEBUG` (`true` or `false`)
 
 See `examples/config.example.json` for the manual JSON shape. Environment-provided access tokens are used in memory and are not written back during refresh.
 

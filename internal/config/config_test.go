@@ -132,12 +132,15 @@ func TestEmoteModeDefaultsEnvironmentAndValidation(t *testing.T) {
 		t.Fatalf("default mode=%q", c.Emotes.Mode)
 	}
 	ApplyEnv(&c, func(key string) string {
-		if key == "STREAMCHAT_EMOTES_MODE" {
+		switch key {
+		case "STREAMCHAT_EMOTES_MODE":
 			return "text"
+		case "STREAMCHAT_EMOTES_DEBUG":
+			return "true"
 		}
 		return ""
 	})
-	if c.Emotes.Mode != "text" || c.Validate("run") != nil {
+	if c.Emotes.Mode != "text" || !c.Emotes.Debug || c.Validate("run") != nil {
 		t.Fatalf("text mode rejected: %+v", c.Emotes)
 	}
 	c.Emotes.Mode = "off"

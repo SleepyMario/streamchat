@@ -38,6 +38,16 @@ type Cache struct {
 	failed     map[string]time.Time
 }
 
+type CacheState string
+
+const (
+	CacheInvalid CacheState = "invalid"
+	CacheHit     CacheState = "hit"
+	CachePending CacheState = "pending"
+	CacheBackoff CacheState = "backoff"
+	CacheQueued  CacheState = "queued"
+)
+
 func NewCache(options CacheOptions) (*Cache, error) {
 	directory := options.Directory
 	if directory == "" {
@@ -106,22 +116,27 @@ func safeKey(value string) bool {
 // Resolve returns a persistent cache hit immediately or starts one
 // deduplicated asynchronous download and returns a textual-fallback miss.
 func (c *Cache) Resolve(provider, id, rawURL string, done func(error)) (string, bool) {
+	path, ok, _ := c.ResolveDetailed(provider, id, rawURL, done)
+	return path, ok
+}
+
+func (c *Cache) ResolveDetailed(provider, id, rawURL string, done func(error)) (string, bool, CacheState) {
 	path, err := CachePath(c.directory, provider, id)
 	if err != nil || !safeAssetURL(rawURL) {
-		return "", false
+		return "", false, CacheInvalid
 	}
 	if info, statErr := os.Lstat(path); statErr == nil && info.Mode().IsRegular() && info.Size() > 0 && info.Size() <= c.maxBytes {
-		return path, true
+		return path, true, CacheHit
 	}
 	key := strings.ToLower(provider) + ":" + id
 	c.mu.Lock()
 	if failedAt, failed := c.failed[key]; failed && c.now().Sub(failedAt) < c.retryAfter {
 		c.mu.Unlock()
-		return "", false
+		return "", false, CacheBackoff
 	}
 	if _, exists := c.pending[key]; exists {
 		c.mu.Unlock()
-		return "", false
+		return "", false, CachePending
 	}
 	c.pending[key] = done
 	c.mu.Unlock()
@@ -140,7 +155,7 @@ func (c *Cache) Resolve(provider, id, rawURL string, done func(error)) (string, 
 			callback(downloadErr)
 		}
 	}()
-	return "", false
+	return "", false, CacheQueued
 }
 
 func (c *Cache) download(path, rawURL string) error {

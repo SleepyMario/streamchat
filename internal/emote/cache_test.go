@@ -109,3 +109,27 @@ func TestCacheFailureAndOversizeStayTextual(t *testing.T) {
 		})
 	}
 }
+
+func TestOptionalDiagnosticsUsePrivateCacheLog(t *testing.T) {
+	directory := t.TempDir()
+	log, err := newDiagnosticLog(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.write("download failed: provider=kick id=1730755 error=HTTP 429")
+	if err = log.close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "debug.log")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode=%o", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "provider=kick id=1730755") {
+		t.Fatalf("data=%q err=%v", data, err)
+	}
+}

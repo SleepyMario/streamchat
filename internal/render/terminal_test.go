@@ -2,11 +2,17 @@ package render
 
 import (
 	"bytes"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/emote"
+	"github.com/SleepyMario/streamchat/internal/platform/kick"
 )
 
 func TestSanitizeAndUnicode(t *testing.T) {
@@ -40,6 +46,53 @@ func TestStructuredEmotesUseReadableTextFallbackWithoutImageBackend(t *testing.T
 	}
 	if !strings.Contains(output.String(), "hello :ppJedi:") || strings.Contains(output.String(), "[emote:") {
 		t.Fatalf("non-TTY fallback=%q", output.String())
+	}
+}
+
+type availableImageBackend struct{}
+
+func (availableImageBackend) Available() bool          { return true }
+func (availableImageBackend) Update([]emote.Placement) {}
+func (availableImageBackend) Close() error             { return nil }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+func TestOlderKickRelayEmoteReachesCacheAndBecomesImage(t *testing.T) {
+	directory := t.TempDir()
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.String() != "https://files.kick.com/emotes/1730755/fullsize" {
+			t.Fatalf("URL=%s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/gif"}}, Body: io.NopCloser(bytes.NewReader([]byte("GIF89a-streamchat")))}, nil
+	})}
+	cache, err := emote.NewCache(emote.CacheOptions{Directory: directory, HTTP: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := emote.NewController(emote.ControllerOptions{Mode: "auto", Cache: cache, Backend: availableImageBackend{}})
+	redrawn := make(chan struct{}, 1)
+	controller.SetRedraw(func() { redrawn <- struct{}{} })
+	message := chat.Message{Platform: chat.PlatformKick, AuthorDisplayName: "viewer", Text: "[emote:1730755:ppJedi]", Emotes: []chat.Emote{{ID: "1730755", Start: 0, End: 21}}}
+	message.Emotes = kick.EnrichEmotes(message.Text, message.Emotes)
+	formatter := New(io.Discard, Options{Emotes: controller.Resolve})
+	if first := formatter.Format(message); !strings.Contains(first.Text, ":ppJedi:") {
+		t.Fatalf("first render=%+v", first)
+	}
+	select {
+	case <-redrawn:
+	case <-time.After(2 * time.Second):
+		t.Fatal("download did not trigger redraw")
+	}
+	second := formatter.Format(message)
+	if len(second.Images) != 1 || requests != 1 {
+		t.Fatalf("second=%+v requests=%d", second, requests)
+	}
+	if _, err = os.Stat(filepath.Join(directory, "kick", "1730755.img")); err != nil {
+		t.Fatalf("cache file missing: %v", err)
 	}
 }
 

@@ -148,37 +148,69 @@ func Parse(body []byte, eventID string) (chat.Message, error) {
 }
 
 func normalizeKickEmotes(content string, provider []eventEmote) []chat.Emote {
-	known := make(map[string]struct{}, len(provider))
-	for _, emote := range provider {
-		known[emote.EmoteID] = struct{}{}
-	}
-	normalized := make([]chat.Emote, 0)
-	consumed := make(map[string]int, len(provider))
-	for _, match := range kickEmoteToken.FindAllStringSubmatchIndex(content, -1) {
-		id := content[match[2]:match[3]]
-		if _, exists := known[id]; !exists {
-			continue
-		}
-		start := utf8.RuneCountInString(content[:match[0]])
-		end := start + utf8.RuneCountInString(content[match[0]:match[1]]) - 1
-		normalized = append(normalized, chat.Emote{ID: id, Name: content[match[4]:match[5]], URL: kickEmoteURL(id), Start: start, End: end})
-		consumed[id]++
-	}
+	emotes := make([]chat.Emote, 0)
 	for _, emote := range provider {
 		if len(emote.Positions) == 0 {
-			if consumed[emote.EmoteID] == 0 {
-				normalized = append(normalized, chat.Emote{ID: emote.EmoteID, URL: kickEmoteURL(emote.EmoteID), Start: -1, End: -1})
-			}
+			emotes = append(emotes, chat.Emote{ID: emote.EmoteID, Start: -1, End: -1})
 			continue
 		}
-		for index, position := range emote.Positions {
-			if index < consumed[emote.EmoteID] {
-				continue
-			}
-			normalized = append(normalized, chat.Emote{ID: emote.EmoteID, URL: kickEmoteURL(emote.EmoteID), Start: position.S, End: position.E})
+		for _, position := range emote.Positions {
+			emotes = append(emotes, chat.Emote{ID: emote.EmoteID, Start: position.S, End: position.E})
 		}
 	}
-	return normalized
+	return EnrichEmotes(content, emotes)
+}
+
+// EnrichEmotes fills the name, canonical asset URL, and exact rune range from
+// Kick's structured IDs plus content tokens. It is also applied by interactive
+// clients so messages from older relay servers remain renderable.
+func EnrichEmotes(content string, structured []chat.Emote) []chat.Emote {
+	type token struct {
+		id, name   string
+		start, end int
+		used       bool
+	}
+	tokens := make([]token, 0)
+	for _, match := range kickEmoteToken.FindAllStringSubmatchIndex(content, -1) {
+		start := utf8.RuneCountInString(content[:match[0]])
+		tokens = append(tokens, token{
+			id:    content[match[2]:match[3]],
+			name:  content[match[4]:match[5]],
+			start: start,
+			end:   start + utf8.RuneCountInString(content[match[0]:match[1]]) - 1,
+		})
+	}
+	emotes := append([]chat.Emote(nil), structured...)
+	for index := range emotes {
+		item := &emotes[index]
+		if item.URL == "" {
+			item.URL = kickEmoteURL(item.ID)
+		}
+		matchIndex := -1
+		for candidate := range tokens {
+			if tokens[candidate].used || tokens[candidate].id != item.ID {
+				continue
+			}
+			if tokens[candidate].start == item.Start && tokens[candidate].end == item.End {
+				matchIndex = candidate
+				break
+			}
+			if matchIndex == -1 {
+				matchIndex = candidate
+			}
+		}
+		if matchIndex < 0 {
+			continue
+		}
+		matched := &tokens[matchIndex]
+		matched.used = true
+		item.Start = matched.start
+		item.End = matched.end
+		if item.Name == "" {
+			item.Name = matched.name
+		}
+	}
+	return emotes
 }
 
 func kickEmoteURL(id string) string {
