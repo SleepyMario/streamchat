@@ -1,11 +1,12 @@
 # Streamchat
 
-Streamchat reads live chat from YouTube, Kick, and Twitch, merges messages chronologically, and prints a safe terminal stream. It uses only documented official platform APIs.
+Streamchat `v0.1.0-beta.1` is the first public beta, focused on Kick. Kick inbound chat, chatback, channel controls, moderation, archive/relay, and the interactive terminal UI form the beta-complete path. YouTube and Twitch support remains preliminary and is not claimed as beta-complete. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
 ```sh
 make build
+./bin/streamchat version
 ./bin/streamchat setup
 ./bin/streamchat run
 ```
@@ -350,27 +351,35 @@ make check
 
 Tests use fake adapters, `httptest` servers, invented fixtures, and fake WebSockets. They do not call external services.
 
-## Debian and Ubuntu package
+## Debian and Ubuntu packages
 
-Build an amd64 package with the locally installed Go toolchain and `dpkg-deb`:
-
-```sh
-make deb
-sudo apt install ./dist/streamchat_<version>_amd64.deb
-```
-
-The version is derived from the exact Git tag, or from the commit date and hash when the commit is untagged. Set `VERSION=1.2.3 make deb` to override it for a release build. The package contains a statically linked `/usr/bin/streamchat`, the README and license, and configuration/systemd examples under `/usr/share/doc/streamchat/examples/`. It has no Go or libc runtime dependency; only `ca-certificates` is required for trusted HTTPS connections to the platform APIs.
-
-The example unit runs as the dedicated `streamchat` user, reads `/etc/streamchat/config.json`, and uses systemd's `StateDirectory=streamchat` to create `/var/lib/streamchat`; it does not embed secrets. Create the service account and private configuration directory before installing the example as a real unit:
+Build the client and headless-server packages with the locally installed Go toolchain and `dpkg-deb`:
 
 ```sh
-sudo useradd --system --home-dir /var/lib/streamchat --shell /usr/sbin/nologin streamchat
-sudo install -d -m 0750 -o streamchat -g streamchat /etc/streamchat
-sudo install -m 0600 -o streamchat -g streamchat /usr/share/doc/streamchat/examples/config.example.json /etc/streamchat/config.json
-sudo install -m 0644 /usr/share/doc/streamchat/examples/systemd/streamchat.service /etc/systemd/system/streamchat.service
+VERSION=0.1.0-beta.1 make deb
+sudo apt install ./dist/streamchat_0.1.0~beta.1_amd64.deb
 ```
 
-The `.deb` includes the updated unit under `/usr/share/doc/streamchat/examples/systemd/` and keeps the existing single-package model.
+The upstream prerelease `0.1.0-beta.1` maps to Debian `0.1.0~beta.1`, ensuring it sorts before the eventual `0.1.0` final release. Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream form into the binary, so `streamchat version` reports `streamchat 0.1.0-beta.1` for this release.
+
+`streamchat` owns the statically linked `/usr/bin/streamchat`, user-facing documentation, and no systemd service. `streamchat-server` depends on the exact same version of `streamchat`, avoiding a duplicate executable, and owns `streamchat-server.service` plus the server configuration example. Install a server with both local artifacts:
+
+```sh
+sudo apt install \
+  ./dist/streamchat_0.1.0~beta.1_amd64.deb \
+  ./dist/streamchat-server_0.1.0~beta.1_amd64.deb
+```
+
+The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:
+
+```sh
+sudo install -m 0600 -o streamchat -g streamchat \
+  /usr/share/doc/streamchat-server/examples/config.example.json \
+  /etc/streamchat/config.json
+sudo systemctl enable --now streamchat-server.service
+```
+
+During an upgrade, the package detects an enabled or active legacy `streamchat.service`, stops and disables it, reloads systemd, and transfers the corresponding enabled/active state to `streamchat-server.service`. The new unit also conflicts with the old service so both cannot run together. The old manually installed unit file is left untouched and may be removed after the new service is verified; configuration and archive data are retained even if the package is removed.
 
 ## License
 

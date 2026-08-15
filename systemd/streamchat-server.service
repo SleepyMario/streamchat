@@ -2,6 +2,7 @@
 Description=Streamchat chat ingestion, archive, and relay server
 After=network-online.target
 Wants=network-online.target
+Conflicts=streamchat.service
 
 [Service]
 Type=simple

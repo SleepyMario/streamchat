@@ -1,7 +1,10 @@
 .PHONY: build test test-race vet fmt fmt-check check demo deb
+VERSION ?= $(shell ./scripts/version.sh)
+VERSION_LDFLAGS = -X main.version=$(VERSION)
+
 build:
 	mkdir -p bin
-	go build -o bin/streamchat ./cmd/streamchat
+	go build -ldflags "$(VERSION_LDFLAGS)" -o bin/streamchat ./cmd/streamchat
 test:
 	go test ./...
 test-race:

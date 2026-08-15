@@ -39,6 +39,22 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
+	if !strings.Contains(out.String(), "public beta focused on Kick") || !strings.Contains(out.String(), "YouTube and Twitch support remains preliminary") {
+		t.Fatalf("help does not describe beta support accurately: %s", out.String())
+	}
+}
+
+func TestVersionReportsBuildValue(t *testing.T) {
+	original := version
+	version = "0.1.0-beta.1"
+	t.Cleanup(func() { version = original })
+	var out, errw bytes.Buffer
+	if code := run([]string{"version"}, &out, &errw); code != 0 || errw.Len() != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errw.String())
+	}
+	if got := out.String(); got != "streamchat 0.1.0-beta.1\n" {
+		t.Fatalf("version output=%q", got)
+	}
 }
 
 func TestOutboundTargetStatePersistsAcrossSimulatedSessions(t *testing.T) {

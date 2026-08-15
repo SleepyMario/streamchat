@@ -1,0 +1,38 @@
+#!/bin/sh
+set -e
+
+if ! getent passwd streamchat >/dev/null 2>&1; then
+	adduser --system --group --home /var/lib/streamchat --no-create-home streamchat >/dev/null
+fi
+
+if [ ! -d /etc/streamchat ]; then
+	install -d -m 0750 -o streamchat -g streamchat /etc/streamchat
+fi
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+	old_enabled=false
+	old_active=false
+	if systemctl is-enabled --quiet streamchat.service 2>/dev/null; then
+		old_enabled=true
+	fi
+	if systemctl is-active --quiet streamchat.service 2>/dev/null; then
+		old_active=true
+	fi
+
+	if [ "${old_active}" = true ]; then
+		systemctl stop streamchat.service || true
+	fi
+	if [ "${old_enabled}" = true ]; then
+		systemctl disable streamchat.service || true
+	fi
+
+	systemctl daemon-reload || true
+	if [ "${old_enabled}" = true ]; then
+		systemctl enable streamchat-server.service || true
+	fi
+	if [ "${old_active}" = true ]; then
+		systemctl start streamchat-server.service || true
+	fi
+fi
+
+exit 0

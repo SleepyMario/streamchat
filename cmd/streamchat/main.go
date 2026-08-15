@@ -37,9 +37,13 @@ import (
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
-const version = "0.3.0"
+// version is injected for release and packaged builds with:
+// -ldflags "-X main.version=<upstream-version>".
+var version = "development"
+
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat reads and merges live chat from YouTube, Kick, and Twitch.
+const usage = `Streamchat is a public beta focused on Kick.
+Kick is beta-complete. YouTube and Twitch support remains preliminary.
 
 Start here:
   streamchat setup                 Configure one or more services interactively
@@ -74,6 +78,7 @@ Neither command deletes Streamchat archive records.
 On a terminal, the alternate screen keeps Kick status at top and input at bottom.
 
 Useful commands:
+  streamchat version
   streamchat setup youtube|kick|twitch [--config PATH]
   streamchat setup youtube-server  Authorize unattended server ingestion
   streamchat run --youtube-video URL_OR_ID

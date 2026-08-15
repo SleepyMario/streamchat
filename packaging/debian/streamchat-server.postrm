@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+fi
+
+# Configuration under /etc/streamchat and archive data under
+# /var/lib/streamchat are deliberately retained on remove and purge.
+exit 0
