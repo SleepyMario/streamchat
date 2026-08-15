@@ -30,7 +30,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban USER") || !strings.Contains(out.String(), "/timeout USER 10m") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -208,6 +208,126 @@ func TestCategoryPrintsResolvedNameAfterKickConfirms(t *testing.T) {
 	runOutboundInput(context.Background(), strings.NewReader("/category Just Chatting\n"), targets, &out, &errw, func() {})
 	if strings.TrimSpace(out.String()) != "Category updated: Just Chatting" || errw.Len() != 0 {
 		t.Fatalf("out=%q err=%q", out.String(), errw.String())
+	}
+}
+
+func TestEmptyBanAndTimeoutPrintUsageWithoutAuthorization(t *testing.T) {
+	client := &kickOutboundSender{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets.RegisterControl("ban", outbound.ControlFunc(client.Ban))
+	targets.RegisterControl("timeout", outbound.ControlFunc(client.Timeout))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/ban\n/timeout user\n"), targets, &out, &errw, func() {})
+	if got := out.String(); !strings.Contains(got, "Usage: /ban USER") || !strings.Contains(got, "Usage: /timeout USER DURATION") {
+		t.Fatalf("output=%q", got)
+	}
+	if errw.Len() != 0 {
+		t.Fatalf("unexpected error=%q", errw.String())
+	}
+}
+
+func TestModerationControlsSucceedAndNeverBecomeChat(t *testing.T) {
+	moderationRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/channels":
+			_, _ = io.WriteString(w, `{"data":[{"broadcaster_user_id":456,"slug":"targetuser"}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/moderation/bans":
+			moderationRequests++
+			_, _ = io.WriteString(w, `{"data":{},"message":"OK"}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
+	sender := &recordingOutboundSender{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets.RegisterControl("ban", outbound.ControlFunc(client.Ban))
+	targets.RegisterControl("timeout", outbound.ControlFunc(client.Timeout))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/ban TargetUser\n/kk\n/timeout TargetUser 10m\nhello\n"), targets, &out, &errw, func() {})
+	if moderationRequests != 2 || !reflect.DeepEqual(sender.messages, []string{"hello"}) {
+		t.Fatalf("moderation=%d chat=%v", moderationRequests, sender.messages)
+	}
+	if got := out.String(); !strings.Contains(got, "Banned: targetuser") || !strings.Contains(got, "Timed out: targetuser for 10m") {
+		t.Fatalf("output=%q", got)
+	}
+	if errw.Len() != 0 || targets.Selected() != "kk" {
+		t.Fatalf("selected=%q err=%q", targets.Selected(), errw.String())
+	}
+}
+
+func TestModerationCommandDoesNotDeleteArchiveRows(t *testing.T) {
+	store, err := archivepkg.Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	archived := chat.Message{ID: "kick-message", Platform: chat.PlatformKick, ChannelID: "123", Timestamp: time.Now(), AuthorID: "456", AuthorDisplayName: "targetuser", Text: "historical message", EventType: chat.EventMessage}
+	if inserted, storeErr := store.Store(context.Background(), archived); storeErr != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, storeErr)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"data":[{"broadcaster_user_id":456,"slug":"targetuser"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":{},"message":"OK"}`)
+	}))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
+	if result, moderationErr := client.Ban(context.Background(), "targetuser"); moderationErr != nil || result != "Banned: targetuser" {
+		t.Fatalf("result=%q err=%v", result, moderationErr)
+	}
+	stats, err := store.Stats(context.Background())
+	if err != nil || stats.Total != 1 {
+		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+}
+
+func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"data":[{"broadcaster_user_id":456,"slug":"targetuser"}]}`)
+			return
+		}
+		close(started)
+		<-release
+		_, _ = io.WriteString(w, `{"data":{},"message":"OK"}`)
+	}))
+	defer server.Close()
+	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
+	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets.RegisterControl("ban", outbound.ControlFunc(client.Ban))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writes := make(chan string, 2)
+	done := make(chan error, 1)
+	c := config.Defaults()
+	c.NoColor = true
+	go func() {
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: started}}, c, strings.NewReader("/ban targetuser\n"), targets, channelWriter{writes: writes}, io.Discard)
+	}()
+	select {
+	case line := <-writes:
+		if !strings.Contains(line, "still live") {
+			t.Fatalf("unexpected render: %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("incoming chat was not rendered while moderation was blocked")
+	}
+	close(release)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAdapters did not stop")
 	}
 }
 

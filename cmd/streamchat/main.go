@@ -49,10 +49,12 @@ Interactive commands:
   hello                            Send to the selected target
   /title New stream title          Update the Kick stream title
   /category Just Chatting          Update the Kick stream category
+  /ban USER                        Permanently ban a user from Kick chat
+  /timeout USER 10m                Temporarily timeout a user from Kick chat
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
-Title and category commands currently target Kick only.
+Title, category, and moderation commands currently target Kick only.
 On a terminal, a persistent bottom bar provides basic cursor editing.
 
 Useful commands:
@@ -345,6 +347,8 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		})
 		targets.RegisterControl("title", outbound.ControlFunc(kickClient.Title))
 		targets.RegisterControl("category", outbound.ControlFunc(kickClient.Category))
+		targets.RegisterControl("ban", outbound.ControlFunc(kickClient.Ban))
+		targets.RegisterControl("timeout", outbound.ControlFunc(kickClient.Timeout))
 		registerShutdownControls(targets)
 	}
 	return runAdapters(ctx, adapters, c, input, targets, out, errw)
@@ -732,6 +736,45 @@ func (s *kickOutboundSender) Category(ctx context.Context, argument string) (str
 	return "Category updated: " + category.Name, nil
 }
 
+func (s *kickOutboundSender) Ban(ctx context.Context, argument string) (string, error) {
+	fields := strings.Fields(argument)
+	if len(fields) != 1 {
+		return "Usage: /ban USER", nil
+	}
+	var user kick.ModerationUser
+	err := s.withToken(ctx, func(accessToken string) error {
+		client := kick.ModerationClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		var err error
+		user, err = client.Ban(ctx, s.config.BroadcasterID, fields[0])
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return "Banned: " + user.Username, nil
+}
+
+func (s *kickOutboundSender) Timeout(ctx context.Context, argument string) (string, error) {
+	fields := strings.Fields(argument)
+	if len(fields) != 2 {
+		return "Usage: /timeout USER DURATION (for example, /timeout USER 10m)", nil
+	}
+	minutes, err := kick.ParseTimeoutDuration(fields[1])
+	if err != nil {
+		return "", err
+	}
+	var user kick.ModerationUser
+	err = s.withToken(ctx, func(accessToken string) error {
+		client := kick.ModerationClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
+		user, err = client.Timeout(ctx, s.config.BroadcasterID, fields[0], minutes)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return "Timed out: " + user.Username + " for " + strings.ToLower(fields[1]), nil
+}
+
 func (s *kickOutboundSender) withToken(ctx context.Context, operation func(string) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -756,7 +799,7 @@ func (s *kickOutboundSender) withToken(ctx context.Context, operation func(strin
 }
 
 func kickAuthenticationError(err error) bool {
-	return errors.Is(err, kick.ErrChatAuthentication) || errors.Is(err, kick.ErrChannelAuthentication)
+	return errors.Is(err, kick.ErrChatAuthentication) || errors.Is(err, kick.ErrChannelAuthentication) || errors.Is(err, kick.ErrModerationAuthentication)
 }
 
 func (s *kickOutboundSender) refresh(ctx context.Context) error {

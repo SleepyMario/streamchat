@@ -78,3 +78,13 @@ func TestTargetLabel(t *testing.T) {
 		t.Fatalf("labels: none=%q kick=%q youtube=%q", TargetLabel(""), TargetLabel("kk"), TargetLabel("yt"))
 	}
 }
+
+func TestEditorSubmitsModerationCommandsUnchanged(t *testing.T) {
+	for _, command := range []string{"/ban Viewer", "/timeout Viewer 10m"} {
+		var editor Editor
+		event := feed(t, &editor, command+"\r")
+		if !event.Submit || event.Line != command {
+			t.Fatalf("command=%q event=%+v", command, event)
+		}
+	}
+}

@@ -57,6 +57,15 @@ Basic channel controls currently target Kick only and are independent of `/kk` s
 
 `/title` updates the authenticated Kick channel after Kick confirms the request. `/category` accepts a positive numeric category ID or searches official Kick categories by name. A single case-insensitive exact match is preferred, a sole search result is accepted, and multiple plausible results are listed with IDs without changing the category.
 
+Basic moderation controls also currently target Kick only and are independent of `/kk` selection:
+
+```text
+/ban USER
+/timeout USER 10m
+```
+
+`/ban` permanently bans the resolved Kick user. `/timeout` accepts `s`, `m`, or `h` syntax but must resolve to the official API's whole-minute range of 1–10,080 minutes; for example, `10m`, `1h`, and `60s` are valid, while `1s` and `30s` are not. Kick may remove affected messages from visible chat. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
+
 Exit the interactive client cleanly with either command:
 
 ```text
@@ -184,9 +193,11 @@ Kick requires an application created in Developer settings. Its Client ID identi
 - `user:read` to retrieve the authorized user's numeric broadcaster ID automatically;
 - `events:subscribe` to create the `chat.message.sent` version 1 subscription;
 - `chat:write` to send chat messages from the interactive CLI;
-- `channel:write` to update the authenticated channel's stream title and category.
+- `channel:write` to update the authenticated channel's stream title and category;
+- `channel:read` to resolve moderation targets through official channel slugs;
+- `moderation:ban` to ban and timeout users.
 
-The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens. Existing installations authorized before channel controls must rerun `streamchat setup kick` to grant `channel:write`. Category lookup uses Kick's category endpoints with the same user token and does not require `channel:read`. No moderation, stream-key, or rewards scope is requested.
+The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens. Existing installations must rerun `streamchat setup kick` after enabling `channel:read` and `moderation:ban` in the Kick developer portal. Category lookup uses Kick's category endpoints with the same user token. Streamchat does not request chat-message deletion, stream-key, or rewards scopes.
 
 Kick sends events only to the publicly reachable HTTPS webhook configured in the Kick developer application. `kick.webhook_url` must match that portal setting, but Streamchat does not send the local value in the `events/subscriptions` request; `streamchat kick subscribe` creates `method=webhook` subscriptions using the destination already held by Kick. Changing only the local JSON does not update that destination. After changing the portal URL, run `streamchat kick subscribe`.
 

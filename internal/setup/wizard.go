@@ -250,6 +250,8 @@ Streamchat requests public videos.list and liveChatMessages.list data. No OAuth 
 	return nil
 }
 
+var kickOAuthScopes = []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope, kick.ChannelReadScope, kick.ModerationBanScope}
+
 func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	fmt.Fprintln(w.Out, kickInstructions(*c))
 	var err error
@@ -270,7 +272,7 @@ func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	if e := c.Validate("check"); e != nil {
 		return e
 	}
-	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Kick.OAuthBaseURL, "/") + "/oauth/authorize", ClientID: c.Kick.ClientID, RedirectURI: c.Kick.RedirectURI, Scopes: []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope}, UsePKCE: true}, w.Out, w.OpenBrowser)
+	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Kick.OAuthBaseURL, "/") + "/oauth/authorize", ClientID: c.Kick.ClientID, RedirectURI: c.Kick.RedirectURI, Scopes: kickOAuthScopes, UsePKCE: true}, w.Out, w.OpenBrowser)
 	if err != nil {
 		return err
 	}
@@ -316,7 +318,7 @@ func kickInstructions(c config.Config) string {
 After changing the webhook URL in the Kick developer portal, run:
   streamchat kick subscribe
 
-Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), chat:write (to send messages), and channel:write (to update your Kick stream title and category from streamchat run). It does not request moderation, stream-key, or rewards access.`
+Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), chat:write (to send messages), channel:write (to update your Kick stream title and category), channel:read (to resolve moderation targets by channel slug), and moderation:ban (to ban or timeout users from streamchat run). It does not request chat-message deletion, stream-key, or rewards access.`
 }
 
 func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {

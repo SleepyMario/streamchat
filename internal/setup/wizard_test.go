@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/SleepyMario/streamchat/internal/config"
+	"github.com/SleepyMario/streamchat/internal/platform/kick"
 )
 
 func TestSelectionParsing(t *testing.T) {
@@ -89,10 +90,19 @@ func TestKickInstructionsExplainPortalWebhookSourceOfTruth(t *testing.T) {
 		"streamchat kick subscribe",
 		"chat:write",
 		"channel:write",
-		"does not request moderation, stream-key, or rewards access",
+		"channel:read",
+		"moderation:ban",
+		"does not request chat-message deletion, stream-key, or rewards access",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Kick instructions missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestKickOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
+	want := []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope, kick.ChannelReadScope, kick.ModerationBanScope}
+	if !reflect.DeepEqual(kickOAuthScopes, want) {
+		t.Fatalf("scopes=%v want=%v", kickOAuthScopes, want)
 	}
 }
