@@ -6,10 +6,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 )
+
+var ansiSequence = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+func plainTerminalOutput(value string) string {
+	return ansiSequence.ReplaceAllString(value, "")
+}
 
 func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 	var output bytes.Buffer
@@ -17,7 +24,7 @@ func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 	if err := screen.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "[NONE] > ") {
+	if !strings.Contains(plainTerminalOutput(output.String()), "[NONE] > ") {
 		t.Fatalf("missing initial target: %q", output.String())
 	}
 	for _, r := range "hello everyone" {
@@ -31,9 +38,97 @@ func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 	if screen.Text() != "hello everyone" {
 		t.Fatalf("input was lost: %q", screen.Text())
 	}
-	got := output.String()
-	if !strings.Contains(got, "[KICK] viewer  incoming\n") || !strings.Contains(got, "[KICK] > hello everyone") {
+	got := plainTerminalOutput(output.String())
+	if !strings.Contains(got, "[KICK] viewer  incoming\r\n") || !strings.Contains(got, "[KICK] > hello everyone") {
 		t.Fatalf("chat/input redraw missing: %q", got)
+	}
+}
+
+func TestScreenConsecutiveMessagesStartAtColumnOneWithoutDecoration(t *testing.T) {
+	var output bytes.Buffer
+	screen := NewScreen(&output, func() int { return 48 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetTarget("kk")
+	for _, r := range "partially typed" {
+		screen.Feed(r)
+	}
+	output.Reset()
+
+	writer := screen.Writer(&output)
+	for _, message := range []string{"first chat\n", "second is longer\n", "third\n"} {
+		if _, err := io.WriteString(writer, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw := output.String()
+	if strings.Contains(raw, "─") {
+		t.Fatalf("separator leaked into output: %q", raw)
+	}
+	for _, message := range []string{"first chat", "second is longer", "third"} {
+		if !strings.Contains(raw, "\r\x1b[2K\r"+message+"\r\n") {
+			t.Fatalf("chat did not start at column one with CRLF termination: %q", raw)
+		}
+	}
+	const coloredPrompt = "\r\x1b[36m[KICK]\x1b[39m \x1b[32m>\x1b[39m partially typed"
+	if count := strings.Count(raw, coloredPrompt); count != 3 {
+		t.Fatalf("prompt redraw count=%d; output=%q", count, raw)
+	}
+	if screen.Text() != "partially typed" {
+		t.Fatalf("partial input was lost: %q", screen.Text())
+	}
+}
+
+func TestScreenStartsAtColumnOneAndUsesDefaultNamedColors(t *testing.T) {
+	var output bytes.Buffer
+	if _, err := io.WriteString(&output, "cursor is not at column one"); err != nil {
+		t.Fatal(err)
+	}
+	screen := NewScreen(&output, func() int { return 40 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetTarget("kk")
+	raw := output.String()
+	if !strings.Contains(raw, "\x1b[999B\r\x1b[2K\r") {
+		t.Fatalf("screen did not reset to column one: %q", raw)
+	}
+	if !strings.Contains(raw, "\x1b[36m[KICK]\x1b[39m \x1b[32m>\x1b[39m ") {
+		t.Fatalf("named-color prompt missing: %q", raw)
+	}
+	if strings.Contains(raw, "38;2") || strings.Contains(raw, "38;5") {
+		t.Fatalf("prompt used a hard-coded RGB/indexed color: %q", raw)
+	}
+}
+
+func TestScreenResizeThenIncomingUnicodePreservesInput(t *testing.T) {
+	var output bytes.Buffer
+	width := 24
+	screen := NewScreen(&output, func() int { return width })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetTarget("kk")
+	for _, r := range "你好🙂 typing" {
+		screen.Feed(r)
+	}
+	width = 16
+	screen.Redraw()
+	output.Reset()
+	if _, err := io.WriteString(screen.Writer(&output), "[KICK] viewer  世界\n"); err != nil {
+		t.Fatal(err)
+	}
+	if screen.Text() != "你好🙂 typing" {
+		t.Fatalf("Unicode input changed after resize/redraw: %q", screen.Text())
+	}
+	raw := output.String()
+	if !strings.Contains(raw, "\r\x1b[2K\r[KICK] viewer  世界\r\n") {
+		t.Fatalf("incoming message drifted after resize: %q", raw)
+	}
+	if strings.Contains(raw, "─") {
+		t.Fatalf("separator fragment appeared after resize: %q", raw)
 	}
 }
 

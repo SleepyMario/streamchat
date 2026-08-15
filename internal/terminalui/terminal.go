@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -37,10 +36,10 @@ func (s *Screen) Start() error {
 		return nil
 	}
 	s.visible = true
-	if _, err := io.WriteString(s.out, "\x1b[999B\r\x1b[2K"); err != nil {
+	if _, err := io.WriteString(s.out, "\x1b[999B\r\x1b[2K\r"); err != nil {
 		return err
 	}
-	return s.drawLocked()
+	return s.drawInputLocked(s.terminalWidth())
 }
 
 func (s *Screen) Close() error {
@@ -50,7 +49,7 @@ func (s *Screen) Close() error {
 		return nil
 	}
 	s.visible = false
-	_, err := io.WriteString(s.out, "\r\x1b[2K\x1b[1A\r\x1b[2K\r")
+	_, err := io.WriteString(s.out, "\r\x1b[2K\r")
 	return err
 }
 
@@ -84,8 +83,8 @@ func (s *Screen) Redraw() {
 		return
 	}
 	_ = s.clearLocked()
-	_, _ = io.WriteString(s.out, "\x1b[999B")
-	_ = s.drawLocked()
+	_, _ = io.WriteString(s.out, "\x1b[999B\r")
+	_ = s.drawInputLocked(s.terminalWidth())
 }
 
 func (s *Screen) Text() string {
@@ -104,6 +103,9 @@ type screenWriter struct {
 }
 
 func (w screenWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	s := w.screen
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,43 +115,35 @@ func (w screenWriter) Write(p []byte) (int, error) {
 	if err := s.clearLocked(); err != nil {
 		return 0, err
 	}
-	n, err := w.destination.Write(p)
-	if err == nil && len(p) > 0 && p[len(p)-1] != '\n' {
-		_, err = io.WriteString(w.destination, "\n")
-	}
-	if drawErr := s.drawLocked(); err == nil {
+	n, err := writeTerminalLine(w.destination, p)
+	if drawErr := s.drawInputLocked(s.terminalWidth()); err == nil {
 		err = drawErr
 	}
 	return n, err
 }
 
 func (s *Screen) clearLocked() error {
-	_, err := io.WriteString(s.out, "\r\x1b[2K\x1b[1A\r\x1b[2K")
+	_, err := io.WriteString(s.out, "\r\x1b[2K\r")
 	return err
 }
 
-func (s *Screen) drawLocked() error {
-	width := s.terminalWidth()
-	separator := strings.Repeat("─", max(width-1, 1))
-	if _, err := fmt.Fprintf(s.out, "%s\r\n", separator); err != nil {
-		return err
-	}
-	return s.drawInputLocked(width)
-}
-
 func (s *Screen) redrawInputLocked() error {
-	if _, err := io.WriteString(s.out, "\r\x1b[2K"); err != nil {
+	if _, err := io.WriteString(s.out, "\r\x1b[2K\r"); err != nil {
 		return err
 	}
 	return s.drawInputLocked(s.terminalWidth())
 }
 
 func (s *Screen) drawInputLocked(width int) error {
-	prefix := "[" + s.target + "] > "
-	prefix = fitWidth(prefix, max(width-1, 1))
+	plainPrefix := "[" + s.target + "] > "
+	prefix := fitWidth(plainPrefix, max(width-1, 1))
 	prefixWidth := runewidth.StringWidth(prefix)
 	text, cursor := s.editor.Window(max(width-prefixWidth, 0))
-	if _, err := io.WriteString(s.out, prefix+text+"\r"); err != nil {
+	displayPrefix := prefix
+	if prefix == plainPrefix {
+		displayPrefix = "\x1b[36m[" + s.target + "]\x1b[39m \x1b[32m>\x1b[39m "
+	}
+	if _, err := io.WriteString(s.out, "\r"+displayPrefix+text+"\r"); err != nil {
 		return err
 	}
 	column := prefixWidth + cursor
@@ -158,6 +152,23 @@ func (s *Screen) drawInputLocked(width int) error {
 		return err
 	}
 	return nil
+}
+
+func writeTerminalLine(destination io.Writer, p []byte) (int, error) {
+	normalized := make([]byte, 0, len(p)+2)
+	for i, b := range p {
+		if b == '\n' && (i == 0 || p[i-1] != '\r') {
+			normalized = append(normalized, '\r')
+		}
+		normalized = append(normalized, b)
+	}
+	if len(normalized) == 0 || normalized[len(normalized)-1] != '\n' {
+		normalized = append(normalized, '\r', '\n')
+	}
+	if _, err := destination.Write(normalized); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func (s *Screen) terminalWidth() int {
