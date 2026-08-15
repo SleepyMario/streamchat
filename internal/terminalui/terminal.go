@@ -54,6 +54,15 @@ type Screen struct {
 	visible  bool
 }
 
+type screenLayout struct {
+	statusRows         int
+	topSeparatorRow    int
+	chatTop            int
+	chatBottom         int
+	bottomSeparatorRow int
+	inputRow           int
+}
+
 func NewScreen(out io.Writer, width func() int) *Screen {
 	return newScreen(out, width, func() int { return defaultHeight })
 }
@@ -126,8 +135,9 @@ func (s *Screen) SetStatus(status StreamStatus) {
 	if !s.visible {
 		return
 	}
-	_ = s.drawStatusLocked(s.terminalWidth(), s.terminalHeight())
-	_ = s.drawInputLocked(s.terminalWidth(), s.terminalHeight())
+	width, height := s.terminalWidth(), s.terminalHeight()
+	_ = s.drawStatusLocked(width, height)
+	_ = s.drawInputLocked(width, height)
 }
 
 func (s *Screen) Text() string {
@@ -147,10 +157,11 @@ func (s *Screen) AppendMessage(message DisplayMessage) error {
 	if !s.visible {
 		return nil
 	}
-	if err := s.appendChatLocked([]byte(message.Line), s.terminalHeight()); err != nil {
+	width, height := s.terminalWidth(), s.terminalHeight()
+	if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
 		return err
 	}
-	return s.drawInputLocked(s.terminalWidth(), s.terminalHeight())
+	return s.drawInputLocked(width, height)
 }
 
 func (s *Screen) CleanAll() (int, error) {
@@ -206,7 +217,7 @@ func (s *Screen) cleanMessages(matches func(DisplayMessage) bool) (int, error) {
 	if removed == 0 || !s.visible {
 		return removed, nil
 	}
-	return removed, s.redrawViewLocked()
+	return removed, s.redrawChatLocked()
 }
 
 func (s *Screen) redrawViewLocked() error {
@@ -217,8 +228,30 @@ func (s *Screen) redrawViewLocked() error {
 	if err := s.drawStatusLocked(width, height); err != nil {
 		return err
 	}
+	if err := s.drawSeparatorsLocked(width, height); err != nil {
+		return err
+	}
 	if err := s.setChatRegionLocked(height); err != nil {
 		return err
+	}
+	for _, message := range s.messages {
+		if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
+			return err
+		}
+	}
+	return s.drawInputLocked(width, height)
+}
+
+func (s *Screen) redrawChatLocked() error {
+	width, height := s.terminalWidth(), s.terminalHeight()
+	layout := layoutForHeight(height)
+	if err := s.setChatRegionLocked(height); err != nil {
+		return err
+	}
+	for row := layout.chatTop; row > 0 && row <= layout.chatBottom; row++ {
+		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K", row); err != nil {
+			return err
+		}
 	}
 	for _, message := range s.messages {
 		if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
@@ -247,12 +280,13 @@ func (w screenWriter) Write(p []byte) (int, error) {
 	if !s.visible {
 		return w.destination.Write(p)
 	}
-	if err := s.appendChatLocked(p, s.terminalHeight()); err != nil {
+	width, height := s.terminalWidth(), s.terminalHeight()
+	if err := s.appendChatLocked(p, height); err != nil {
 		return 0, err
 	}
 	n := len(p)
 	var err error
-	if drawErr := s.drawInputLocked(s.terminalWidth(), s.terminalHeight()); err == nil {
+	if drawErr := s.drawInputLocked(width, height); err == nil {
 		err = drawErr
 	}
 	return n, err
@@ -271,7 +305,7 @@ func (s *Screen) drawInputLocked(width, height int) error {
 	if prefix == plainPrefix {
 		displayPrefix = "\x1b[36m[" + s.target + "]\x1b[39m \x1b[32m>\x1b[39m "
 	}
-	row := max(height, 1)
+	row := layoutForHeight(height).inputRow
 	if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s%s\r", row, displayPrefix, text); err != nil {
 		return err
 	}
@@ -295,7 +329,7 @@ func (s *Screen) drawStatusLocked(width, height int) error {
 		}
 	}
 	labels := []string{"Title:    ", "Category: ", "Viewers:  "}
-	rows := min(statusLineCount, max(height-1, 0))
+	rows := layoutForHeight(height).statusRows
 	for i := 0; i < rows; i++ {
 		plain := fitWidth(labels[i]+values[i], max(width, 1))
 		display := plain
@@ -303,6 +337,20 @@ func (s *Screen) drawStatusLocked(width, height int) error {
 			display = "\x1b[36m" + strings.TrimRight(labels[i], " ") + "\x1b[39m" + labels[i][len(strings.TrimRight(labels[i], " ")):] + strings.TrimPrefix(plain, labels[i])
 		}
 		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", i+1, display); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Screen) drawSeparatorsLocked(width, height int) error {
+	layout := layoutForHeight(height)
+	separator := strings.Repeat("-", max(width, 1))
+	for _, row := range []int{layout.topSeparatorRow, layout.bottomSeparatorRow} {
+		if row == 0 {
+			continue
+		}
+		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", row, separator); err != nil {
 			return err
 		}
 	}
@@ -323,8 +371,9 @@ func statusValue(value string) string {
 }
 
 func (s *Screen) setChatRegionLocked(height int) error {
-	if height >= statusLineCount+2 {
-		_, err := fmt.Fprintf(s.out, "\x1b[%d;%dr", statusLineCount+1, height-1)
+	layout := layoutForHeight(height)
+	if layout.chatTop > 0 && layout.chatTop < layout.chatBottom {
+		_, err := fmt.Fprintf(s.out, "\x1b[%d;%dr", layout.chatTop, layout.chatBottom)
 		return err
 	}
 	_, err := io.WriteString(s.out, "\x1b[r")
@@ -332,19 +381,45 @@ func (s *Screen) setChatRegionLocked(height int) error {
 }
 
 func (s *Screen) appendChatLocked(p []byte, height int) error {
-	if height < statusLineCount+2 {
+	layout := layoutForHeight(height)
+	if layout.chatTop == 0 {
 		return nil
 	}
-	bottom := height - 1
 	value := strings.TrimRight(string(p), "\r\n")
 	lines := strings.Split(value, "\n")
 	for _, line := range lines {
 		line = strings.TrimSuffix(line, "\r")
-		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1bD\r\x1b[2K%s", bottom, line); err != nil {
+		if layout.chatTop == layout.chatBottom {
+			if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", layout.chatBottom, line); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H\x1bD\r\x1b[2K%s", layout.chatBottom, line); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func layoutForHeight(height int) screenLayout {
+	height = max(height, 1)
+	layout := screenLayout{
+		statusRows: min(statusLineCount, height-1),
+		inputRow:   height,
+	}
+	available := height - layout.statusRows - 1
+	if available >= 1 {
+		layout.topSeparatorRow = layout.statusRows + 1
+	}
+	if available >= 2 {
+		layout.bottomSeparatorRow = height - 1
+	}
+	if available >= 3 {
+		layout.chatTop = layout.topSeparatorRow + 1
+		layout.chatBottom = layout.bottomSeparatorRow - 1
+	}
+	return layout
 }
 
 func (s *Screen) terminalWidth() int {

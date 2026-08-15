@@ -163,7 +163,7 @@ func TestNonTTYRunDoesNotFetchOrRenderStatusArea(t *testing.T) {
 	if err := runAdapters(context.Background(), []chat.Adapter{fakeAdapter{name: "kick", message: message}}, config.Defaults(), nil, nil, provider, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if provider.callCount() != 0 || strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), "Title:") {
+	if provider.callCount() != 0 || strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), "Title:") || strings.Contains(out.String(), strings.Repeat("-", 20)) {
 		t.Fatalf("calls=%d output=%q", provider.callCount(), out.String())
 	}
 }

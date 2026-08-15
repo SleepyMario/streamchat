@@ -168,7 +168,7 @@ func TestScreenRendersThreeFixedStatusLinesAndLiveOfflineViewers(t *testing.T) {
 			t.Fatalf("missing status row %d %q: %q", row+1, want, raw)
 		}
 	}
-	if !strings.Contains(raw, "\x1b[4;9r") || !strings.Contains(raw, "\x1b[10;1H") {
+	if !strings.Contains(raw, "\x1b[5;8r") || !strings.Contains(raw, "\x1b[10;1H") {
 		t.Fatalf("fixed chat/input layout missing: %q", raw)
 	}
 	output.Reset()
@@ -183,6 +183,42 @@ func TestScreenRendersThreeFixedStatusLinesAndLiveOfflineViewers(t *testing.T) {
 	screen.SetStatus(StreamStatus{Title: "Offline title", Category: "Games", ViewerCount: 99, Live: false})
 	if plain = plainTerminalOutput(output.String()); !strings.Contains(plain, "Viewers:  OFFLINE") || strings.Contains(plain, "Viewers:  99") {
 		t.Fatalf("offline viewers=%q", plain)
+	}
+}
+
+func TestScreenRendersFixedWidthSeparatorsAndResizesThem(t *testing.T) {
+	var output bytes.Buffer
+	width, height := 12, 10
+	screen := newScreen(&output, func() int { return width }, func() int { return height })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"\x1b[4;1H\x1b[2K------------",
+		"\x1b[9;1H\x1b[2K------------",
+		"\x1b[5;8r",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing fixed layout %q: %q", want, output.String())
+		}
+	}
+
+	width, height = 7, 8
+	output.Reset()
+	screen.Redraw()
+	raw := output.String()
+	for _, want := range []string{
+		"\x1b[4;1H\x1b[2K-------",
+		"\x1b[7;1H\x1b[2K-------",
+		"\x1b[5;6r",
+		"\x1b[8;1H",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("resized layout missing %q: %q", want, raw)
+		}
+	}
+	if strings.Contains(raw, "------------") {
+		t.Fatalf("separator retained old width: %q", raw)
 	}
 }
 
@@ -222,11 +258,13 @@ func TestIncomingChatUsesOnlyMiddleScrollRegion(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := output.String()
-	if !strings.Contains(raw, "\x1b[9;1H\x1bD\r\x1b[2K[KICK] Alice  hello") || !strings.Contains(raw, "\x1b[10;1H") {
+	if !strings.Contains(raw, "\x1b[8;1H\x1bD\r\x1b[2K[KICK] Alice  hello") || !strings.Contains(raw, "\x1b[10;1H") {
 		t.Fatalf("chat/input rows incorrect: %q", raw)
 	}
-	if strings.Contains(raw, "\x1b[1;1H") || strings.Contains(raw, "\x1b[2;1H") || strings.Contains(raw, "\x1b[3;1H") {
-		t.Fatalf("incoming chat touched fixed status rows: %q", raw)
+	for _, fixedRow := range []string{"\x1b[1;1H", "\x1b[2;1H", "\x1b[3;1H", "\x1b[4;1H", "\x1b[9;1H"} {
+		if strings.Contains(raw, fixedRow) {
+			t.Fatalf("incoming chat touched fixed row %q: %q", fixedRow, raw)
+		}
 	}
 }
 
@@ -259,29 +297,45 @@ func TestStatusRedrawAndCleanPreserveInputCursorAndFixedRows(t *testing.T) {
 	if _, err := screen.CleanAll(); err != nil {
 		t.Fatal(err)
 	}
-	plain := plainTerminalOutput(output.String())
-	if !strings.Contains(plain, "Title:    Updated") || !strings.Contains(plain, "Category: Games") || !strings.Contains(plain, "Viewers:  5") {
-		t.Fatalf("clean removed status: %q", plain)
+	raw := output.String()
+	for _, fixedRow := range []string{"\x1b[1;1H", "\x1b[2;1H", "\x1b[3;1H", "\x1b[4;1H", "\x1b[9;1H"} {
+		if strings.Contains(raw, fixedRow) {
+			t.Fatalf("clean touched fixed row %q: %q", fixedRow, raw)
+		}
 	}
-	height = 6
+	if screen.status.Title != "Updated" || !strings.Contains(raw, "\x1b[5;1H\x1b[2K") || !strings.Contains(raw, "\x1b[10;1H") {
+		t.Fatalf("clean did not preserve fixed state or redraw chat/input: status=%+v output=%q", screen.status, raw)
+	}
+	height = 8
 	output.Reset()
 	screen.Redraw()
-	if raw := output.String(); !strings.Contains(raw, "\x1b[4;5r") || !strings.Contains(raw, "\x1b[6;1H") {
+	if raw := output.String(); !strings.Contains(raw, "\x1b[5;6r") || !strings.Contains(raw, "\x1b[4;1H") || !strings.Contains(raw, "\x1b[7;1H") || !strings.Contains(raw, "\x1b[8;1H") {
 		t.Fatalf("resize layout incorrect: %q", raw)
 	}
 }
 
 func TestScreenVerySmallHeightDegradesWithoutInvalidRegion(t *testing.T) {
-	var output bytes.Buffer
-	screen := newScreen(&output, func() int { return 12 }, func() int { return 3 })
-	if err := screen.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Line: "hidden chat"}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(output.String(), "\x1b[4;2r") {
-		t.Fatalf("invalid scroll region emitted: %q", output.String())
+	for _, height := range []int{1, 2, 3, 4, 5, 6, 7} {
+		t.Run(fmt.Sprintf("height_%d", height), func(t *testing.T) {
+			var output bytes.Buffer
+			screen := newScreen(&output, func() int { return 12 }, func() int { return height })
+			if err := screen.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Line: "small chat"}); err != nil {
+				t.Fatal(err)
+			}
+			raw := output.String()
+			if strings.Contains(raw, "\x1b[5;5r") || strings.Contains(raw, "\x1b[5;4r") {
+				t.Fatalf("invalid scroll region emitted: %q", raw)
+			}
+			if height == 6 && (!strings.Contains(raw, "\x1b[4;1H\x1b[2K------------") || !strings.Contains(raw, "\x1b[5;1H\x1b[2K------------")) {
+				t.Fatalf("distinct separators missing at minimum fixed-layout height: %q", raw)
+			}
+			if height == 7 && !strings.Contains(raw, "\x1b[5;1H\x1b[2Ksmall chat") {
+				t.Fatalf("single-row chat did not degrade safely: %q", raw)
+			}
+		})
 	}
 }
 
@@ -352,8 +406,11 @@ func TestScreenCleanAllPreservesPartialUnicodeInput(t *testing.T) {
 		t.Fatalf("cursor changed: got=%d want=%d", screen.editor.Cursor(), cursorBefore)
 	}
 	raw := output.String()
-	if !strings.Contains(raw, "\x1b[2J\x1b[H") || !strings.Contains(plainTerminalOutput(raw), "[KICK] > partly 你好🙂") {
+	if !strings.Contains(raw, "\x1b[5;1H\x1b[2K") || !strings.Contains(plainTerminalOutput(raw), "[KICK] > partly 你好🙂") {
 		t.Fatalf("view/input redraw missing: %q", raw)
+	}
+	if strings.Contains(raw, "\x1b[2J") || strings.Contains(raw, "\x1b[4;1H") || strings.Contains(raw, "\x1b[23;1H") {
+		t.Fatalf("clean touched status or separator layout: %q", raw)
 	}
 	if strings.Contains(raw, "Alice") || strings.Contains(raw, "Bob") {
 		t.Fatalf("cleaned messages were replayed: %q", raw)
@@ -386,9 +443,16 @@ func TestScreenCleanPlatformAndCaseInsensitiveAuthor(t *testing.T) {
 	if !strings.Contains(output.String(), "youtube bot") || strings.Contains(output.String(), "kick bot") || strings.Contains(output.String(), "kick viewer") {
 		t.Fatalf("platform redraw=%q", output.String())
 	}
+	if strings.Contains(output.String(), "\x1b[4;1H") || strings.Contains(output.String(), "\x1b[23;1H") {
+		t.Fatalf("platform clean touched separators: %q", output.String())
+	}
+	output.Reset()
 	removed, err = screen.CleanAuthor("bOtRiX")
 	if err != nil || removed != 1 || len(screen.messages) != 0 {
 		t.Fatalf("author clean removed=%d messages=%v err=%v", removed, screen.messages, err)
+	}
+	if strings.Contains(output.String(), "\x1b[4;1H") || strings.Contains(output.String(), "\x1b[23;1H") {
+		t.Fatalf("author clean touched separators: %q", output.String())
 	}
 }
 
