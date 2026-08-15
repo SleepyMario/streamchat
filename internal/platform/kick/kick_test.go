@@ -68,7 +68,7 @@ func TestSignatureParsingReplyBadgeEmoteAndDedup(t *testing.T) {
 		t.Fatalf("%d", w.Code)
 	}
 	m := <-out
-	if m.Reply == nil || len(m.Badges) != 1 || len(m.Emotes) != 1 || m.AuthorColor != "#fff" {
+	if m.Reply == nil || len(m.Badges) != 1 || len(m.Emotes) != 1 || m.AuthorColor != "#fff" || !m.Roles.Has(chat.RoleModerator) {
 		t.Fatalf("%+v", m)
 	}
 	if w := request(t, s, p, []byte(body), stamp); w.Code != 204 {
@@ -78,6 +78,25 @@ func TestSignatureParsingReplyBadgeEmoteAndDedup(t *testing.T) {
 	case <-out:
 		t.Fatal("duplicate emitted")
 	default:
+	}
+}
+
+func TestParseMapsOnlyExplicitKickRolesAndNeverVerified(t *testing.T) {
+	payload := []byte(`{"message_id":"roles","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":1,"username":"channel","is_verified":true,"identity":{"badges":[{"type":"subscriber"},{"type":"verified","text":"Verified Channel"},{"type":"og"},{"type":"vip"},{"type":"partner"},{"type":"moderator"},{"type":"follower"},{"type":"sub_gifter"}]}},"content":"hello","created_at":"2026-01-01T00:00:00Z"}`)
+	message, err := Parse(payload, "event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []chat.Role{chat.RoleBroadcaster, chat.RoleModerator, chat.RolePartner, chat.RoleVIP, chat.RoleOG, chat.RoleSubscriber} {
+		if !message.Roles.Has(role) {
+			t.Fatalf("roles=%v missing %v", message.Roles, role)
+		}
+	}
+	if message.Roles.Has(chat.RoleFollower) {
+		t.Fatalf("Kick follower role was inferred: %v", message.Roles)
+	}
+	if len(message.Badges) != 8 {
+		t.Fatalf("raw badges were not preserved: %+v", message.Badges)
 	}
 }
 func TestRejectsInvalidStaleOversizeMethodAndHealth(t *testing.T) {

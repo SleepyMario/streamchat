@@ -99,14 +99,18 @@ Both commands work regardless of the selected outbound target, are never sent to
 When standard input and output are terminals, `streamchat run` uses the terminal's alternate screen with three fixed Kick status lines at the top, scrolling chat in the middle, and a persistent single-line input bar at the bottom:
 
 ```text
-Title:    Current stream title
-Category: Just Chatting
+Title:    Current stream title                         2026-08-15
+Category: Just Chatting                                      16:07
 Viewers:  42
+-------------------------------------------------------------
+chat
+-------------------------------------------------------------
+[KICK] >
 ```
 
-Status is fetched immediately from Kick's official authenticated channel endpoint, refreshed every 30 seconds, and refreshed after successful `/title` and `/category` commands. Offline streams show `Viewers:  OFFLINE`; until the first successful fetch, all three values show `unavailable`. Transient refresh failures preserve the previous status.
+Status is fetched immediately from Kick's official authenticated channel endpoint, refreshed every 30 seconds, and refreshed after successful `/title` and `/category` commands. The interactive client shows its local date and time at the right edge and updates them once per minute. Offline streams show `Viewers:  OFFLINE`; until the first successful fetch, all three values show `unavailable`. Transient refresh failures preserve the previous status.
 
-The input starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are confined below status and above input without discarding the current input or cursor position. `/clean` redraws only the chat region while retaining status and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, or redraw sequences.
+The input starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are confined between the fixed separators without discarding the current input or cursor position. Provider-neutral author roles appear as temporary letter badges in `[B][M][P][V][O][S][F]` order; raw provider badges remain in the normalized message data. `/clean` redraws only the chat region while retaining status, separators, and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, or redraw sequences.
 
 ## Server/client mode and archive
 

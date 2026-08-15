@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -58,6 +59,30 @@ func TestDuplicateMessageHandlingAndPlatforms(t *testing.T) {
 	}
 	if s.Total != 2 || len(s.Platforms) != 2 {
 		t.Fatalf("unexpected stats: %+v", s)
+	}
+}
+
+func TestArchiveNormalizedJSONPreservesProviderNeutralRoles(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	m := message("kick-role", chat.PlatformKick)
+	m.Roles = chat.NewRoleSet(chat.RoleModerator, chat.RoleSubscriber)
+	if inserted, storeErr := a.Store(context.Background(), m); storeErr != nil || !inserted {
+		t.Fatalf("store inserted=%v err=%v", inserted, storeErr)
+	}
+	var normalized string
+	if err = a.db.QueryRow(`SELECT normalized_json FROM messages WHERE message_id = ?`, m.ID).Scan(&normalized); err != nil {
+		t.Fatal(err)
+	}
+	var archived chat.Message
+	if err = json.Unmarshal([]byte(normalized), &archived); err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Roles.Has(chat.RoleModerator) || !archived.Roles.Has(chat.RoleSubscriber) {
+		t.Fatalf("archived roles=%v JSON=%s", archived.Roles, normalized)
 	}
 }
 

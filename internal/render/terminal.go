@@ -52,27 +52,28 @@ func ColorEnabled(no bool) bool {
 	return e == nil && (st.Mode()&os.ModeCharDevice) != 0
 }
 
-func renderBadge(b chat.Badge) string {
-	typeName := strings.ToLower(strings.TrimSpace(b.Type))
-	text := strings.ToLower(strings.TrimSpace(b.Text))
-
-	switch {
-	case typeName == "moderator" || text == "moderator":
-		return "[MOD]"
-	case typeName == "broadcaster" || text == "broadcaster":
-		return ""
-	case typeName == "verified channel" || text == "verified channel":
-		return ""
+func RenderRoleBadges(roles chat.RoleSet) string {
+	ordered := []struct {
+		role   chat.Role
+		letter string
+	}{
+		{chat.RoleBroadcaster, "B"},
+		{chat.RoleModerator, "M"},
+		{chat.RolePartner, "P"},
+		{chat.RoleVIP, "V"},
+		{chat.RoleOG, "O"},
+		{chat.RoleSubscriber, "S"},
+		{chat.RoleFollower, "F"},
 	}
-
-	label := b.Text
-	if label == "" {
-		label = b.Type
+	var badges strings.Builder
+	for _, value := range ordered {
+		if roles.Has(value.role) {
+			badges.WriteByte('[')
+			badges.WriteString(value.letter)
+			badges.WriteByte(']')
+		}
 	}
-	if label == "" {
-		return ""
-	}
-	return "[" + strings.ToUpper(Sanitize(label)) + "]"
+	return badges.String()
 }
 
 func (t *Terminal) Render(m chat.Message) error {
@@ -81,12 +82,6 @@ func (t *Terminal) Render(m chat.Message) error {
 		label = "KICK"
 	} else if m.Platform == chat.PlatformTwitch {
 		label = "TW"
-	}
-	bs := []string{}
-	for _, b := range m.Badges {
-		if badge := renderBadge(b); badge != "" {
-			bs = append(bs, badge)
-		}
 	}
 	p := ""
 	if t.opt.Timestamps {
@@ -97,8 +92,8 @@ func (t *Terminal) Render(m chat.Message) error {
 		author = "system"
 	}
 	identity := author
-	if len(bs) > 0 {
-		identity = strings.Join(bs, " ") + " " + author
+	if badges := RenderRoleBadges(m.Roles); badges != "" {
+		identity = badges + " " + author
 	}
 	txt := Sanitize(m.Text)
 	if m.Reply != nil {

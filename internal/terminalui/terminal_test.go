@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -186,6 +187,119 @@ func TestScreenRendersThreeFixedStatusLinesAndLiveOfflineViewers(t *testing.T) {
 	}
 }
 
+func TestScreenRendersLocalDateAndTimeAtRightEdge(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 50 }, func() int { return 10 })
+	screen.now = func() time.Time { return time.Date(2026, 8, 15, 16, 7, 59, 0, time.FixedZone("client", 8*60*60)) }
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for row, suffix := range map[int]string{1: "2026-08-15", 2: "16:07"} {
+		line := statusRow(output.String(), row)
+		if !strings.HasSuffix(line, suffix) || runewidth.StringWidth(line) != 50 {
+			t.Fatalf("row %d=%q width=%d", row, line, runewidth.StringWidth(line))
+		}
+	}
+	if line := statusRow(output.String(), 3); strings.Contains(line, "2026") || strings.Contains(line, "16:07") {
+		t.Fatalf("viewer row contains clock: %q", line)
+	}
+}
+
+func TestScreenStatusClockResizeToNarrowWidthPreservesRightSideWithoutOverlap(t *testing.T) {
+	var output bytes.Buffer
+	width := 30
+	screen := newScreen(&output, func() int { return width }, func() int { return 8 })
+	screen.now = func() time.Time { return time.Date(2026, 8, 15, 16, 7, 0, 0, time.Local) }
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	width = 14
+	output.Reset()
+	screen.Redraw()
+	dateLine, timeLine := statusRow(output.String(), 1), statusRow(output.String(), 2)
+	if !strings.HasSuffix(dateLine, "2026-08-15") || !strings.HasSuffix(timeLine, "16:07") {
+		t.Fatalf("narrow clock missing: date=%q time=%q", dateLine, timeLine)
+	}
+	if runewidth.StringWidth(dateLine) > 14 || runewidth.StringWidth(timeLine) > 14 {
+		t.Fatalf("narrow rows overflowed: date=%q time=%q", dateLine, timeLine)
+	}
+}
+
+func TestClockRefreshPreservesChatSeparatorsAndUnicodeInputCursor(t *testing.T) {
+	var output bytes.Buffer
+	current := time.Date(2026, 8, 15, 23, 59, 0, 0, time.Local)
+	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })
+	screen.now = func() time.Time { return current }
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "partly 你好🙂" {
+		screen.Feed(r)
+	}
+	for _, r := range "\x1b[D\x1b[D" {
+		screen.Feed(r)
+	}
+	if err := screen.AppendMessage(DisplayMessage{Line: "chat remains"}); err != nil {
+		t.Fatal(err)
+	}
+	cursor := screen.editor.Cursor()
+	output.Reset()
+	current = time.Date(2026, 8, 16, 0, 0, 0, 0, time.Local)
+	screen.RefreshTime()
+	raw := output.String()
+	if !strings.Contains(plainTerminalOutput(raw), "2026-08-16") || !strings.Contains(plainTerminalOutput(raw), "00:00") {
+		t.Fatalf("clock did not roll over: %q", raw)
+	}
+	if screen.Text() != "partly 你好🙂" || screen.editor.Cursor() != cursor || len(screen.messages) != 1 {
+		t.Fatalf("refresh changed state: text=%q cursor=%d messages=%v", screen.Text(), screen.editor.Cursor(), screen.messages)
+	}
+	if strings.Contains(raw, "\x1b[2J") || strings.Contains(raw, "\x1b[4;1H") || strings.Contains(raw, "\x1b[9;1H") || strings.Contains(raw, "chat remains") {
+		t.Fatalf("clock refresh disturbed fixed/chat layout: %q", raw)
+	}
+}
+
+func TestTerminalClockTickerRefreshesStatus(t *testing.T) {
+	if clockRefreshInterval > time.Minute {
+		t.Fatalf("clock refresh interval=%s", clockRefreshInterval)
+	}
+	var output synchronizedBuffer
+	current := time.Date(2026, 8, 15, 16, 7, 0, 0, time.Local)
+	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })
+	screen.now = func() time.Time { return current }
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	clock := make(chan time.Time, 1)
+	terminal := &Terminal{screen: screen, stop: make(chan struct{}), done: make(chan struct{}), resize: make(chan os.Signal), clock: clock}
+	go terminal.watchScreen()
+	output.Reset()
+	current = time.Date(2026, 8, 15, 16, 8, 0, 0, time.Local)
+	clock <- current
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(plainTerminalOutput(output.String()), "16:08") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(terminal.stop)
+	<-terminal.done
+	if !strings.Contains(plainTerminalOutput(output.String()), "16:08") {
+		t.Fatalf("periodic refresh missing: %q", output.String())
+	}
+}
+
+func statusRow(output string, row int) string {
+	startMarker := fmt.Sprintf("\x1b[%d;1H\x1b[2K", row)
+	start := strings.Index(output, startMarker)
+	if start < 0 {
+		return ""
+	}
+	remainder := output[start+len(startMarker):]
+	end := len(remainder)
+	if next := strings.Index(remainder, fmt.Sprintf("\x1b[%d;1H", row+1)); next >= 0 {
+		end = next
+	}
+	return plainTerminalOutput(remainder[:end])
+}
+
 func TestScreenRendersFixedWidthSeparatorsAndResizesThem(t *testing.T) {
 	var output bytes.Buffer
 	width, height := 12, 10
@@ -224,7 +338,8 @@ func TestScreenRendersFixedWidthSeparatorsAndResizesThem(t *testing.T) {
 
 func TestScreenStatusTruncatesLongUnicodeByDisplayWidth(t *testing.T) {
 	var output bytes.Buffer
-	screen := newScreen(&output, func() int { return 18 }, func() int { return 8 })
+	screen := newScreen(&output, func() int { return 30 }, func() int { return 8 })
+	screen.now = func() time.Time { return time.Date(2026, 8, 15, 16, 7, 0, 0, time.Local) }
 	if err := screen.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -240,8 +355,11 @@ func TestScreenStatusTruncatesLongUnicodeByDisplayWidth(t *testing.T) {
 			t.Fatalf("status row markers missing: %q", raw)
 		}
 		line := plainTerminalOutput(raw[start+len(startMarker) : end])
-		if width := runewidth.StringWidth(line); width > 18 {
+		if width := runewidth.StringWidth(line); width > 30 {
 			t.Fatalf("row %d width=%d line=%q", row, width, line)
+		}
+		if row == 1 && (!strings.Contains(line, "世界🙂") || !strings.HasSuffix(line, "2026-08-15")) {
+			t.Fatalf("Unicode title/date layout=%q", line)
 		}
 	}
 }
@@ -590,7 +708,7 @@ func TestScreenStartupErrorLeavesAlternateScreenAndRestoresTerminal(t *testing.T
 	}
 }
 
-func TestTerminalCloseStopsResizeWatcher(t *testing.T) {
+func TestTerminalCloseStopsScreenWatcher(t *testing.T) {
 	var output bytes.Buffer
 	terminal := &Terminal{
 		screen:  NewScreen(&output, func() int { return 40 }),
@@ -599,14 +717,14 @@ func TestTerminalCloseStopsResizeWatcher(t *testing.T) {
 		done:    make(chan struct{}),
 		resize:  make(chan os.Signal, 1),
 	}
-	go terminal.watchResize()
+	go terminal.watchScreen()
 	if err := terminal.Close(); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-terminal.done:
 	default:
-		t.Fatal("resize watcher was still running after Close")
+		t.Fatal("screen watcher was still running after Close")
 	}
 }
 
@@ -694,4 +812,10 @@ func (b *synchronizedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.b.String()
+}
+
+func (b *synchronizedBuffer) Reset() {
+	b.mu.Lock()
+	b.b.Reset()
+	b.mu.Unlock()
 }

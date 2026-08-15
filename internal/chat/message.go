@@ -2,7 +2,9 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -30,6 +32,81 @@ type Badge struct {
 	Text  string `json:"text,omitempty"`
 	Count int    `json:"count,omitempty"`
 }
+
+type Role uint8
+
+const (
+	RoleBroadcaster Role = iota + 1
+	RoleModerator
+	RolePartner
+	RoleVIP
+	RoleOG
+	RoleSubscriber
+	RoleFollower
+)
+
+// RoleSet is a compact, provider-neutral set of author roles.
+type RoleSet uint16
+
+func NewRoleSet(roles ...Role) RoleSet {
+	var result RoleSet
+	for _, role := range roles {
+		result.Add(role)
+	}
+	return result
+}
+
+func (r RoleSet) Has(role Role) bool {
+	return role >= RoleBroadcaster && role <= RoleFollower && r&(1<<(role-1)) != 0
+}
+
+func (r *RoleSet) Add(role Role) {
+	if role >= RoleBroadcaster && role <= RoleFollower {
+		*r |= 1 << (role - 1)
+	}
+}
+
+var roleJSONNames = []struct {
+	role Role
+	name string
+}{
+	{RoleBroadcaster, "broadcaster"},
+	{RoleModerator, "moderator"},
+	{RolePartner, "partner"},
+	{RoleVIP, "vip"},
+	{RoleOG, "og"},
+	{RoleSubscriber, "subscriber"},
+	{RoleFollower, "follower"},
+}
+
+func (r RoleSet) MarshalJSON() ([]byte, error) {
+	names := make([]string, 0, len(roleJSONNames))
+	for _, value := range roleJSONNames {
+		if r.Has(value.role) {
+			names = append(names, value.name)
+		}
+	}
+	return json.Marshal(names)
+}
+
+func (r *RoleSet) UnmarshalJSON(data []byte) error {
+	var names []string
+	if err := json.Unmarshal(data, &names); err != nil {
+		return err
+	}
+	*r = 0
+	for _, name := range names {
+		name = strings.ToLower(strings.TrimSpace(name))
+		for _, value := range roleJSONNames {
+			if name == value.name || (name == "owner" && value.role == RoleBroadcaster) || (name == "member" && value.role == RoleSubscriber) {
+				r.Add(value.role)
+				break
+			}
+		}
+	}
+	return nil
+}
+
 type Emote struct {
 	ID    string `json:"id"`
 	Name  string `json:"name,omitempty"`
@@ -65,7 +142,7 @@ type Message struct {
 	AuthorDisplayName    string            `json:"author_display_name,omitempty"`
 	AuthorColor          string            `json:"author_color,omitempty"`
 	Badges               []Badge           `json:"badges,omitempty"`
-	Roles                []string          `json:"roles,omitempty"`
+	Roles                RoleSet           `json:"roles,omitempty"`
 	Text                 string            `json:"text,omitempty"`
 	Emotes               []Emote           `json:"emotes,omitempty"`
 	Reply                *Reply            `json:"reply,omitempty"`

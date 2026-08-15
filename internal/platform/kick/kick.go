@@ -112,11 +112,27 @@ func Parse(body []byte, eventID string) (chat.Message, error) {
 		return chat.Message{}, errors.New("invalid Kick created_at")
 	}
 	m := chat.Message{ID: v.MessageID, Platform: chat.PlatformKick, ChannelID: strconv.FormatInt(v.Broadcaster.UserID, 10), ChannelDisplayName: v.Broadcaster.Username, Timestamp: ts, AuthorID: strconv.FormatInt(v.Sender.UserID, 10), AuthorDisplayName: v.Sender.Username, Text: v.Content, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"kick_event_id": eventID, "channel_slug": v.Broadcaster.ChannelSlug}}
+	if v.Sender.UserID > 0 && v.Sender.UserID == v.Broadcaster.UserID {
+		m.Roles.Add(chat.RoleBroadcaster)
+	}
 	if v.Sender.Identity != nil {
 		m.AuthorColor = v.Sender.Identity.UsernameColor
 		for _, b := range v.Sender.Identity.Badges {
 			m.Badges = append(m.Badges, chat.Badge{Type: b.Type, Text: b.Text, Count: b.Count})
-			m.Roles = append(m.Roles, b.Type)
+			switch strings.ToLower(strings.TrimSpace(b.Type)) {
+			case "broadcaster":
+				m.Roles.Add(chat.RoleBroadcaster)
+			case "moderator":
+				m.Roles.Add(chat.RoleModerator)
+			case "partner":
+				m.Roles.Add(chat.RolePartner)
+			case "vip":
+				m.Roles.Add(chat.RoleVIP)
+			case "og":
+				m.Roles.Add(chat.RoleOG)
+			case "subscriber":
+				m.Roles.Add(chat.RoleSubscriber)
+			}
 		}
 	}
 	for _, e := range v.Emotes {

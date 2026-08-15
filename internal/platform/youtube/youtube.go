@@ -351,15 +351,15 @@ func ParseMessage(v apiMessage, channelID, channelName string) (chat.Message, er
 		m.EventType = chat.EventOther
 	}
 	if v.Author.IsChatOwner {
-		m.Roles = append(m.Roles, "owner")
+		m.Roles.Add(chat.RoleBroadcaster)
 		m.Badges = append(m.Badges, chat.Badge{Type: "owner"})
 	}
 	if v.Author.IsChatModerator {
-		m.Roles = append(m.Roles, "moderator")
+		m.Roles.Add(chat.RoleModerator)
 		m.Badges = append(m.Badges, chat.Badge{Type: "moderator"})
 	}
 	if v.Author.IsChatSponsor {
-		m.Roles = append(m.Roles, "member")
+		m.Roles.Add(chat.RoleSubscriber)
 		m.Badges = append(m.Badges, chat.Badge{Type: "member"})
 	}
 	return m, nil

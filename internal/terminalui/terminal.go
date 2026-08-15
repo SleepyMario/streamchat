@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/mattn/go-runewidth"
@@ -22,6 +23,7 @@ const (
 	defaultHeight        = 24
 	displayMessageLimit  = 500
 	statusLineCount      = 3
+	clockRefreshInterval = time.Minute
 	enterAlternateScreen = "\x1b[?1049h\x1b[2J\x1b[H"
 	leaveAlternateScreen = "\x1b[0m\x1b[?1049l"
 )
@@ -46,6 +48,7 @@ type Screen struct {
 	out      io.Writer
 	width    func() int
 	height   func() int
+	now      func() time.Time
 	editor   Editor
 	target   string
 	messages []DisplayMessage
@@ -68,7 +71,7 @@ func NewScreen(out io.Writer, width func() int) *Screen {
 }
 
 func newScreen(out io.Writer, width, height func() int) *Screen {
-	return &Screen{out: out, width: width, height: height, target: "NONE"}
+	return &Screen{out: out, width: width, height: height, now: func() time.Time { return time.Now().In(time.Local) }, target: "NONE"}
 }
 
 func (s *Screen) Start() error {
@@ -132,6 +135,17 @@ func (s *Screen) SetStatus(status StreamStatus) {
 	defer s.mu.Unlock()
 	s.status = status
 	s.known = true
+	if !s.visible {
+		return
+	}
+	width, height := s.terminalWidth(), s.terminalHeight()
+	_ = s.drawStatusLocked(width, height)
+	_ = s.drawInputLocked(width, height)
+}
+
+func (s *Screen) RefreshTime() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.visible {
 		return
 	}
@@ -329,9 +343,11 @@ func (s *Screen) drawStatusLocked(width, height int) error {
 		}
 	}
 	labels := []string{"Title:    ", "Category: ", "Viewers:  "}
+	now := s.currentTime()
+	right := []string{now.Format("2006-01-02"), now.Format("15:04"), ""}
 	rows := layoutForHeight(height).statusRows
 	for i := 0; i < rows; i++ {
-		plain := fitWidth(labels[i]+values[i], max(width, 1))
+		plain := statusLine(labels[i]+values[i], right[i], max(width, 1))
 		display := plain
 		if strings.HasPrefix(plain, labels[i]) {
 			display = "\x1b[36m" + strings.TrimRight(labels[i], " ") + "\x1b[39m" + labels[i][len(strings.TrimRight(labels[i], " ")):] + strings.TrimPrefix(plain, labels[i])
@@ -341,6 +357,21 @@ func (s *Screen) drawStatusLocked(width, height int) error {
 		}
 	}
 	return nil
+}
+
+func statusLine(left, right string, width int) string {
+	width = max(width, 1)
+	if right == "" {
+		return fitWidth(left, width)
+	}
+	right = fitWidth(right, width)
+	rightWidth := runewidth.StringWidth(right)
+	if rightWidth >= width {
+		return right
+	}
+	left = fitWidth(left, max(width-rightWidth-1, 0))
+	spaces := width - runewidth.StringWidth(left) - rightWidth
+	return left + strings.Repeat(" ", spaces) + right
 }
 
 func (s *Screen) drawSeparatorsLocked(width, height int) error {
@@ -442,6 +473,13 @@ func (s *Screen) terminalHeight() int {
 	return defaultHeight
 }
 
+func (s *Screen) currentTime() time.Time {
+	if s.now == nil {
+		return time.Now().In(time.Local)
+	}
+	return s.now()
+}
+
 func fitWidth(value string, width int) string {
 	var out []rune
 	used := 0
@@ -457,14 +495,16 @@ func fitWidth(value string, width int) string {
 }
 
 type Terminal struct {
-	reader   *bufio.Reader
-	screen   *Screen
-	restore  func() error
-	stop     chan struct{}
-	done     chan struct{}
-	resize   chan os.Signal
-	close    sync.Once
-	closeErr error
+	reader    *bufio.Reader
+	screen    *Screen
+	restore   func() error
+	stop      chan struct{}
+	done      chan struct{}
+	resize    chan os.Signal
+	clock     <-chan time.Time
+	stopClock func()
+	close     sync.Once
+	closeErr  error
 }
 
 func IsInteractive(in, out *os.File) bool {
@@ -493,9 +533,10 @@ func Open(in, out *os.File, reader io.Reader) (*Terminal, error) {
 	if err = startScreen(screen, restore); err != nil {
 		return nil, err
 	}
-	t := &Terminal{reader: bufio.NewReader(reader), screen: screen, restore: restore, stop: make(chan struct{}), done: make(chan struct{}), resize: make(chan os.Signal, 1)}
+	clock := time.NewTicker(clockRefreshInterval)
+	t := &Terminal{reader: bufio.NewReader(reader), screen: screen, restore: restore, stop: make(chan struct{}), done: make(chan struct{}), resize: make(chan os.Signal, 1), clock: clock.C, stopClock: clock.Stop}
 	signal.Notify(t.resize, syscall.SIGWINCH)
-	go t.watchResize()
+	go t.watchScreen()
 	return t, nil
 }
 
@@ -538,6 +579,9 @@ func (t *Terminal) Writer(destination io.Writer) io.Writer {
 func (t *Terminal) Close() error {
 	t.close.Do(func() {
 		signal.Stop(t.resize)
+		if t.stopClock != nil {
+			t.stopClock()
+		}
 		close(t.stop)
 		if t.done != nil {
 			<-t.done
@@ -549,7 +593,7 @@ func (t *Terminal) Close() error {
 	return t.closeErr
 }
 
-func (t *Terminal) watchResize() {
+func (t *Terminal) watchScreen() {
 	if t.done != nil {
 		defer close(t.done)
 	}
@@ -557,6 +601,8 @@ func (t *Terminal) watchResize() {
 		select {
 		case <-t.resize:
 			t.screen.Redraw()
+		case <-t.clock:
+			t.screen.RefreshTime()
 		case <-t.stop:
 			return
 		}

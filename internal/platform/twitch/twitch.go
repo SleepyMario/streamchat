@@ -331,7 +331,18 @@ func ParseEvent(b []byte) (envelope, *chat.Message, error) {
 	}
 	for _, b := range e.Badges {
 		m.Badges = append(m.Badges, chat.Badge{Type: b.SetID})
-		m.Roles = append(m.Roles, b.SetID)
+		switch strings.ToLower(strings.TrimSpace(b.SetID)) {
+		case "broadcaster":
+			m.Roles.Add(chat.RoleBroadcaster)
+		case "moderator":
+			m.Roles.Add(chat.RoleModerator)
+		case "partner":
+			m.Roles.Add(chat.RolePartner)
+		case "vip":
+			m.Roles.Add(chat.RoleVIP)
+		case "subscriber":
+			m.Roles.Add(chat.RoleSubscriber)
+		}
 	}
 	if err = m.Validate(); err != nil {
 		return v, nil, err
