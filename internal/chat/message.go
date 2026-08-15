@@ -110,6 +110,7 @@ func (r *RoleSet) UnmarshalJSON(data []byte) error {
 type Emote struct {
 	ID    string `json:"id"`
 	Name  string `json:"name,omitempty"`
+	URL   string `json:"url,omitempty"`
 	Start int    `json:"start,omitempty"`
 	End   int    `json:"end,omitempty"`
 }

@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,15 +90,19 @@ type event struct {
 		MessageID, Content string
 		Sender             user
 	} `json:"replies_to"`
-	Broadcaster user   `json:"broadcaster"`
-	Sender      user   `json:"sender"`
-	Content     string `json:"content"`
-	Emotes      []struct {
-		EmoteID   string               `json:"emote_id"`
-		Positions []struct{ S, E int } `json:"positions"`
-	} `json:"emotes"`
-	CreatedAt string `json:"created_at"`
+	Broadcaster user         `json:"broadcaster"`
+	Sender      user         `json:"sender"`
+	Content     string       `json:"content"`
+	Emotes      []eventEmote `json:"emotes"`
+	CreatedAt   string       `json:"created_at"`
 }
+
+type eventEmote struct {
+	EmoteID   string               `json:"emote_id"`
+	Positions []struct{ S, E int } `json:"positions"`
+}
+
+var kickEmoteToken = regexp.MustCompile(`\[emote:([0-9]+):([^\]\r\n]+)\]`)
 
 func Parse(body []byte, eventID string) (chat.Message, error) {
 	var v event
@@ -135,18 +140,57 @@ func Parse(body []byte, eventID string) (chat.Message, error) {
 			}
 		}
 	}
-	for _, e := range v.Emotes {
-		if len(e.Positions) == 0 {
-			m.Emotes = append(m.Emotes, chat.Emote{ID: e.EmoteID})
-		}
-		for _, p := range e.Positions {
-			m.Emotes = append(m.Emotes, chat.Emote{ID: e.EmoteID, Start: p.S, End: p.E})
-		}
-	}
+	m.Emotes = normalizeKickEmotes(v.Content, v.Emotes)
 	if v.RepliesTo != nil {
 		m.Reply = &chat.Reply{MessageID: v.RepliesTo.MessageID, AuthorID: strconv.FormatInt(v.RepliesTo.Sender.UserID, 10), AuthorDisplayName: v.RepliesTo.Sender.Username, Text: v.RepliesTo.Content}
 	}
 	return m, nil
+}
+
+func normalizeKickEmotes(content string, provider []eventEmote) []chat.Emote {
+	known := make(map[string]struct{}, len(provider))
+	for _, emote := range provider {
+		known[emote.EmoteID] = struct{}{}
+	}
+	normalized := make([]chat.Emote, 0)
+	consumed := make(map[string]int, len(provider))
+	for _, match := range kickEmoteToken.FindAllStringSubmatchIndex(content, -1) {
+		id := content[match[2]:match[3]]
+		if _, exists := known[id]; !exists {
+			continue
+		}
+		start := utf8.RuneCountInString(content[:match[0]])
+		end := start + utf8.RuneCountInString(content[match[0]:match[1]]) - 1
+		normalized = append(normalized, chat.Emote{ID: id, Name: content[match[4]:match[5]], URL: kickEmoteURL(id), Start: start, End: end})
+		consumed[id]++
+	}
+	for _, emote := range provider {
+		if len(emote.Positions) == 0 {
+			if consumed[emote.EmoteID] == 0 {
+				normalized = append(normalized, chat.Emote{ID: emote.EmoteID, URL: kickEmoteURL(emote.EmoteID), Start: -1, End: -1})
+			}
+			continue
+		}
+		for index, position := range emote.Positions {
+			if index < consumed[emote.EmoteID] {
+				continue
+			}
+			normalized = append(normalized, chat.Emote{ID: emote.EmoteID, URL: kickEmoteURL(emote.EmoteID), Start: position.S, End: position.E})
+		}
+	}
+	return normalized
+}
+
+func kickEmoteURL(id string) string {
+	if id == "" {
+		return ""
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return "https://files.kick.com/emotes/" + id + "/fullsize"
 }
 
 type Server struct {

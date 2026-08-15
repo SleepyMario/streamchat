@@ -32,6 +32,17 @@ func TestNOColor(t *testing.T) {
 	}
 }
 
+func TestStructuredEmotesUseReadableTextFallbackWithoutImageBackend(t *testing.T) {
+	var output bytes.Buffer
+	message := chat.Message{Platform: chat.PlatformKick, AuthorDisplayName: "viewer", Text: "hello [emote:7:ppJedi]", Emotes: []chat.Emote{{ID: "7", Name: "ppJedi", Start: 6, End: 21}}}
+	if err := New(&output, Options{}).Render(message); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "hello :ppJedi:") || strings.Contains(output.String(), "[emote:") {
+		t.Fatalf("non-TTY fallback=%q", output.String())
+	}
+}
+
 func TestIdentityRendering(t *testing.T) {
 	tests := []struct {
 		name        string

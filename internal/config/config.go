@@ -22,6 +22,7 @@ type Config struct {
 	Server            Server  `json:"server"`
 	Client            Client  `json:"client"`
 	Storage           Storage `json:"storage"`
+	Emotes            Emotes  `json:"emotes"`
 	RelayAuthToken    string  `json:"relay_auth_token,omitempty"`
 	LogFile           string  `json:"log_file,omitempty"`
 	Timestamps        bool    `json:"timestamps,omitempty"`
@@ -89,6 +90,10 @@ type Storage struct {
 	SQLitePath string `json:"sqlite_path,omitempty"`
 }
 
+type Emotes struct {
+	Mode string `json:"mode,omitempty"`
+}
+
 const legacyYouTubeRedirectURI = "http://localhost:8791/oauth/youtube/callback"
 
 func Defaults() Config {
@@ -98,6 +103,7 @@ func Defaults() Config {
 		Twitch:    Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
 		Server:    Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		Storage:   Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
+		Emotes:    Emotes{Mode: "auto"},
 		QueueSize: 256, DuplicateCapacity: 10000,
 	}
 }
@@ -179,6 +185,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Storage.SQLitePath == "" {
 		c.Storage.SQLitePath = d.Storage.SQLitePath
+	}
+	if c.Emotes.Mode == "" {
+		c.Emotes.Mode = d.Emotes.Mode
 	}
 	if c.QueueSize == 0 {
 		c.QueueSize = d.QueueSize
@@ -264,6 +273,7 @@ func ApplyEnv(c *Config, get func(string) string) {
 	set("STREAMCHAT_SERVER_WEBSOCKET_PATH", &c.Server.WebSocketPath)
 	set("STREAMCHAT_CLIENT_SERVER_URL", &c.Client.ServerURL)
 	set("STREAMCHAT_STORAGE_SQLITE_PATH", &c.Storage.SQLitePath)
+	set("STREAMCHAT_EMOTES_MODE", &c.Emotes.Mode)
 	set("STREAMCHAT_RELAY_AUTH_TOKEN", &c.RelayAuthToken)
 	set("STREAMCHAT_LOG_FILE", &c.LogFile)
 }
@@ -273,6 +283,9 @@ func (c Config) HasUsablePlatform() bool {
 }
 
 func (c Config) Validate(mode string) error {
+	if c.Emotes.Mode != "auto" && c.Emotes.Mode != "text" && c.Emotes.Mode != "off" {
+		return errors.New("emotes.mode must be auto, text, or off")
+	}
 	if c.QueueSize < 1 || c.QueueSize > 65536 {
 		return errors.New("queue_size must be between 1 and 65536")
 	}

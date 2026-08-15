@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -32,6 +33,7 @@ func Sanitize(s string) string {
 type Options struct {
 	Timestamps, Color bool
 	AuthorWidth       int
+	Emotes            emote.Resolver
 }
 type Terminal struct {
 	w   io.Writer
@@ -77,6 +79,12 @@ func RenderRoleBadges(roles chat.RoleSet) string {
 }
 
 func (t *Terminal) Render(m chat.Message) error {
+	line := t.Format(m)
+	_, e := fmt.Fprintln(t.w, line.Text)
+	return e
+}
+
+func (t *Terminal) Format(m chat.Message) emote.Line {
 	label := "YT"
 	if m.Platform == chat.PlatformKick {
 		label = "KICK"
@@ -95,15 +103,16 @@ func (t *Terminal) Render(m chat.Message) error {
 	if badges := RenderRoleBadges(m.Roles); badges != "" {
 		identity = badges + " " + author
 	}
-	txt := Sanitize(m.Text)
+	body := emote.FormatText(m.Platform, m.Text, m.Emotes, Sanitize, t.opt.Emotes)
+	textPrefix := ""
 	if m.Reply != nil {
-		txt = "↪ " + Sanitize(m.Reply.AuthorDisplayName) + ": " + txt
+		textPrefix += "↪ " + Sanitize(m.Reply.AuthorDisplayName) + ": "
 	}
 	if m.Paid != nil {
-		txt = "[PAID " + Sanitize(m.Paid.Display) + "] " + txt
+		textPrefix += "[PAID " + Sanitize(m.Paid.Display) + "] "
 	}
 	if m.Membership != nil {
-		txt = "[MEMBER] " + txt
+		textPrefix += "[MEMBER] "
 	}
 	pl := "[" + label + "]"
 	if t.opt.Color {
@@ -117,6 +126,11 @@ func (t *Terminal) Render(m chat.Message) error {
 	}
 	identityWidth := min(t.opt.AuthorWidth, maxIdentityWidth)
 	padding := max(identityWidth-runewidth.StringWidth(identity), 0)
-	_, e := fmt.Fprintf(t.w, "%s%-6s %s%s%s\n", p, pl, identity, strings.Repeat(" ", padding+2), txt)
-	return e
+	prefix := fmt.Sprintf("%s%-6s %s%s%s", p, pl, identity, strings.Repeat(" ", padding+2), textPrefix)
+	line := emote.Line{Text: prefix + body.Text, Images: append([]emote.InlineImage(nil), body.Images...)}
+	offset := runewidth.StringWidth(Sanitize(prefix))
+	for index := range line.Images {
+		line.Images[index].Column += offset
+	}
+	return line
 }

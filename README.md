@@ -112,6 +112,18 @@ Status is fetched immediately from Kick's official authenticated channel endpoin
 
 The input starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are confined between the fixed separators without discarding the current input or cursor position. Provider-neutral author roles appear as temporary letter badges in `[B][M][P][V][O][S][F]` order; raw provider badges remain in the normalized message data. `/clean` redraws only the chat region while retaining status, separators, and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, or redraw sequences.
 
+Kick emotes use their structured webhook metadata. In an interactive Linux terminal, `emotes.mode: "auto"` optionally starts one [Überzug++](https://github.com/jstkdng/ueberzugpp) helper and places cached images in terminal cells; Wayland/Sway uses Überzug++'s Wayland output. If the `ueberzug` executable or a suitable local graphical terminal is unavailable, an image is still downloading, or a download fails, Streamchat displays readable text such as `:ppJedi:`. SSH and non-TTY sessions always use that dependency-free fallback. `text` always uses text, while `off` disables graphical handling but retains readable emote text.
+
+```json
+{
+  "emotes": {
+    "mode": "auto"
+  }
+}
+```
+
+Images are fetched asynchronously from Kick's provider-derived official asset URL, limited to 2 MiB, deduplicated while downloading, and persisted under `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/kick/` using numeric emote IDs rather than names. Image overlays are recomputed from the bounded visible-message model during chat scroll, resize, and `/clean`, and are removed before alternate-screen exit. Emote presentation never rewrites or deletes archived message data.
+
 ## Server/client mode and archive
 
 Run `streamchat serve` on the utility VM and let the interactive machine connect to it. The server receives verified Kick webhooks, discovers and streams the authenticated YouTube account's active live chat, writes every accepted normalized Kick/YouTube event to SQLite, then relays it live. Twitch remains on the interactive client for now. There is no history replay. Kick chatback is sent directly from the interactive client to Kick's official API using its locally stored OAuth token; it does not pass through `/relay` and adds no public endpoint.
@@ -278,6 +290,7 @@ Advanced environment variables:
 - Relay authentication: `STREAMCHAT_RELAY_AUTH_TOKEN`
 - Storage: `STREAMCHAT_STORAGE_SQLITE_PATH`
 - Output: `STREAMCHAT_LOG_FILE`
+- Emotes: `STREAMCHAT_EMOTES_MODE` (`auto`, `text`, or `off`)
 
 See `examples/config.example.json` for the manual JSON shape. Environment-provided access tokens are used in memory and are not written back during refresh.
 
@@ -295,6 +308,7 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/config`: JSON/env/defaults, atomic writer, validation, redaction
 - `internal/aggregate`: bounded chronological merge and duplicate cache
 - `internal/render`: terminal frontend and injection defense
+- `internal/emote`: provider-neutral fallback formatting, persistent asset cache, and optional image backend
 - `internal/terminalui`: raw-mode key editing and synchronized persistent input bar
 - `internal/logging`: opt-in private JSONL writer
 - `cmd/streamchat`: human CLI, lifecycle, and signal handling

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -818,4 +819,174 @@ func (b *synchronizedBuffer) Reset() {
 	b.mu.Lock()
 	b.b.Reset()
 	b.mu.Unlock()
+}
+
+type recordingImageBackend struct {
+	mu      sync.Mutex
+	updates [][]emote.Placement
+	closed  int
+}
+
+func (*recordingImageBackend) Available() bool { return true }
+func (b *recordingImageBackend) Update(value []emote.Placement) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.updates = append(b.updates, append([]emote.Placement(nil), value...))
+}
+func (b *recordingImageBackend) Close() error {
+	b.mu.Lock()
+	b.closed++
+	b.mu.Unlock()
+	return nil
+}
+func (b *recordingImageBackend) latest() []emote.Placement {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.updates) == 0 {
+		return nil
+	}
+	return append([]emote.Placement(nil), b.updates[len(b.updates)-1]...)
+}
+
+func imageMessage(id string, column int) DisplayMessage {
+	return DisplayMessage{ID: id, Platform: "kick", Author: "viewer", Render: func() emote.Line {
+		return emote.Line{Text: "[KICK] viewer  hello  ", Images: []emote.InlineImage{{Path: "/cache/" + id + ".img", Column: column, Width: 2}}}
+	}}
+}
+
+func TestImagePlacementTracksVisibleChatRowsAndNeverUsesFixedUI(t *testing.T) {
+	var output bytes.Buffer
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(&output, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(imageMessage("one", 20)); err != nil {
+		t.Fatal(err)
+	}
+	placement := backend.latest()
+	if len(placement) != 1 || placement[0].X != 20 || placement[0].Y != 7 {
+		t.Fatalf("placement=%+v", placement)
+	}
+	// Four rows fit between separators. A fifth message scrolls the first
+	// image out and repositions the remaining overlays within rows 5-8 only.
+	for _, id := range []string{"two", "three", "four", "five"} {
+		if err := screen.AppendMessage(imageMessage(id, 20)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	placement = backend.latest()
+	if len(placement) != 4 {
+		t.Fatalf("visible placements=%+v", placement)
+	}
+	for _, item := range placement {
+		if item.Y < 4 || item.Y > 7 {
+			t.Fatalf("image overlaps fixed UI: %+v", item)
+		}
+		if strings.Contains(item.Identifier, "one") {
+			t.Fatalf("scrolled image survived: %+v", item)
+		}
+	}
+}
+
+func TestImageCleanupOnCleanResizeAndAlternateScreenExit(t *testing.T) {
+	var output bytes.Buffer
+	width := 40
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(&output, func() int { return width }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(imageMessage("one", 30)); err != nil {
+		t.Fatal(err)
+	}
+	width = 20
+	screen.Redraw()
+	placement := backend.latest()
+	if len(placement) != 1 || placement[0].X != 10 || placement[0].Y < 4 || placement[0].Y > 7 {
+		t.Fatalf("resized placement=%+v", placement)
+	}
+	if removed, err := screen.CleanPlatform("kick"); err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	if placement = backend.latest(); len(placement) != 0 {
+		t.Fatalf("clean left overlays: %+v", placement)
+	}
+	if err := screen.AppendMessage(imageMessage("two", 10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if placement = backend.latest(); len(placement) != 0 {
+		t.Fatalf("alternate-screen exit left overlays: %+v", placement)
+	}
+}
+
+func TestTransientOutputRepositionsImagesWithoutTearing(t *testing.T) {
+	var output bytes.Buffer
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(&output, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(imageMessage("one", 20)); err != nil {
+		t.Fatal(err)
+	}
+	before := backend.latest()[0].Y
+	if _, err := screen.Writer(&output).Write([]byte("local command result\n")); err != nil {
+		t.Fatal(err)
+	}
+	after := backend.latest()[0].Y
+	if after != before-1 {
+		t.Fatalf("overlay did not follow scrolling output: before=%d after=%d", before, after)
+	}
+}
+
+func TestConcurrentImageMessagesRedrawAndCleanAreSynchronized(t *testing.T) {
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		worker := worker
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := 0; index < 25; index++ {
+				_ = screen.AppendMessage(imageMessage(fmt.Sprintf("%d-%d", worker, index), 20))
+				screen.Redraw()
+				_, _ = screen.CleanAuthor("nobody")
+			}
+		}()
+	}
+	workers.Wait()
+	if len(screen.messages) != 100 {
+		t.Fatalf("messages=%d", len(screen.messages))
+	}
+}
+
+func TestTerminalCloseStopsImageBackendOnceBeforeRestoringScreen(t *testing.T) {
+	var output bytes.Buffer
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(&output, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	restored := 0
+	terminal := &Terminal{screen: screen, restore: func() error { restored++; return nil }, stop: make(chan struct{}), resize: make(chan os.Signal, 1)}
+	if err := terminal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := terminal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	closed := backend.closed
+	backend.mu.Unlock()
+	if closed != 1 || restored != 1 || !strings.Contains(output.String(), leaveAlternateScreen) {
+		t.Fatalf("backend closes=%d restores=%d output=%q", closed, restored, output.String())
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/emote"
 )
 
 func message(id string, platform chat.Platform) chat.Message {
@@ -83,6 +84,39 @@ func TestArchiveNormalizedJSONPreservesProviderNeutralRoles(t *testing.T) {
 	}
 	if !archived.Roles.Has(chat.RoleModerator) || !archived.Roles.Has(chat.RoleSubscriber) {
 		t.Fatalf("archived roles=%v JSON=%s", archived.Roles, normalized)
+	}
+}
+
+func TestEmoteRenderingPreservesArchivedRowsAndStructuredMetadata(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	m := message("kick-emote", chat.PlatformKick)
+	m.Text = "[emote:7:WAVE]"
+	m.Emotes = []chat.Emote{{ID: "7", Name: "WAVE", URL: "https://files.kick.com/emotes/7/fullsize", Start: 0, End: 13}}
+	if inserted, storeErr := a.Store(context.Background(), m); storeErr != nil || !inserted {
+		t.Fatalf("store inserted=%v err=%v", inserted, storeErr)
+	}
+	line := emote.FormatText(m.Platform, m.Text, m.Emotes, nil, nil)
+	if line.Text != ":WAVE:" {
+		t.Fatalf("fallback=%q", line.Text)
+	}
+	stats, err := a.Stats(context.Background())
+	if err != nil || stats.Total != 1 {
+		t.Fatalf("render changed archive: stats=%+v err=%v", stats, err)
+	}
+	var normalized string
+	if err = a.db.QueryRow(`SELECT normalized_json FROM messages WHERE message_id = ?`, m.ID).Scan(&normalized); err != nil {
+		t.Fatal(err)
+	}
+	var archived chat.Message
+	if err = json.Unmarshal([]byte(normalized), &archived); err != nil {
+		t.Fatal(err)
+	}
+	if len(archived.Emotes) != 1 || archived.Emotes[0] != m.Emotes[0] {
+		t.Fatalf("archived emotes=%+v", archived.Emotes)
 	}
 }
 

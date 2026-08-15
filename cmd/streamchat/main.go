@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
+	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/SleepyMario/streamchat/internal/logging"
 	"github.com/SleepyMario/streamchat/internal/outbound"
 	platformreg "github.com/SleepyMario/streamchat/internal/platform"
@@ -491,6 +491,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	var safeOut io.Writer = &lockedWriter{writer: out}
 	var safeErr io.Writer = &lockedWriter{writer: errw}
 	var terminal *terminalui.Terminal
+	var emoteResolver emote.Resolver
 	var inFile *os.File
 	if terminalIn, ok := in.(*terminalInput); ok {
 		inFile = terminalIn.file
@@ -500,10 +501,13 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	if inFile != nil {
 		if outFile, outputOK := out.(*os.File); outputOK && terminalui.IsInteractive(inFile, outFile) {
 			var err error
-			terminal, err = terminalui.Open(inFile, outFile, in)
+			emotes := emote.NewDefaultController(c.Emotes.Mode, outFile)
+			terminal, err = terminalui.OpenWithBackend(inFile, outFile, in, emotes)
 			if err != nil {
 				return fmt.Errorf("initialize interactive terminal: %w", err)
 			}
+			emotes.SetRedraw(terminal.Redraw)
+			emoteResolver = emotes.Resolve
 			safeOut = terminal.Writer(out)
 			safeErr = terminal.Writer(errw)
 			defer func() {
@@ -573,8 +577,9 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	}
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: c.QueueSize, DuplicateCapacity: c.DuplicateCapacity, ReorderWindow: 100 * time.Millisecond})
 	merged, aerrs := ag.Run(ctx, inputs...)
-	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor)}
+	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor), Emotes: emoteResolver}
 	term := render.New(safeOut, renderOptions)
+	formatter := render.New(io.Discard, renderOptions)
 	var log *logging.Logger
 	var e error
 	if c.LogFile != "" {
@@ -624,14 +629,13 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 			if terminal == nil {
 				e = term.Render(m)
 			} else {
-				var line bytes.Buffer
-				if e = render.New(&line, renderOptions).Render(m); e == nil {
-					author := render.Sanitize(m.AuthorDisplayName)
-					if author == "" {
-						author = "system"
-					}
-					e = terminal.AppendMessage(terminalui.DisplayMessage{ID: m.ID, Platform: string(m.Platform), Author: author, Line: line.String()})
+				formatted := formatter.Format(m)
+				author := render.Sanitize(m.AuthorDisplayName)
+				if author == "" {
+					author = "system"
 				}
+				message := m
+				e = terminal.AppendMessage(terminalui.DisplayMessage{ID: m.ID, Platform: string(m.Platform), Author: author, Line: formatted.Text, Render: func() emote.Line { return formatter.Format(message) }})
 			}
 			if e != nil {
 				return e

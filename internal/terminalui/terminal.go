@@ -2,11 +2,13 @@ package terminalui
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
@@ -29,10 +32,12 @@ const (
 )
 
 type DisplayMessage struct {
-	ID       string
-	Platform string
-	Author   string
-	Line     string
+	ID          string
+	Platform    string
+	Author      string
+	Line        string
+	Render      func() emote.Line
+	leadingRows int
 }
 
 // StreamStatus is provider-neutral metadata displayed above chat.
@@ -44,17 +49,19 @@ type StreamStatus struct {
 }
 
 type Screen struct {
-	mu       sync.Mutex
-	out      io.Writer
-	width    func() int
-	height   func() int
-	now      func() time.Time
-	editor   Editor
-	target   string
-	messages []DisplayMessage
-	status   StreamStatus
-	known    bool
-	visible  bool
+	mu            sync.Mutex
+	out           io.Writer
+	width         func() int
+	height        func() int
+	now           func() time.Time
+	editor        Editor
+	target        string
+	messages      []DisplayMessage
+	status        StreamStatus
+	known         bool
+	visible       bool
+	images        emote.Backend
+	transientRows int
 }
 
 type screenLayout struct {
@@ -71,7 +78,11 @@ func NewScreen(out io.Writer, width func() int) *Screen {
 }
 
 func newScreen(out io.Writer, width, height func() int) *Screen {
-	return &Screen{out: out, width: width, height: height, now: func() time.Time { return time.Now().In(time.Local) }, target: "NONE"}
+	return newScreenWithBackend(out, width, height, nil)
+}
+
+func newScreenWithBackend(out io.Writer, width, height func() int, images emote.Backend) *Screen {
+	return &Screen{out: out, width: width, height: height, now: func() time.Time { return time.Now().In(time.Local) }, target: "NONE", images: images}
 }
 
 func (s *Screen) Start() error {
@@ -93,9 +104,24 @@ func (s *Screen) Close() error {
 	if !s.visible {
 		return nil
 	}
+	if s.images != nil {
+		s.images.Update(nil)
+	}
 	s.visible = false
 	_, err := io.WriteString(s.out, "\x1b[r\x1b[0m"+leaveAlternateScreen)
 	return err
+}
+
+func (s *Screen) closeImages() error {
+	s.mu.Lock()
+	images := s.images
+	s.images = nil
+	s.mu.Unlock()
+	if images == nil {
+		return nil
+	}
+	images.Update(nil)
+	return images.Close()
 }
 
 func (s *Screen) Feed(r rune) Event {
@@ -163,6 +189,8 @@ func (s *Screen) Text() string {
 func (s *Screen) AppendMessage(message DisplayMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	message.leadingRows = s.transientRows
+	s.transientRows = 0
 	s.messages = append(s.messages, message)
 	if len(s.messages) > displayMessageLimit {
 		copy(s.messages, s.messages[len(s.messages)-displayMessageLimit:])
@@ -172,10 +200,14 @@ func (s *Screen) AppendMessage(message DisplayMessage) error {
 		return nil
 	}
 	width, height := s.terminalWidth(), s.terminalHeight()
-	if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
+	if err := s.appendChatLocked([]byte(message.rendered().Text), height); err != nil {
 		return err
 	}
-	return s.drawInputLocked(width, height)
+	if err := s.drawInputLocked(width, height); err != nil {
+		return err
+	}
+	s.refreshImagesLocked(width, height)
+	return nil
 }
 
 func (s *Screen) CleanAll() (int, error) {
@@ -236,6 +268,10 @@ func (s *Screen) cleanMessages(matches func(DisplayMessage) bool) (int, error) {
 
 func (s *Screen) redrawViewLocked() error {
 	width, height := s.terminalWidth(), s.terminalHeight()
+	s.transientRows = 0
+	for index := range s.messages {
+		s.messages[index].leadingRows = 0
+	}
 	if _, err := io.WriteString(s.out, "\x1b[r\x1b[2J\x1b[H"); err != nil {
 		return err
 	}
@@ -249,15 +285,23 @@ func (s *Screen) redrawViewLocked() error {
 		return err
 	}
 	for _, message := range s.messages {
-		if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
+		if err := s.appendChatLocked([]byte(message.rendered().Text), height); err != nil {
 			return err
 		}
 	}
-	return s.drawInputLocked(width, height)
+	if err := s.drawInputLocked(width, height); err != nil {
+		return err
+	}
+	s.refreshImagesLocked(width, height)
+	return nil
 }
 
 func (s *Screen) redrawChatLocked() error {
 	width, height := s.terminalWidth(), s.terminalHeight()
+	s.transientRows = 0
+	for index := range s.messages {
+		s.messages[index].leadingRows = 0
+	}
 	layout := layoutForHeight(height)
 	if err := s.setChatRegionLocked(height); err != nil {
 		return err
@@ -268,11 +312,22 @@ func (s *Screen) redrawChatLocked() error {
 		}
 	}
 	for _, message := range s.messages {
-		if err := s.appendChatLocked([]byte(message.Line), height); err != nil {
+		if err := s.appendChatLocked([]byte(message.rendered().Text), height); err != nil {
 			return err
 		}
 	}
-	return s.drawInputLocked(width, height)
+	if err := s.drawInputLocked(width, height); err != nil {
+		return err
+	}
+	s.refreshImagesLocked(width, height)
+	return nil
+}
+
+func (m DisplayMessage) rendered() emote.Line {
+	if m.Render != nil {
+		return m.Render()
+	}
+	return emote.Line{Text: m.Line}
 }
 
 func (s *Screen) Writer(destination io.Writer) io.Writer {
@@ -298,11 +353,13 @@ func (w screenWriter) Write(p []byte) (int, error) {
 	if err := s.appendChatLocked(p, height); err != nil {
 		return 0, err
 	}
+	s.transientRows += wrappedRows(string(p), width)
 	n := len(p)
 	var err error
 	if drawErr := s.drawInputLocked(width, height); err == nil {
 		err = drawErr
 	}
+	s.refreshImagesLocked(width, height)
 	return n, err
 }
 
@@ -433,6 +490,70 @@ func (s *Screen) appendChatLocked(p []byte, height int) error {
 	return nil
 }
 
+var terminalANSI = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+
+func (s *Screen) refreshImagesLocked(width, height int) {
+	if s.images == nil {
+		return
+	}
+	layout := layoutForHeight(height)
+	capacity := layout.chatBottom - layout.chatTop + 1
+	if capacity <= 0 {
+		s.images.Update(nil)
+		return
+	}
+	type renderedMessage struct {
+		message DisplayMessage
+		line    emote.Line
+		start   int
+		rows    int
+	}
+	rendered := make([]renderedMessage, 0, len(s.messages))
+	totalRows := 0
+	for _, message := range s.messages {
+		totalRows += message.leadingRows
+		line := message.rendered()
+		displayWidth := runewidth.StringWidth(terminalANSI.ReplaceAllString(strings.TrimRight(line.Text, "\r\n"), ""))
+		rows := max((max(displayWidth, 1)-1)/max(width, 1)+1, 1)
+		rendered = append(rendered, renderedMessage{message: message, line: line, start: totalRows, rows: rows})
+		totalRows += rows
+	}
+	totalRows += s.transientRows
+	visibleStart := max(totalRows-capacity, 0)
+	bottomPadding := max(capacity-totalRows, 0)
+	placements := make([]emote.Placement, 0)
+	for _, item := range rendered {
+		for imageIndex, image := range item.line.Images {
+			rowOffset := image.Column / max(width, 1)
+			x := image.Column % max(width, 1)
+			if x+image.Width > width {
+				rowOffset++
+				x = 0
+			}
+			globalRow := item.start + rowOffset
+			if globalRow < visibleStart || globalRow >= totalRows || rowOffset >= item.rows {
+				continue
+			}
+			y := layout.chatTop + bottomPadding + globalRow - visibleStart
+			digest := sha256.Sum256([]byte(item.message.Platform + "\x00" + item.message.ID))
+			placements = append(placements, emote.Placement{Identifier: fmt.Sprintf("streamchat-%x-%d", digest[:8], imageIndex), Path: image.Path, X: x, Y: y - 1, Width: max(image.Width, 1), Height: 1})
+		}
+	}
+	s.images.Update(placements)
+}
+
+func wrappedRows(value string, width int) int {
+	value = strings.TrimRight(value, "\r\n")
+	lines := strings.Split(value, "\n")
+	rows := 0
+	for _, line := range lines {
+		line = terminalANSI.ReplaceAllString(strings.TrimSuffix(line, "\r"), "")
+		displayWidth := runewidth.StringWidth(line)
+		rows += max((max(displayWidth, 1)-1)/max(width, 1)+1, 1)
+	}
+	return rows
+}
+
 func layoutForHeight(height int) screenLayout {
 	height = max(height, 1)
 	layout := screenLayout{
@@ -512,12 +633,16 @@ func IsInteractive(in, out *os.File) bool {
 }
 
 func Open(in, out *os.File, reader io.Reader) (*Terminal, error) {
+	return OpenWithBackend(in, out, reader, nil)
+}
+
+func OpenWithBackend(in, out *os.File, reader io.Reader, images emote.Backend) (*Terminal, error) {
 	state, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
 		return nil, err
 	}
 	restore := func() error { return term.Restore(int(in.Fd()), state) }
-	screen := newScreen(out, func() int {
+	screen := newScreenWithBackend(out, func() int {
 		width, _, err := term.GetSize(int(out.Fd()))
 		if err != nil {
 			return defaultWidth
@@ -529,8 +654,11 @@ func Open(in, out *os.File, reader io.Reader) (*Terminal, error) {
 			return defaultHeight
 		}
 		return height
-	})
+	}, images)
 	if err = startScreen(screen, restore); err != nil {
+		if images != nil {
+			_ = images.Close()
+		}
 		return nil, err
 	}
 	clock := time.NewTicker(clockRefreshInterval)
@@ -575,6 +703,7 @@ func (t *Terminal) KnownMessageIDs(platform string) []string {
 func (t *Terminal) Writer(destination io.Writer) io.Writer {
 	return t.screen.Writer(destination)
 }
+func (t *Terminal) Redraw() { t.screen.Redraw() }
 
 func (t *Terminal) Close() error {
 	t.close.Do(func() {
@@ -586,9 +715,10 @@ func (t *Terminal) Close() error {
 		if t.done != nil {
 			<-t.done
 		}
+		imagesErr := t.screen.closeImages()
 		screenErr := t.screen.Close()
 		restoreErr := t.restore()
-		t.closeErr = errors.Join(screenErr, restoreErr)
+		t.closeErr = errors.Join(screenErr, imagesErr, restoreErr)
 	})
 	return t.closeErr
 }

@@ -126,6 +126,30 @@ func TestInvalid(t *testing.T) {
 	}
 }
 
+func TestEmoteModeDefaultsEnvironmentAndValidation(t *testing.T) {
+	c := Defaults()
+	if c.Emotes.Mode != "auto" {
+		t.Fatalf("default mode=%q", c.Emotes.Mode)
+	}
+	ApplyEnv(&c, func(key string) string {
+		if key == "STREAMCHAT_EMOTES_MODE" {
+			return "text"
+		}
+		return ""
+	})
+	if c.Emotes.Mode != "text" || c.Validate("run") != nil {
+		t.Fatalf("text mode rejected: %+v", c.Emotes)
+	}
+	c.Emotes.Mode = "off"
+	if err := c.Validate("run"); err != nil {
+		t.Fatal(err)
+	}
+	c.Emotes.Mode = "images-or-bust"
+	if err := c.Validate("run"); err == nil || !strings.Contains(err.Error(), "emotes.mode") {
+		t.Fatalf("invalid mode accepted: %v", err)
+	}
+}
+
 func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
 	c := Defaults()
 	if c.YouTube.RedirectURI != "http://127.0.0.1:8791" {

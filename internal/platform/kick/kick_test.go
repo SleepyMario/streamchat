@@ -71,6 +71,9 @@ func TestSignatureParsingReplyBadgeEmoteAndDedup(t *testing.T) {
 	if m.Reply == nil || len(m.Badges) != 1 || len(m.Emotes) != 1 || m.AuthorColor != "#fff" || !m.Roles.Has(chat.RoleModerator) {
 		t.Fatalf("%+v", m)
 	}
+	if got := m.Emotes[0]; got.ID != "7" || got.Name != "WAVE" || got.Start != 3 || got.End != 16 || got.URL != "https://files.kick.com/emotes/7/fullsize" {
+		t.Fatalf("structured emote = %+v", got)
+	}
 	if w := request(t, s, p, []byte(body), stamp); w.Code != 204 {
 		t.Fatal(w.Code)
 	}
@@ -78,6 +81,39 @@ func TestSignatureParsingReplyBadgeEmoteAndDedup(t *testing.T) {
 	case <-out:
 		t.Fatal("duplicate emitted")
 	default:
+	}
+}
+
+func TestParseNormalizesMultipleKickEmotesFromStructuredMetadata(t *testing.T) {
+	payload := []byte(`{"message_id":"emotes","broadcaster":{"user_id":1,"username":"channel"},"sender":{"user_id":2,"username":"viewer"},"content":"hi [emote:7:WAVE] [emote:7:WAVE] [emote:8:CLAP]","emotes":[{"emote_id":"7","positions":[{"s":3,"e":16},{"s":18,"e":31}]},{"emote_id":"8","positions":[{"s":33,"e":46}]}],"created_at":"2026-01-01T00:00:00Z"}`)
+	message, err := Parse(payload, "event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(message.Emotes) != 3 || message.Emotes[0].Name != "WAVE" || message.Emotes[1].Name != "WAVE" || message.Emotes[2].Name != "CLAP" {
+		t.Fatalf("emotes=%+v", message.Emotes)
+	}
+	for _, item := range message.Emotes {
+		if !strings.HasPrefix(item.URL, "https://files.kick.com/emotes/") {
+			t.Fatalf("non-provider URL: %q", item.URL)
+		}
+	}
+}
+
+func TestKickEmoteURLRejectsUnsafeIDs(t *testing.T) {
+	if got := kickEmoteURL("../../secret"); got != "" {
+		t.Fatalf("unsafe URL=%q", got)
+	}
+}
+
+func TestParseKickEmotePositionsUseRunesWithUnicodeText(t *testing.T) {
+	payload := []byte(`{"message_id":"unicode-emote","broadcaster":{"user_id":1,"username":"channel"},"sender":{"user_id":2,"username":"viewer"},"content":"好 [emote:7:WAVE]","emotes":[{"emote_id":"7","positions":[{"s":2,"e":15}]}],"created_at":"2026-01-01T00:00:00Z"}`)
+	message, err := Parse(payload, "event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(message.Emotes) != 1 || message.Emotes[0].Start != 2 || message.Emotes[0].End != 15 {
+		t.Fatalf("emotes=%+v", message.Emotes)
 	}
 }
 
