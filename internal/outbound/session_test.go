@@ -26,17 +26,17 @@ func (c *recordingControl) Execute(_ context.Context, argument string) (string, 
 
 func TestKickSelectionAndSending(t *testing.T) {
 	kick := &recordingSender{}
-	s := New(map[string]Sender{"kk": kick})
-	if err := s.Handle(context.Background(), "/kk"); err != nil {
+	s := New(map[string]Sender{"kick": kick})
+	if err := s.Handle(context.Background(), "/kick"); err != nil {
 		t.Fatal(err)
 	}
-	if s.Selected() != "kk" || len(kick.messages) != 0 {
+	if s.Selected() != "kick" || len(kick.messages) != 0 {
 		t.Fatalf("selected=%q messages=%v", s.Selected(), kick.messages)
 	}
 	if err := s.Handle(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Handle(context.Background(), "/kk how are you"); err != nil {
+	if err := s.Handle(context.Background(), "/kick how are you"); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(kick.messages, []string{"hello", "how are you"}) {
@@ -44,43 +44,43 @@ func TestKickSelectionAndSending(t *testing.T) {
 	}
 }
 
-func TestTargetAliasSelectsCanonicalNameAndPersistsOnlyOnChange(t *testing.T) {
+func TestTargetCommandSelectsCanonicalNameAndPersistsOnlyOnChange(t *testing.T) {
 	kick := &recordingSender{}
-	s := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick})
+	s := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick})
 	var changes []string
 	s.SetSelectionChanged(func(target string) { changes = append(changes, target) })
-	if err := s.Handle(context.Background(), "/kk"); err != nil {
+	if err := s.Handle(context.Background(), "/kick"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Handle(context.Background(), "/kk hello"); err != nil {
+	if err := s.Handle(context.Background(), "/kick hello"); err != nil {
 		t.Fatal(err)
 	}
 	if s.Selected() != "kick" || !reflect.DeepEqual(changes, []string{"kick"}) || !reflect.DeepEqual(kick.messages, []string{"hello"}) {
 		t.Fatalf("selected=%q changes=%v messages=%v", s.Selected(), changes, kick.messages)
 	}
-	withoutSelection := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick})
-	if _, err := withoutSelection.Process(context.Background(), "/kick must not be implemented yet"); !errors.Is(err, ErrNoTarget) {
-		t.Fatalf("canonical name unexpectedly became a command alias: %v", err)
+	withoutSelection := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick})
+	if _, err := withoutSelection.Process(context.Background(), "/kk"); !errors.Is(err, ErrNoTarget) {
+		t.Fatalf("retired alias unexpectedly selected a target: %v", err)
 	}
 }
 
 func TestRestoreRequiresRegisteredAvailableCanonicalTarget(t *testing.T) {
 	kick := &recordingSender{}
-	available := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick})
+	available := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick})
 	if !available.Restore("KICK") || available.Selected() != "kick" {
 		t.Fatalf("available restore selected=%q", available.Selected())
 	}
 	if available.Restore("youtube") {
 		t.Fatal("unregistered target restored")
 	}
-	unavailable := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick, Unavailable: true})
+	unavailable := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick, Unavailable: true})
 	if unavailable.Restore("kick") || unavailable.Selected() != "" {
 		t.Fatalf("unavailable restore selected=%q", unavailable.Selected())
 	}
 }
 
 func TestPlainTextRequiresTarget(t *testing.T) {
-	s := New(map[string]Sender{"kk": &recordingSender{}})
+	s := New(map[string]Sender{"kick": &recordingSender{}})
 	if err := s.Handle(context.Background(), "hello"); !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("err=%v", err)
 	}
@@ -89,8 +89,8 @@ func TestPlainTextRequiresTarget(t *testing.T) {
 func TestSelectionIsSessionLocalAndSwitchable(t *testing.T) {
 	kick := &recordingSender{}
 	youtube := &recordingSender{}
-	first := New(map[string]Sender{"kk": kick, "/yt": youtube})
-	if err := first.Handle(context.Background(), "/kk first"); err != nil {
+	first := New(map[string]Sender{"kick": kick, "/yt": youtube})
+	if err := first.Handle(context.Background(), "/kick first"); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Handle(context.Background(), "/yt second"); err != nil {
@@ -102,7 +102,7 @@ func TestSelectionIsSessionLocalAndSwitchable(t *testing.T) {
 	if first.Selected() != "yt" || !reflect.DeepEqual(kick.messages, []string{"first"}) || !reflect.DeepEqual(youtube.messages, []string{"second", "third"}) {
 		t.Fatalf("selected=%q kick=%v youtube=%v", first.Selected(), kick.messages, youtube.messages)
 	}
-	second := New(map[string]Sender{"kk": kick})
+	second := New(map[string]Sender{"kick": kick})
 	if second.Selected() != "" {
 		t.Fatalf("new session inherited target %q", second.Selected())
 	}
@@ -115,10 +115,10 @@ func TestKickControlsParseArgumentsAndNeverBecomeChat(t *testing.T) {
 	kick := &recordingSender{}
 	title := &recordingControl{result: "title result"}
 	category := &recordingControl{result: "category result"}
-	s := New(map[string]Sender{"kk": kick})
+	s := New(map[string]Sender{"kick": kick})
 	s.RegisterControl("title", title)
 	s.RegisterControl("/category", category)
-	if err := s.Handle(context.Background(), "/kk"); err != nil {
+	if err := s.Handle(context.Background(), "/kick"); err != nil {
 		t.Fatal(err)
 	}
 	result, err := s.Process(context.Background(), "/title New title")
@@ -139,13 +139,13 @@ func TestKickControlsParseArgumentsAndNeverBecomeChat(t *testing.T) {
 	if !reflect.DeepEqual(category.arguments, []string{"Just Chatting"}) {
 		t.Fatalf("category arguments=%v", category.arguments)
 	}
-	if len(kick.messages) != 0 || s.Selected() != "kk" {
+	if len(kick.messages) != 0 || s.Selected() != "kick" {
 		t.Fatalf("controls reached chat or changed target: messages=%v selected=%q", kick.messages, s.Selected())
 	}
 	if err = s.Handle(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(kick.messages, []string{"hello"}) {
-		t.Fatalf("existing /kk behavior changed: %v", kick.messages)
+		t.Fatalf("existing /kick behavior changed: %v", kick.messages)
 	}
 }

@@ -33,7 +33,10 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kick hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
+		t.Fatal(out.String())
+	}
+	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
 }
@@ -41,15 +44,15 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 func TestOutboundTargetStatePersistsAcrossSimulatedSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "streamchat", "client.json")
 	state := clientstate.New(path)
-	first := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	first := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}})
 	configureOutboundState(first, state)
-	if _, err := first.Process(context.Background(), "/kk"); err != nil {
+	if _, err := first.Process(context.Background(), "/kick"); err != nil {
 		t.Fatal(err)
 	}
 	if first.Selected() != "kick" || state.Load().LastOutboundTarget != "kick" {
 		t.Fatalf("selected=%q state=%+v", first.Selected(), state.Load())
 	}
-	second := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	second := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}})
 	configureOutboundState(second, state)
 	if second.Selected() != "kick" || terminalui.TargetLabel(second.Selected()) != "KICK" {
 		t.Fatalf("restored=%q label=%q", second.Selected(), terminalui.TargetLabel(second.Selected()))
@@ -59,7 +62,7 @@ func TestOutboundTargetStatePersistsAcrossSimulatedSessions(t *testing.T) {
 func TestOutboundTargetStateInvalidOrUnavailableFallsBackToNone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.json")
 	state := clientstate.New(path)
-	missing := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	missing := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}})
 	configureOutboundState(missing, state)
 	if missing.Selected() != "" {
 		t.Fatalf("missing state selected=%q", missing.Selected())
@@ -67,7 +70,7 @@ func TestOutboundTargetStateInvalidOrUnavailableFallsBackToNone(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not-json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	corrupt := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	corrupt := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}})
 	configureOutboundState(corrupt, state)
 	if corrupt.Selected() != "" {
 		t.Fatalf("corrupt state selected=%q", corrupt.Selected())
@@ -75,7 +78,7 @@ func TestOutboundTargetStateInvalidOrUnavailableFallsBackToNone(t *testing.T) {
 	if err := state.Save(clientstate.State{LastOutboundTarget: "youtube"}); err != nil {
 		t.Fatal(err)
 	}
-	invalid := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	invalid := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}})
 	configureOutboundState(invalid, state)
 	if invalid.Selected() != "" || terminalui.TargetLabel(invalid.Selected()) != "NONE" {
 		t.Fatalf("invalid selected=%q", invalid.Selected())
@@ -83,10 +86,27 @@ func TestOutboundTargetStateInvalidOrUnavailableFallsBackToNone(t *testing.T) {
 	if err := state.Save(clientstate.State{LastOutboundTarget: "kick"}); err != nil {
 		t.Fatal(err)
 	}
-	unavailable := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}, Unavailable: true})
+	unavailable := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}, Unavailable: true})
 	configureOutboundState(unavailable, state)
 	if unavailable.Selected() != "" {
 		t.Fatalf("unavailable selected=%q", unavailable.Selected())
+	}
+}
+
+func TestRetiredKickAliasIsRejectedAfterRestoredSelection(t *testing.T) {
+	sender := &recordingOutboundSender{}
+	targets := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: sender})
+	if !targets.Restore("kick") {
+		t.Fatal("failed to restore canonical Kick target")
+	}
+	registerRetiredTargetCommands(targets)
+	var errw bytes.Buffer
+	processInputLine(context.Background(), "/kk hello", targets, io.Discard, &errw)
+	if len(sender.messages) != 0 {
+		t.Fatalf("retired command reached chat: %v", sender.messages)
+	}
+	if targets.Selected() != "kick" || !strings.Contains(errw.String(), "use /kick") {
+		t.Fatalf("selected=%q error=%q", targets.Selected(), errw.String())
 	}
 }
 
@@ -170,7 +190,7 @@ func (w channelWriter) Write(p []byte) (int, error) {
 
 func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 	sender := &blockingSender{started: make(chan struct{}), release: make(chan struct{})}
-	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets := outbound.New(map[string]outbound.Sender{"kick": sender})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writes := make(chan string, 2)
@@ -178,7 +198,7 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	go func() {
-		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kk sending\n"), targets, nil, channelWriter{writes: writes}, io.Discard)
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kick sending\n"), targets, nil, channelWriter{writes: writes}, io.Discard)
 	}()
 	select {
 	case line := <-writes:
@@ -201,7 +221,7 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 
 func TestNonTTYFallbackDisplaysNoTargetInstructionWithoutANSI(t *testing.T) {
 	var errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), io.Discard, &errw, func() {})
+	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kick": &recordingOutboundSender{}}), io.Discard, &errw, func() {})
 	if got := strings.TrimSpace(errw.String()); got != outbound.NoTargetInstruction {
 		t.Fatalf("got %q", got)
 	}
@@ -321,7 +341,7 @@ func TestSuccessfulTitleAndCategoryTriggerImmediateStatusRefresh(t *testing.T) {
 
 func TestEmptyTitlePrintsUsageWithoutAuthorization(t *testing.T) {
 	client := &kickOutboundSender{}
-	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets := outbound.New(map[string]outbound.Sender{"kick": client})
 	targets.RegisterControl("title", outbound.ControlFunc(client.Title))
 	var out, errw bytes.Buffer
 	runOutboundInput(context.Background(), strings.NewReader("/title\n"), targets, &out, &errw, func() {})
@@ -344,7 +364,7 @@ func TestTitlePrintsSuccessOnlyAfterKickConfirms(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
-	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets := outbound.New(map[string]outbound.Sender{"kick": client})
 	targets.RegisterControl("title", outbound.ControlFunc(client.Title))
 	var out, errw bytes.Buffer
 	runOutboundInput(context.Background(), strings.NewReader("/title New title\n"), targets, &out, &errw, func() {})
@@ -366,7 +386,7 @@ func TestCategoryPrintsResolvedNameAfterKickConfirms(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
-	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets := outbound.New(map[string]outbound.Sender{"kick": client})
 	targets.RegisterControl("category", outbound.ControlFunc(client.Category))
 	var out, errw bytes.Buffer
 	runOutboundInput(context.Background(), strings.NewReader("/category Just Chatting\n"), targets, &out, &errw, func() {})
@@ -378,7 +398,7 @@ func TestCategoryPrintsResolvedNameAfterKickConfirms(t *testing.T) {
 func TestModerationCommandsRequireExplicitPlatform(t *testing.T) {
 	client := &kickOutboundSender{}
 	moderation := newModerationControls(client)
-	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets := outbound.New(map[string]outbound.Sender{"kick": client})
 	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 	targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 	var out, errw bytes.Buffer
@@ -398,18 +418,18 @@ func TestModerationRejectsUnsupportedPlatformWithoutAPIRequestOrTargetInference(
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
 	moderation := newModerationControls(client)
 	sender := &recordingOutboundSender{}
-	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets := outbound.New(map[string]outbound.Sender{"kick": sender})
 	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 	targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/kk\n/ban user\n/timeout user 10m\n/ban foo user\n/timeout foo user 10m\n"), targets, &out, &errw, func() {})
+	runOutboundInput(context.Background(), strings.NewReader("/kick\n/ban user\n/timeout user 10m\n/ban foo user\n/timeout foo user 10m\n"), targets, &out, &errw, func() {})
 	if requests != 0 || len(sender.messages) != 0 {
 		t.Fatalf("API requests=%d chat=%v", requests, sender.messages)
 	}
 	if got := out.String(); !strings.Contains(got, "Usage: /ban PLATFORM USER") || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") || strings.Count(got, "Unsupported moderation platform: foo. Supported: kick.") != 2 {
 		t.Fatalf("output=%q", got)
 	}
-	if targets.Selected() != "kk" || errw.Len() != 0 {
+	if targets.Selected() != "kick" || errw.Len() != 0 {
 		t.Fatalf("selected=%q err=%q", targets.Selected(), errw.String())
 	}
 }
@@ -431,18 +451,18 @@ func TestModerationControlsSucceedAndNeverBecomeChat(t *testing.T) {
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
 	moderation := newModerationControls(client)
 	sender := &recordingOutboundSender{}
-	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets := outbound.New(map[string]outbound.Sender{"kick": sender})
 	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 	targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/ban kick TargetUser\n/kk\n/timeout kick TargetUser 10m\nhello\n"), targets, &out, &errw, func() {})
+	runOutboundInput(context.Background(), strings.NewReader("/ban kick TargetUser\n/kick\n/timeout kick TargetUser 10m\nhello\n"), targets, &out, &errw, func() {})
 	if moderationRequests != 2 || !reflect.DeepEqual(sender.messages, []string{"hello"}) {
 		t.Fatalf("moderation=%d chat=%v", moderationRequests, sender.messages)
 	}
 	if got := out.String(); !strings.Contains(got, "Banned: targetuser") || !strings.Contains(got, "Timed out: targetuser for 10m") {
 		t.Fatalf("output=%q", got)
 	}
-	if errw.Len() != 0 || targets.Selected() != "kk" {
+	if errw.Len() != 0 || targets.Selected() != "kick" {
 		t.Fatalf("selected=%q err=%q", targets.Selected(), errw.String())
 	}
 }
@@ -501,14 +521,14 @@ func (d *recordingLocalDisplay) CleanAuthor(author string) (int, error) {
 func TestCleanCommandsAreLocalAndPreserveSelectedTarget(t *testing.T) {
 	display := &recordingLocalDisplay{removed: 1}
 	sender := &recordingOutboundSender{}
-	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets := outbound.New(map[string]outbound.Sender{"kick": sender})
 	targets.RegisterControl("clean", outbound.ControlFunc(cleanController{display: display}.Clean))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/kk\n/clean streamchat\n/clean kick\n/clean bOtRiX\nhello\n"), targets, &out, &errw, func() {})
+	runOutboundInput(context.Background(), strings.NewReader("/kick\n/clean streamchat\n/clean kick\n/clean bOtRiX\nhello\n"), targets, &out, &errw, func() {})
 	if display.all != 1 || !reflect.DeepEqual(display.platforms, []string{"kick"}) || !reflect.DeepEqual(display.authors, []string{"bOtRiX"}) {
 		t.Fatalf("display=%+v", display)
 	}
-	if !reflect.DeepEqual(sender.messages, []string{"hello"}) || targets.Selected() != "kk" {
+	if !reflect.DeepEqual(sender.messages, []string{"hello"}) || targets.Selected() != "kick" {
 		t.Fatalf("chat=%v selected=%q", sender.messages, targets.Selected())
 	}
 	if out.Len() != 0 || errw.Len() != 0 {
@@ -518,7 +538,7 @@ func TestCleanCommandsAreLocalAndPreserveSelectedTarget(t *testing.T) {
 
 func TestCleanNoMatchReservedTargetsAndUsage(t *testing.T) {
 	display := &recordingLocalDisplay{}
-	targets := outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}})
+	targets := outbound.New(map[string]outbound.Sender{"kick": &recordingOutboundSender{}})
 	targets.RegisterControl("clean", outbound.ControlFunc(cleanController{display: display}.Clean))
 	var out, errw bytes.Buffer
 	runOutboundInput(context.Background(), strings.NewReader("/clean\n/clean MissingUser\n/clean youtube\n/clean twitch\n"), targets, &out, &errw, func() {})
@@ -543,11 +563,11 @@ func TestCleanNeverInvokesProviderAPIAndNonTTYFallbackIsSane(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
 	defer server.Close()
 	provider := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
-	targets := outbound.New(map[string]outbound.Sender{"kk": provider})
+	targets := outbound.New(map[string]outbound.Sender{"kick": provider})
 	targets.RegisterControl("clean", outbound.ControlFunc(cleanController{}.Clean))
 	var out, errw bytes.Buffer
-	runOutboundInput(context.Background(), strings.NewReader("/kk\n/clean streamchat\n"), targets, &out, &errw, func() {})
-	if requests != 0 || targets.Selected() != "kk" || errw.Len() != 0 {
+	runOutboundInput(context.Background(), strings.NewReader("/kick\n/clean streamchat\n"), targets, &out, &errw, func() {})
+	if requests != 0 || targets.Selected() != "kick" || errw.Len() != 0 {
 		t.Fatalf("requests=%d selected=%q err=%q", requests, targets.Selected(), errw.String())
 	}
 	if got := strings.TrimSpace(out.String()); got != "Local display cleaning requires an interactive terminal." || strings.Contains(got, "\x1b") {
@@ -692,9 +712,9 @@ func TestRemoteClearKickUsesSnapshotAndPreservesOutboundTarget(t *testing.T) {
 	provider := &recordingRemoteClear{result: remoteClearResult{Deleted: 2}, started: make(chan struct{}), release: make(chan struct{})}
 	controller := &remoteClearController{source: store, platforms: map[string]remoteClearPlatform{"kick": provider}, now: func() time.Time { return fixedNow }}
 	chatSender := &recordingOutboundSender{}
-	targets := outbound.New(map[string]outbound.Sender{"kk": chatSender})
+	targets := outbound.New(map[string]outbound.Sender{"kick": chatSender})
 	targets.RegisterControl("clear", controller)
-	if _, err := targets.Process(context.Background(), "/kk"); err != nil {
+	if _, err := targets.Process(context.Background(), "/kick"); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -720,7 +740,7 @@ func TestRemoteClearKickUsesSnapshotAndPreservesOutboundTarget(t *testing.T) {
 	if got, queryErr := store.MessageIDsSince(context.Background(), chat.PlatformKick, fixedNow.Add(-24*time.Hour)); queryErr != nil || !reflect.DeepEqual(got, []string{"first", "second", "arrived-after-snapshot"}) {
 		t.Fatalf("archive IDs=%v err=%v", got, queryErr)
 	}
-	if targets.Selected() != "kk" {
+	if targets.Selected() != "kick" {
 		t.Fatalf("selected target changed: %q", targets.Selected())
 	}
 	if _, err := targets.Process(context.Background(), "still chat"); err != nil {
@@ -815,7 +835,7 @@ func TestIncomingRendersWhileModerationRequestIsActive(t *testing.T) {
 	defer server.Close()
 	client := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", BroadcasterID: "123", APIBaseURL: server.URL}, http: server.Client()}
 	moderation := newModerationControls(client)
-	targets := outbound.New(map[string]outbound.Sender{"kk": client})
+	targets := outbound.New(map[string]outbound.Sender{"kick": client})
 	targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -871,7 +891,7 @@ func TestInteractiveShutdownCommandsStopAdaptersAndDoNotSendChat(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				sender := &recordingOutboundSender{}
-				targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+				targets := outbound.New(map[string]outbound.Sender{"kick": sender})
 				registerShutdownControls(targets)
 				stopped := make(chan struct{})
 				c := config.Defaults()
@@ -880,9 +900,9 @@ func TestInteractiveShutdownCommandsStopAdaptersAndDoNotSendChat(t *testing.T) {
 				var wantMessages []string
 				wantTarget := ""
 				if selected {
-					input = "/kk\nhello\n" + input
+					input = "/kick\nhello\n" + input
 					wantMessages = []string{"hello"}
-					wantTarget = "kk"
+					wantTarget = "kick"
 				}
 				if err := runAdapters(context.Background(), []chat.Adapter{shutdownAdapter{stopped: stopped}}, c, strings.NewReader(input), targets, nil, &out, &errw); err != nil {
 					t.Fatalf("shutdown returned an error: %v", err)

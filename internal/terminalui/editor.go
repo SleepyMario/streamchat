@@ -148,7 +148,7 @@ func TargetLabel(command string) string {
 	switch strings.ToLower(command) {
 	case "":
 		return "NONE"
-	case "kk", "kick":
+	case "kick":
 		return "KICK"
 	default:
 		return strings.ToUpper(command)

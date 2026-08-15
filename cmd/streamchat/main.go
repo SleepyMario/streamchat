@@ -48,8 +48,8 @@ Server/client mode:
   streamchat run                   Connect to the configured Streamchat server
 
 Interactive commands:
-  /kk                              Select Kick as the outbound target
-  /kk hello                        Select Kick and send "hello"
+  /kick                            Select Kick as the outbound target
+  /kick hello                      Select Kick and send "hello"
   hello                            Send to the selected target
   /title New stream title          Update the Kick stream title
   /category Just Chatting          Update the Kick stream category
@@ -357,10 +357,11 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		status = kickClient
 		targets = outbound.NewTargets(outbound.Target{
 			Name:        "kick",
-			Aliases:     []string{"kk"},
+			Aliases:     []string{"kick"},
 			Sender:      kickClient,
 			Unavailable: c.Kick.BroadcasterID == "" || (c.Kick.AccessToken == "" && c.Kick.RefreshToken == ""),
 		})
+		registerRetiredTargetCommands(targets)
 		if state, stateErr := clientstate.Default(); stateErr == nil {
 			configureOutboundState(targets, state)
 		}
@@ -385,6 +386,12 @@ func configureOutboundState(targets *outbound.Session, state *clientstate.Store)
 	targets.SetSelectionChanged(func(target string) {
 		_ = state.Save(clientstate.State{LastOutboundTarget: target})
 	})
+}
+
+func registerRetiredTargetCommands(targets *outbound.Session) {
+	targets.RegisterControl("kk", outbound.ControlFunc(func(context.Context, string) (string, error) {
+		return "", errors.New("unknown outbound target command; use /kick")
+	}))
 }
 
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {

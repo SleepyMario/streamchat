@@ -36,7 +36,7 @@ func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 	for _, r := range "hello everyone" {
 		screen.Feed(r)
 	}
-	screen.SetTarget("kk")
+	screen.SetTarget("kick")
 	writer := screen.Writer(&output)
 	if _, err := io.WriteString(writer, "[KICK] viewer  incoming\n"); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestScreenConsecutiveMessagesStartAtColumnOneWithoutDecoration(t *testing.T
 	if err := screen.Start(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetTarget("kk")
+	screen.SetTarget("kick")
 	for _, r := range "partially typed" {
 		screen.Feed(r)
 	}
@@ -120,7 +120,7 @@ func TestScreenStartsAtColumnOneAndUsesDefaultNamedColors(t *testing.T) {
 	if err := screen.Start(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetTarget("kk")
+	screen.SetTarget("kick")
 	raw := output.String()
 	if !strings.Contains(raw, "cursor is not at column one"+enterAlternateScreen) {
 		t.Fatalf("alternate screen was not entered first: %q", raw)
@@ -143,7 +143,7 @@ func TestScreenResizeThenIncomingUnicodePreservesInput(t *testing.T) {
 	if err := screen.Start(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetTarget("kk")
+	screen.SetTarget("kick")
 	for _, r := range "你好🙂 typing" {
 		screen.Feed(r)
 	}
@@ -521,7 +521,7 @@ func TestScreenCleanAllPreservesPartialUnicodeInput(t *testing.T) {
 	if err := screen.Start(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetTarget("kk")
+	screen.SetTarget("kick")
 	for _, r := range "partly 你好🙂" {
 		screen.Feed(r)
 	}

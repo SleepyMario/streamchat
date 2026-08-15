@@ -16,7 +16,7 @@ type ControlError struct{ Err error }
 func (e *ControlError) Error() string { return e.Err.Error() }
 func (e *ControlError) Unwrap() error { return e.Err }
 
-const NoTargetInstruction = "No outbound target selected. Use /kk first."
+const NoTargetInstruction = "No outbound target selected. Use /kick first."
 
 // Sender is the minimal contract shared by outbound chat providers.
 type Sender interface {
