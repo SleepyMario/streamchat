@@ -29,6 +29,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/relay"
 	"github.com/SleepyMario/streamchat/internal/render"
 	"github.com/SleepyMario/streamchat/internal/setup"
+	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
 const version = "0.3.0"
@@ -52,6 +53,7 @@ Interactive commands:
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
 Title and category commands currently target Kick only.
+On a terminal, a persistent bottom bar provides basic cursor editing.
 
 Useful commands:
   streamchat setup youtube|kick|twitch [--config PATH]
@@ -334,6 +336,9 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 	var targets *outbound.Session
 	if mode == "run" {
 		input = reader
+		if inputFile, ok := in.(*os.File); ok {
+			input = &terminalInput{Reader: reader, file: inputFile}
+		}
 		kickClient := &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}}
 		targets = outbound.New(map[string]outbound.Sender{
 			"kk": kickClient,
@@ -461,11 +466,34 @@ func archiveStats(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, out, errw io.Writer) error {
+func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, out, errw io.Writer) (result error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	safeOut := &lockedWriter{writer: out}
-	safeErr := &lockedWriter{writer: errw}
+	var safeOut io.Writer = &lockedWriter{writer: out}
+	var safeErr io.Writer = &lockedWriter{writer: errw}
+	var terminal *terminalui.Terminal
+	var inFile *os.File
+	if terminalIn, ok := in.(*terminalInput); ok {
+		inFile = terminalIn.file
+	} else {
+		inFile, _ = in.(*os.File)
+	}
+	if inFile != nil {
+		if outFile, outputOK := out.(*os.File); outputOK && terminalui.IsInteractive(inFile, outFile) {
+			var err error
+			terminal, err = terminalui.Open(inFile, outFile, in)
+			if err != nil {
+				return fmt.Errorf("initialize interactive terminal: %w", err)
+			}
+			safeOut = terminal.Writer(out)
+			safeErr = terminal.Writer(errw)
+			defer func() {
+				if err := terminal.Close(); result == nil && err != nil {
+					result = fmt.Errorf("restore terminal: %w", err)
+				}
+			}()
+		}
+	}
 	var shutdownRequests <-chan struct{}
 	var inputDone <-chan struct{}
 	if in != nil && targets != nil {
@@ -475,12 +503,17 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		inputDone = done
 		go func() {
 			defer close(done)
-			runOutboundInput(ctx, in, targets, safeOut, safeErr, func() {
+			requestShutdown := func() {
 				select {
 				case requests <- struct{}{}:
 				default:
 				}
-			})
+			}
+			if terminal != nil {
+				runTerminalInput(ctx, terminal, targets, safeOut, safeErr, requestShutdown)
+			} else {
+				runOutboundInput(ctx, in, targets, safeOut, safeErr, requestShutdown)
+			}
 		}()
 	}
 	inputs := make([]<-chan chat.Message, 0, len(adapters))
@@ -557,6 +590,11 @@ type lockedWriter struct {
 	writer io.Writer
 }
 
+type terminalInput struct {
+	io.Reader
+	file *os.File
+}
+
 func (w *lockedWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -566,23 +604,9 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Session, out, errw io.Writer, requestShutdown func()) {
 	scanner := bufio.NewScanner(in)
 	for scanner.Scan() {
-		result, err := targets.Process(ctx, scanner.Text())
-		if err != nil {
-			if errors.Is(err, outbound.ErrShutdownRequested) {
-				requestShutdown()
-				return
-			} else if errors.Is(err, outbound.ErrNoTarget) {
-				fmt.Fprintln(errw, outbound.NoTargetInstruction)
-			} else if !errors.Is(err, context.Canceled) {
-				var controlErr *outbound.ControlError
-				if errors.As(err, &controlErr) {
-					fmt.Fprintf(errw, "control failed: %s\n", sanitizeLocalOutput(safeError(err)))
-				} else {
-					fmt.Fprintf(errw, "send failed: %s\n", safeError(err))
-				}
-			}
-		} else if result != "" {
-			fmt.Fprintln(out, sanitizeLocalOutput(result))
+		if processInputLine(ctx, scanner.Text(), targets, out, errw) {
+			requestShutdown()
+			return
 		}
 		if ctx.Err() != nil {
 			return
@@ -591,6 +615,54 @@ func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Sessi
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(errw, "terminal input failed: %s\n", safeError(err))
 	}
+}
+
+func runTerminalInput(ctx context.Context, terminal *terminalui.Terminal, targets *outbound.Session, out, errw io.Writer, requestShutdown func()) {
+	for {
+		event, err := terminal.Next()
+		if err != nil {
+			if ctx.Err() == nil && !errors.Is(err, io.EOF) {
+				fmt.Fprintf(errw, "terminal input failed: %s\n", safeError(err))
+			}
+			requestShutdown()
+			return
+		}
+		if event.Shutdown {
+			requestShutdown()
+			return
+		}
+		if !event.Submit {
+			continue
+		}
+		shutdown := processInputLine(ctx, event.Line, targets, out, errw)
+		terminal.SetTarget(targets.Selected())
+		if shutdown {
+			requestShutdown()
+			return
+		}
+	}
+}
+
+func processInputLine(ctx context.Context, line string, targets *outbound.Session, out, errw io.Writer) bool {
+	result, err := targets.Process(ctx, line)
+	if err != nil {
+		if errors.Is(err, outbound.ErrShutdownRequested) {
+			return true
+		}
+		if errors.Is(err, outbound.ErrNoTarget) {
+			fmt.Fprintln(errw, outbound.NoTargetInstruction)
+		} else if !errors.Is(err, context.Canceled) {
+			var controlErr *outbound.ControlError
+			if errors.As(err, &controlErr) {
+				fmt.Fprintf(errw, "control failed: %s\n", sanitizeLocalOutput(safeError(err)))
+			} else {
+				fmt.Fprintf(errw, "send failed: %s\n", safeError(err))
+			}
+		}
+	} else if result != "" {
+		fmt.Fprintln(out, sanitizeLocalOutput(result))
+	}
+	return false
 }
 
 func registerShutdownControls(targets *outbound.Session) {

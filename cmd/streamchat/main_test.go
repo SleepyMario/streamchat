@@ -144,11 +144,14 @@ func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
 	}
 }
 
-func TestOutboundInputDisplaysNoTargetInstruction(t *testing.T) {
+func TestNonTTYFallbackDisplaysNoTargetInstructionWithoutANSI(t *testing.T) {
 	var errw bytes.Buffer
 	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), io.Discard, &errw, func() {})
 	if got := strings.TrimSpace(errw.String()); got != outbound.NoTargetInstruction {
 		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(errw.String(), "\x1b") {
+		t.Fatalf("non-TTY fallback emitted terminal controls: %q", errw.String())
 	}
 }
 

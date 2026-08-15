@@ -66,6 +66,8 @@ Exit the interactive client cleanly with either command:
 
 Both commands work regardless of the selected outbound target, are never sent to chat, and apply only to `streamchat run`. They cancel active adapters so relay/WebSocket connections use their normal shutdown path before the client exits successfully.
 
+When standard input and output are terminals, `streamchat run` uses a persistent two-line input bar beneath incoming chat. It starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are printed above the bar without discarding the current input or cursor position. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Terminal state is restored on every exit path. Piped/non-TTY input retains the line-oriented behavior without ANSI redraw sequences.
+
 ## Server/client mode and archive
 
 Run `streamchat serve` on the utility VM and let the interactive machine connect to it. The server receives verified Kick webhooks, discovers and streams the authenticated YouTube account's active live chat, writes every accepted normalized Kick/YouTube event to SQLite, then relays it live. Twitch remains on the interactive client for now. There is no history replay. Kick chatback is sent directly from the interactive client to Kick's official API using its locally stored OAuth token; it does not pass through `/relay` and adds no public endpoint.
@@ -246,6 +248,7 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/config`: JSON/env/defaults, atomic writer, validation, redaction
 - `internal/aggregate`: bounded chronological merge and duplicate cache
 - `internal/render`: terminal frontend and injection defense
+- `internal/terminalui`: raw-mode key editing and synchronized persistent input bar
 - `internal/logging`: opt-in private JSONL writer
 - `cmd/streamchat`: human CLI, lifecycle, and signal handling
 
