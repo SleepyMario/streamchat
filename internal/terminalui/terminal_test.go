@@ -889,6 +889,95 @@ func TestImagePlacementTracksVisibleChatRowsAndNeverUsesFixedUI(t *testing.T) {
 	}
 }
 
+func TestVisibleEmoteSurvivesASCIIAndUnicodeViewportRedraws(t *testing.T) {
+	var output bytes.Buffer
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(&output, func() int { return 20 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	renders := 0
+	emoteMessage := DisplayMessage{ID: "emote", Platform: "kick", Author: "viewer", Render: func() emote.Line {
+		renders++
+		return emote.Line{Text: "emote  ", Images: []emote.InlineImage{{Path: "/cache/emote.img", Column: 6, Width: 2}}}
+	}}
+	if err := screen.AppendMessage(emoteMessage); err != nil {
+		t.Fatal(err)
+	}
+	assertVisibleImage := func(wantY int) {
+		t.Helper()
+		placements := backend.latest()
+		if len(placements) != 1 || placements[0].Path != "/cache/emote.img" || placements[0].Y != wantY {
+			t.Fatalf("placements=%+v want y=%d", placements, wantY)
+		}
+	}
+	assertVisibleImage(7)
+	if err := screen.AppendMessage(DisplayMessage{ID: "ascii", Platform: "kick", Line: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	assertVisibleImage(6)
+	if err := screen.AppendMessage(DisplayMessage{ID: "cjk", Platform: "kick", Line: "你好"}); err != nil {
+		t.Fatal(err)
+	}
+	assertVisibleImage(5)
+	if renders < 3 {
+		t.Fatalf("structured emote was not reconstructed on each viewport update: renders=%d", renders)
+	}
+	if err := screen.AppendMessage(DisplayMessage{ID: "last-visible", Platform: "kick", Line: "still visible"}); err != nil {
+		t.Fatal(err)
+	}
+	assertVisibleImage(4)
+	if err := screen.AppendMessage(DisplayMessage{ID: "scroll", Platform: "kick", Line: "scroll it out"}); err != nil {
+		t.Fatal(err)
+	}
+	if placements := backend.latest(); len(placements) != 0 {
+		t.Fatalf("scrolled-out emote was not removed: %+v", placements)
+	}
+}
+
+func TestWideUnicodeChangesGeometryWithoutDisablingVisibleEmote(t *testing.T) {
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 10 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(DisplayMessage{ID: "emote", Platform: "kick", Render: func() emote.Line {
+		return emote.Line{Text: "emoji  ", Images: []emote.InlineImage{{Path: "/cache/emote.img", Column: 6, Width: 2}}}
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	before := backend.latest()[0]
+	// Six CJK runes occupy twelve cells and therefore scroll two terminal
+	// rows. Their content must influence geometry only, never image eligibility.
+	if err := screen.AppendMessage(DisplayMessage{ID: "wide", Platform: "kick", Line: "你好世界哈囉"}); err != nil {
+		t.Fatal(err)
+	}
+	after := backend.latest()
+	if len(after) != 1 || after[0].Path != before.Path || after[0].Y != before.Y-2 {
+		t.Fatalf("before=%+v after=%+v", before, after)
+	}
+}
+
+func TestImagePlacementsRemainDistinctWithoutProviderMessageIDs(t *testing.T) {
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/cache/first.img", "/cache/second.img"} {
+		path := path
+		if err := screen.AppendMessage(DisplayMessage{Platform: "kick", Render: func() emote.Line {
+			return emote.Line{Text: "emote  ", Images: []emote.InlineImage{{Path: path, Column: 6, Width: 2}}}
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	placements := backend.latest()
+	if len(placements) != 2 || placements[0].Identifier == placements[1].Identifier {
+		t.Fatalf("placements=%+v", placements)
+	}
+}
+
 func TestImageCleanupOnCleanResizeAndAlternateScreenExit(t *testing.T) {
 	var output bytes.Buffer
 	width := 40

@@ -262,6 +262,10 @@ func (b *UeberzugBackend) fail(err error) {
 }
 
 func sendUeberzugUpdate(socket string, old, next []Placement) error {
+	removed, updated := placementChanges(old, next)
+	if len(removed) == 0 && len(updated) == 0 {
+		return nil
+	}
 	connection, err := net.DialTimeout("unix", socket, ueberzugSocketTimeout)
 	if err != nil {
 		return errors.New("connect to Überzug++ control socket")
@@ -269,12 +273,12 @@ func sendUeberzugUpdate(socket string, old, next []Placement) error {
 	defer connection.Close()
 	_ = connection.SetWriteDeadline(time.Now().Add(ueberzugSocketTimeout))
 	encoder := json.NewEncoder(connection)
-	for _, placement := range old {
+	for _, placement := range removed {
 		if err = encoder.Encode(map[string]any{"action": "remove", "identifier": placement.Identifier}); err != nil {
 			return errors.New("remove Überzug++ image")
 		}
 	}
-	for _, placement := range next {
+	for _, placement := range updated {
 		if placement.Identifier == "" || placement.Path == "" || placement.Width < 1 || placement.Height < 1 {
 			continue
 		}
@@ -284,6 +288,55 @@ func sendUeberzugUpdate(socket string, old, next []Placement) error {
 		}
 	}
 	return nil
+}
+
+// placementChanges preserves overlays that are still valid. Überzug++'s
+// Wayland canvas replaces an existing identifier on add, so moved or changed
+// overlays can be updated in place without first exposing their text backing.
+func placementChanges(old, next []Placement) (removed, updated []Placement) {
+	oldByID := make(map[string]Placement, len(old))
+	nextByID := make(map[string]Placement, len(next))
+	removedIDs := make(map[string]struct{}, len(old))
+	updatedIDs := make(map[string]struct{}, len(next))
+	for _, placement := range old {
+		if placement.Identifier != "" {
+			oldByID[placement.Identifier] = placement
+		}
+	}
+	for _, placement := range next {
+		if validPlacement(placement) {
+			nextByID[placement.Identifier] = placement
+		}
+	}
+	for _, placement := range old {
+		if !validPlacement(placement) {
+			continue
+		}
+		if _, exists := nextByID[placement.Identifier]; !exists {
+			if _, seen := removedIDs[placement.Identifier]; !seen {
+				removed = append(removed, placement)
+				removedIDs[placement.Identifier] = struct{}{}
+			}
+			delete(oldByID, placement.Identifier)
+		}
+	}
+	for _, placement := range next {
+		if !validPlacement(placement) {
+			continue
+		}
+		previous, exists := oldByID[placement.Identifier]
+		_, seen := updatedIDs[placement.Identifier]
+		if !seen && (!exists || previous != placement) {
+			updated = append(updated, placement)
+			updatedIDs[placement.Identifier] = struct{}{}
+		}
+		delete(oldByID, placement.Identifier)
+	}
+	return removed, updated
+}
+
+func validPlacement(placement Placement) bool {
+	return placement.Identifier != "" && placement.Path != "" && placement.Width > 0 && placement.Height > 0
 }
 
 func sendUeberzugExit(socket string) error {

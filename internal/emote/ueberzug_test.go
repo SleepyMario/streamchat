@@ -68,6 +68,60 @@ func TestUeberzugSocketUpdateRemovesOldAndAddsCellPlacement(t *testing.T) {
 	}
 }
 
+func TestUeberzugSocketUpdatePreservesUnchangedAndRepositionsWithoutRemove(t *testing.T) {
+	directory := t.TempDir()
+	socket := filepath.Join(directory, "control.socket")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	commands := make(chan []map[string]any, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		decoder := json.NewDecoder(bufio.NewReader(connection))
+		var values []map[string]any
+		for {
+			var value map[string]any
+			if decoder.Decode(&value) != nil {
+				break
+			}
+			values = append(values, value)
+		}
+		commands <- values
+	}()
+	stable := Placement{Identifier: "stable", Path: "/cache/stable.img", X: 3, Y: 4, Width: 2, Height: 1}
+	moved := Placement{Identifier: "moved", Path: "/cache/moved.img", X: 7, Y: 5, Width: 2, Height: 1}
+	nextMoved := moved
+	nextMoved.Y = 4
+	if err = sendUeberzugUpdate(socket, []Placement{stable, moved}, []Placement{stable, nextMoved}); err != nil {
+		t.Fatal(err)
+	}
+	got := <-commands
+	if len(got) != 1 || got[0]["action"] != "add" || got[0]["identifier"] != "moved" || got[0]["y"] != float64(4) {
+		t.Fatalf("commands=%+v", got)
+	}
+}
+
+func TestPlacementChangesRemovesOnlyImagesOutsideViewport(t *testing.T) {
+	old := []Placement{
+		{Identifier: "gone", Path: "/cache/gone.img", Y: 2, Width: 2, Height: 1},
+		{Identifier: "visible", Path: "/cache/visible.img", Y: 3, Width: 2, Height: 1},
+	}
+	next := []Placement{{Identifier: "visible", Path: "/cache/visible.img", Y: 2, Width: 2, Height: 1}}
+	removed, updated := placementChanges(old, next)
+	if len(removed) != 1 || removed[0].Identifier != "gone" {
+		t.Fatalf("removed=%+v", removed)
+	}
+	if len(updated) != 1 || updated[0].Identifier != "visible" || updated[0].Y != 2 {
+		t.Fatalf("updated=%+v", updated)
+	}
+}
+
 func TestAwaitUeberzugSocketAcceptsExpectedDaemonizingLauncherExit(t *testing.T) {
 	directory := t.TempDir()
 	pid := 4242
@@ -183,8 +237,12 @@ func TestUeberzugIntegrationSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	picture := image.NewRGBA(image.Rect(0, 0, 2, 2))
-	picture.Set(0, 0, color.RGBA{R: 255, A: 255})
+	picture := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			picture.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
 	if err = png.Encode(file, picture); err != nil {
 		_ = file.Close()
 		t.Fatal(err)
@@ -192,7 +250,14 @@ func TestUeberzugIntegrationSmoke(t *testing.T) {
 	if err = file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	backend.Update([]Placement{{Identifier: "streamchat-smoke", Path: imagePath, X: 0, Y: 0, Width: 1, Height: 1}})
+	placement := Placement{Identifier: "streamchat-smoke", Path: imagePath, X: 3, Y: 5, Width: 2, Height: 1}
+	backend.Update([]Placement{placement})
+	time.Sleep(100 * time.Millisecond)
+	placement.Y = 6
+	backend.Update([]Placement{placement})
+	time.Sleep(100 * time.Millisecond)
+	placement.Y = 5
+	backend.Update([]Placement{placement})
 	hold := 50 * time.Millisecond
 	if configured := os.Getenv("STREAMCHAT_UEBERZUG_SMOKE_HOLD"); configured != "" {
 		if parsed, parseErr := time.ParseDuration(configured); parseErr == nil {

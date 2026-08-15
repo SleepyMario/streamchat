@@ -38,6 +38,7 @@ type DisplayMessage struct {
 	Line        string
 	Render      func() emote.Line
 	leadingRows int
+	imageKey    uint64
 }
 
 // StreamStatus is provider-neutral metadata displayed above chat.
@@ -62,6 +63,7 @@ type Screen struct {
 	visible       bool
 	images        emote.Backend
 	transientRows int
+	nextImageKey  uint64
 }
 
 type screenLayout struct {
@@ -189,6 +191,8 @@ func (s *Screen) Text() string {
 func (s *Screen) AppendMessage(message DisplayMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.nextImageKey++
+	message.imageKey = s.nextImageKey
 	message.leadingRows = s.transientRows
 	s.transientRows = 0
 	s.messages = append(s.messages, message)
@@ -535,7 +539,7 @@ func (s *Screen) refreshImagesLocked(width, height int) {
 				continue
 			}
 			y := layout.chatTop + bottomPadding + globalRow - visibleStart
-			digest := sha256.Sum256([]byte(item.message.Platform + "\x00" + item.message.ID))
+			digest := sha256.Sum256([]byte(item.message.Platform + "\x00" + item.message.ID + "\x00" + strconv.FormatUint(item.message.imageKey, 10)))
 			placements = append(placements, emote.Placement{Identifier: fmt.Sprintf("streamchat-%x-%d", digest[:8], imageIndex), Path: image.Path, X: x, Y: y - 1, Width: max(image.Width, 1), Height: 1})
 		}
 	}
