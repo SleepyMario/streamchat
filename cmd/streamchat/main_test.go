@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/outbound"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
@@ -31,8 +33,60 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestOutboundTargetStatePersistsAcrossSimulatedSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "streamchat", "client.json")
+	state := clientstate.New(path)
+	first := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	configureOutboundState(first, state)
+	if _, err := first.Process(context.Background(), "/kk"); err != nil {
+		t.Fatal(err)
+	}
+	if first.Selected() != "kick" || state.Load().LastOutboundTarget != "kick" {
+		t.Fatalf("selected=%q state=%+v", first.Selected(), state.Load())
+	}
+	second := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	configureOutboundState(second, state)
+	if second.Selected() != "kick" || terminalui.TargetLabel(second.Selected()) != "KICK" {
+		t.Fatalf("restored=%q label=%q", second.Selected(), terminalui.TargetLabel(second.Selected()))
+	}
+}
+
+func TestOutboundTargetStateInvalidOrUnavailableFallsBackToNone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	state := clientstate.New(path)
+	missing := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	configureOutboundState(missing, state)
+	if missing.Selected() != "" {
+		t.Fatalf("missing state selected=%q", missing.Selected())
+	}
+	if err := os.WriteFile(path, []byte("not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	configureOutboundState(corrupt, state)
+	if corrupt.Selected() != "" {
+		t.Fatalf("corrupt state selected=%q", corrupt.Selected())
+	}
+	if err := state.Save(clientstate.State{LastOutboundTarget: "youtube"}); err != nil {
+		t.Fatal(err)
+	}
+	invalid := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}})
+	configureOutboundState(invalid, state)
+	if invalid.Selected() != "" || terminalui.TargetLabel(invalid.Selected()) != "NONE" {
+		t.Fatalf("invalid selected=%q", invalid.Selected())
+	}
+	if err := state.Save(clientstate.State{LastOutboundTarget: "kick"}); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := outbound.NewTargets(outbound.Target{Name: "kick", Aliases: []string{"kk"}, Sender: &recordingOutboundSender{}, Unavailable: true})
+	configureOutboundState(unavailable, state)
+	if unavailable.Selected() != "" {
+		t.Fatalf("unavailable selected=%q", unavailable.Selected())
 	}
 }
 

@@ -667,6 +667,10 @@ func Open(in, out *os.File, reader io.Reader) (*Terminal, error) {
 }
 
 func OpenWithBackend(in, out *os.File, reader io.Reader, images emote.Backend) (*Terminal, error) {
+	return OpenWithBackendAndTarget(in, out, reader, images, "")
+}
+
+func OpenWithBackendAndTarget(in, out *os.File, reader io.Reader, images emote.Backend, target string) (*Terminal, error) {
 	state, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
 		return nil, err
@@ -685,6 +689,7 @@ func OpenWithBackend(in, out *os.File, reader io.Reader, images emote.Backend) (
 		}
 		return height
 	}, images)
+	screen.SetTarget(target)
 	if err = startScreen(screen, restore); err != nil {
 		if images != nil {
 			_ = images.Close()

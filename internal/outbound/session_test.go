@@ -44,6 +44,41 @@ func TestKickSelectionAndSending(t *testing.T) {
 	}
 }
 
+func TestTargetAliasSelectsCanonicalNameAndPersistsOnlyOnChange(t *testing.T) {
+	kick := &recordingSender{}
+	s := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick})
+	var changes []string
+	s.SetSelectionChanged(func(target string) { changes = append(changes, target) })
+	if err := s.Handle(context.Background(), "/kk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Handle(context.Background(), "/kk hello"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Selected() != "kick" || !reflect.DeepEqual(changes, []string{"kick"}) || !reflect.DeepEqual(kick.messages, []string{"hello"}) {
+		t.Fatalf("selected=%q changes=%v messages=%v", s.Selected(), changes, kick.messages)
+	}
+	withoutSelection := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick})
+	if _, err := withoutSelection.Process(context.Background(), "/kick must not be implemented yet"); !errors.Is(err, ErrNoTarget) {
+		t.Fatalf("canonical name unexpectedly became a command alias: %v", err)
+	}
+}
+
+func TestRestoreRequiresRegisteredAvailableCanonicalTarget(t *testing.T) {
+	kick := &recordingSender{}
+	available := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick})
+	if !available.Restore("KICK") || available.Selected() != "kick" {
+		t.Fatalf("available restore selected=%q", available.Selected())
+	}
+	if available.Restore("youtube") {
+		t.Fatal("unregistered target restored")
+	}
+	unavailable := NewTargets(Target{Name: "kick", Aliases: []string{"kk"}, Sender: kick, Unavailable: true})
+	if unavailable.Restore("kick") || unavailable.Selected() != "" {
+		t.Fatalf("unavailable restore selected=%q", unavailable.Selected())
+	}
+}
+
 func TestPlainTextRequiresTarget(t *testing.T) {
 	s := New(map[string]Sender{"kk": &recordingSender{}})
 	if err := s.Handle(context.Background(), "hello"); !errors.Is(err, ErrNoTarget) {

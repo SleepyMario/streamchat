@@ -74,8 +74,8 @@ func TestEditorUnicodeDisplayWidthWindow(t *testing.T) {
 }
 
 func TestTargetLabel(t *testing.T) {
-	if TargetLabel("") != "NONE" || TargetLabel("kk") != "KICK" || TargetLabel("yt") != "YT" {
-		t.Fatalf("labels: none=%q kick=%q youtube=%q", TargetLabel(""), TargetLabel("kk"), TargetLabel("yt"))
+	if TargetLabel("") != "NONE" || TargetLabel("kk") != "KICK" || TargetLabel("kick") != "KICK" || TargetLabel("yt") != "YT" {
+		t.Fatalf("labels: none=%q alias=%q kick=%q youtube=%q", TargetLabel(""), TargetLabel("kk"), TargetLabel("kick"), TargetLabel("yt"))
 	}
 }
 

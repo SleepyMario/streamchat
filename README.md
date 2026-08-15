@@ -33,7 +33,7 @@ streamchat archive stats
 
 `run` activates configured platforms through the internal platform registry. If a configured YouTube or Twitch target is missing, Streamchat asks for the live URL/video ID or channel name rather than asking for a numeric platform ID.
 
-While `streamchat run` is displaying incoming chat, select Kick as the session's outbound target and then type plain messages:
+While `streamchat run` is displaying incoming chat, select Kick as the outbound target and then type plain messages:
 
 ```text
 /kk
@@ -46,7 +46,7 @@ The selection-and-send shorthand is:
 /kk hello
 ```
 
-`/kk` selects Kick as the current outbound target. Subsequent plain lines go to Kick until another target-selection command is used. The selection exists only for the current `streamchat run` process; before a target is selected, plain text is not sent. Successful sends rely on the normal incoming Kick event for display rather than printing a separate local echo.
+`/kk` selects Kick as the current outbound target. Subsequent plain lines go to Kick until another target-selection command is used. Streamchat immediately stores the canonical target name (`kick`, not the `/kk` alias) in `${XDG_STATE_HOME:-$HOME/.local/state}/streamchat/client.json` and restores it on the next `streamchat run` when that sender is available. Missing, invalid, or unavailable saved targets fall back to `[NONE] >`; before a target is selected, plain text is not sent. The state file contains no credentials. Successful sends rely on the normal incoming Kick event for display rather than printing a separate local echo.
 
 Basic channel controls currently target Kick only and are independent of `/kk` selection:
 
@@ -110,7 +110,7 @@ chat
 
 Status is fetched immediately from Kick's official authenticated channel endpoint, refreshed every 30 seconds, and refreshed after successful `/title` and `/category` commands. The interactive client shows its local date and time at the right edge and updates them once per minute. Offline streams show `Viewers:  OFFLINE`; until the first successful fetch, all three values show `unavailable`. Transient refresh failures preserve the previous status.
 
-The input starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are confined between the fixed separators without discarding the current input or cursor position. Provider-neutral author roles appear as temporary letter badges in `[B][M][P][V][O][S][F]` order; raw provider badges remain in the normalized message data. `/clean` redraws only the chat region while retaining status, separators, and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, or redraw sequences.
+The input starts as `[KICK] >` when a saved, currently available Kick target is restored; otherwise it starts as `[NONE] >` and changes after `/kk`. Incoming messages are confined between the fixed separators without discarding the current input or cursor position. Provider-neutral author roles appear as temporary letter badges in `[B][M][P][V][O][S][F]` order; raw provider badges remain in the normalized message data. `/clean` redraws only the chat region while retaining status, separators, and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, or redraw sequences.
 
 Kick emotes use their structured webhook metadata. In an interactive Linux terminal, `emotes.mode: "auto"` optionally starts one [Überzug++](https://github.com/jstkdng/ueberzugpp) helper and places cached images in terminal cells; Wayland/Sway uses Überzug++'s Wayland output. If the `ueberzug` executable or a suitable local graphical terminal is unavailable, an image is still downloading, or a download fails, Streamchat displays readable text such as `:ppJedi:`. SSH and non-TTY sessions always use that dependency-free fallback. `text` always uses text, while `off` disables graphical handling but retains readable emote text.
 
@@ -303,7 +303,8 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/platform`: registry/factory and platform selection
 - `internal/platform/youtube`: official Data/Live Streaming API adapter
 - `internal/platform/kick`: OAuth, chat sending, channel controls, subscriptions, verified webhook receiver
-- `internal/outbound`: session-local outbound target selection
+- `internal/outbound`: canonical outbound target selection and command aliases
+- `internal/clientstate`: atomic, non-secret interactive client preferences
 - `internal/platform/twitch`: OAuth/API support and EventSub WebSocket adapter
 - `internal/relay`: authenticated in-memory WebSocket broadcast server/client
 - `internal/archive`: versioned SQLite storage and operational statistics

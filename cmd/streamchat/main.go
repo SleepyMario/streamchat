@@ -20,6 +20,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/aggregate"
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/SleepyMario/streamchat/internal/logging"
@@ -61,7 +62,7 @@ Interactive commands:
   /clear kick 3d                   Use archived Kick messages from last 3 days
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
-Selection lasts for this run until another target command is used.
+The last selected outbound target is restored on the next run when available.
 Title, category, and moderation commands currently target Kick only.
 /clean kick is local-only; /clear kick uses archived IDs for remote deletion.
 Neither command deletes Streamchat archive records.
@@ -354,9 +355,15 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		}
 		kickClient := &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}}
 		status = kickClient
-		targets = outbound.New(map[string]outbound.Sender{
-			"kk": kickClient,
+		targets = outbound.NewTargets(outbound.Target{
+			Name:        "kick",
+			Aliases:     []string{"kk"},
+			Sender:      kickClient,
+			Unavailable: c.Kick.BroadcasterID == "" || (c.Kick.AccessToken == "" && c.Kick.RefreshToken == ""),
 		})
+		if state, stateErr := clientstate.Default(); stateErr == nil {
+			configureOutboundState(targets, state)
+		}
 		targets.RegisterControl("title", outbound.ControlFunc(kickClient.Title))
 		targets.RegisterControl("category", outbound.ControlFunc(kickClient.Category))
 		moderation := newModerationControls(kickClient)
@@ -367,6 +374,17 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		registerShutdownControls(targets)
 	}
 	return runAdapters(ctx, adapters, c, input, targets, status, out, errw)
+}
+
+func configureOutboundState(targets *outbound.Session, state *clientstate.Store) {
+	if targets == nil || state == nil {
+		return
+	}
+	saved := state.Load()
+	targets.Restore(saved.LastOutboundTarget)
+	targets.SetSelectionChanged(func(target string) {
+		_ = state.Save(clientstate.State{LastOutboundTarget: target})
+	})
 }
 
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
@@ -502,7 +520,11 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		if outFile, outputOK := out.(*os.File); outputOK && terminalui.IsInteractive(inFile, outFile) {
 			var err error
 			emotes := emote.NewDefaultControllerWithOptions(emote.DefaultControllerOptions{Mode: c.Emotes.Mode, TerminalOutput: outFile, Debug: c.Emotes.Debug})
-			terminal, err = terminalui.OpenWithBackend(inFile, outFile, in, emotes)
+			initialTarget := ""
+			if targets != nil {
+				initialTarget = targets.Selected()
+			}
+			terminal, err = terminalui.OpenWithBackendAndTarget(inFile, outFile, in, emotes, initialTarget)
 			if err != nil {
 				return fmt.Errorf("initialize interactive terminal: %w", err)
 			}

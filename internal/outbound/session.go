@@ -34,19 +34,55 @@ func (f ControlFunc) Execute(ctx context.Context, argument string) (string, erro
 	return f(ctx, argument)
 }
 
+// Target separates a stable provider name from the command aliases that select
+// it. Canonical names are suitable for persisted client state.
+type Target struct {
+	Name        string
+	Aliases     []string
+	Sender      Sender
+	Unavailable bool
+}
+
+type registeredTarget struct {
+	name        string
+	sender      Sender
+	unavailable bool
+}
+
 // Session tracks the selected outbound target for one interactive run.
 type Session struct {
-	targets  map[string]Sender
-	controls map[string]Control
-	selected string
+	targets          map[string]registeredTarget
+	canonical        map[string]registeredTarget
+	controls         map[string]Control
+	selected         string
+	selectionChanged func(string)
 }
 
 func New(targets map[string]Sender) *Session {
-	copy := make(map[string]Sender, len(targets))
+	registered := make([]Target, 0, len(targets))
 	for command, sender := range targets {
-		copy[strings.TrimPrefix(command, "/")] = sender
+		name := normalizeTarget(command)
+		registered = append(registered, Target{Name: name, Aliases: []string{command}, Sender: sender})
 	}
-	return &Session{targets: copy, controls: make(map[string]Control)}
+	return NewTargets(registered...)
+}
+
+func NewTargets(targets ...Target) *Session {
+	s := &Session{targets: make(map[string]registeredTarget), canonical: make(map[string]registeredTarget), controls: make(map[string]Control)}
+	for _, target := range targets {
+		name := normalizeTarget(target.Name)
+		if name == "" || target.Sender == nil {
+			continue
+		}
+		entry := registeredTarget{name: name, sender: target.Sender, unavailable: target.Unavailable}
+		s.canonical[name] = entry
+		for _, alias := range target.Aliases {
+			if alias = normalizeTarget(alias); alias != "" {
+				s.targets[alias] = entry
+			}
+		}
+	}
+	return s
 }
 
 func (s *Session) RegisterControl(command string, control Control) {
@@ -80,18 +116,48 @@ func (s *Session) Process(ctx context.Context, line string) (string, error) {
 			}
 			return result, nil
 		}
-		if sender, ok := s.targets[command]; ok {
-			s.selected = command
+		if target, ok := s.targets[normalizeTarget(command)]; ok {
+			s.selectTarget(target.name)
 			if message == "" {
 				return "", nil
 			}
-			return "", sender.Send(ctx, message)
+			return "", target.sender.Send(ctx, message)
 		}
 	}
 	if s.selected == "" {
 		return "", ErrNoTarget
 	}
-	return "", s.targets[s.selected].Send(ctx, line)
+	return "", s.canonical[s.selected].sender.Send(ctx, line)
 }
 
 func (s *Session) Selected() string { return s.selected }
+
+// Restore selects a canonical target only when it is registered and available
+// in this client session. It intentionally does not fire the persistence hook.
+func (s *Session) Restore(name string) bool {
+	name = normalizeTarget(name)
+	target, ok := s.canonical[name]
+	if !ok || target.unavailable {
+		return false
+	}
+	s.selected = name
+	return true
+}
+
+func (s *Session) SetSelectionChanged(callback func(string)) {
+	s.selectionChanged = callback
+}
+
+func (s *Session) selectTarget(name string) {
+	if name == s.selected {
+		return
+	}
+	s.selected = name
+	if s.selectionChanged != nil {
+		s.selectionChanged(name)
+	}
+}
+
+func normalizeTarget(value string) string {
+	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "/")))
+}

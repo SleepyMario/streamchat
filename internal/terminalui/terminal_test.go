@@ -50,6 +50,30 @@ func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 	}
 }
 
+func TestRestoredCanonicalTargetIsShownOnInitialDrawAndSurvivesRedraws(t *testing.T) {
+	var output bytes.Buffer
+	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })
+	screen.SetTarget("kick")
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	initial := plainTerminalOutput(output.String())
+	if !strings.Contains(initial, "[KICK] > ") || strings.Contains(initial, "[NONE] > ") {
+		t.Fatalf("initial output=%q", initial)
+	}
+	output.Reset()
+	screen.SetStatus(StreamStatus{Title: "Title", Category: "Category", ViewerCount: 2, Live: true})
+	screen.Redraw()
+	if err := screen.AppendMessage(DisplayMessage{ID: "1", Platform: "kick", Render: func() emote.Line {
+		return emote.Line{Text: "[KICK] viewer  :wave:", GraphicalText: "[KICK] viewer     ", Images: []emote.InlineImage{{Path: "/cache/wave.png", Column: 15, Width: 3}}}
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := plainTerminalOutput(output.String()); !strings.Contains(got, "[KICK] > ") || strings.Contains(got, "[NONE] > ") {
+		t.Fatalf("target reset during status/chat redraw: %q", got)
+	}
+}
+
 func TestScreenConsecutiveMessagesStartAtColumnOneWithoutDecoration(t *testing.T) {
 	var output bytes.Buffer
 	screen := NewScreen(&output, func() int { return 48 })
