@@ -87,6 +87,16 @@ Remote visible-chat cleanup is a separate, explicit command:
 
 Kick exposes only per-message deletion, so archived provider IDs let Streamchat approximate bulk clearing. Messages posted before Streamchat observed and archived them cannot be cleared this way. The configured `storage.sqlite_path` must be accessible to the interactive client; this may require running the command where the server archive resides or making that private database path available locally. `/clear kick` does not automatically remove messages from the local display. `/clear youtube` and `/clear twitch` are not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
 
+Open a configured stream in an external player or browser with an explicit platform:
+
+```text
+/open kick
+/open youtube
+/open twitch
+```
+
+On Linux, Streamchat prefers `mpv` and passes it the normal public platform URL so mpv/yt-dlp can resolve playback. If `mpv` is unavailable, Streamchat uses `xdg-open` to launch the same URL through the desktop's default handler. The child is detached from Streamchat's terminal input and output so the interactive UI remains responsive. Kick resolves the authenticated channel's public slug; YouTube and Twitch require an available configured video ID or channel.
+
 Exit the interactive client cleanly with either command:
 
 ```text

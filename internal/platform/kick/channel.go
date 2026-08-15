@@ -29,6 +29,7 @@ type Category struct {
 }
 
 type ChannelStatus struct {
+	Slug        string
 	Title       string
 	Category    string
 	ViewerCount int
@@ -105,6 +106,7 @@ func (c ChannelClient) GetStatus(ctx context.Context) (ChannelStatus, error) {
 	}
 	var payload struct {
 		Data []struct {
+			Slug        string `json:"slug"`
 			StreamTitle string `json:"stream_title"`
 			Category    struct {
 				Name string `json:"name"`
@@ -119,7 +121,7 @@ func (c ChannelClient) GetStatus(ctx context.Context) (ChannelStatus, error) {
 		return ChannelStatus{}, errors.New("Kick channel-status API returned an invalid response")
 	}
 	channel := payload.Data[0]
-	status := ChannelStatus{Title: channel.StreamTitle, Category: channel.Category.Name}
+	status := ChannelStatus{Slug: channel.Slug, Title: channel.StreamTitle, Category: channel.Category.Name}
 	if channel.Stream != nil {
 		status.Live = channel.Stream.IsLive
 		status.ViewerCount = channel.Stream.ViewerCount

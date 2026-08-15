@@ -174,7 +174,7 @@ func TestGetChannelStatusLiveAndOffline(t *testing.T) {
 		response string
 		want     ChannelStatus
 	}{
-		{"live", `{"data":[{"stream_title":"Live title","category":{"name":"Just Chatting"},"stream":{"is_live":true,"viewer_count":42}}]}`, ChannelStatus{Title: "Live title", Category: "Just Chatting", Live: true, ViewerCount: 42}},
+		{"live", `{"data":[{"slug":"sleepymario","stream_title":"Live title","category":{"name":"Just Chatting"},"stream":{"is_live":true,"viewer_count":42}}]}`, ChannelStatus{Slug: "sleepymario", Title: "Live title", Category: "Just Chatting", Live: true, ViewerCount: 42}},
 		{"offline", `{"data":[{"stream_title":"Offline title","category":{"name":"Games"},"stream":null}]}`, ChannelStatus{Title: "Offline title", Category: "Games"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

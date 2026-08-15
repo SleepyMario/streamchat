@@ -23,6 +23,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/emote"
+	"github.com/SleepyMario/streamchat/internal/launcher"
 	"github.com/SleepyMario/streamchat/internal/logging"
 	"github.com/SleepyMario/streamchat/internal/outbound"
 	platformreg "github.com/SleepyMario/streamchat/internal/platform"
@@ -60,6 +61,9 @@ Interactive commands:
   /clean USER                      Hide a user's displayed messages locally
   /clear kick                      Delete archived Kick messages from last 24h
   /clear kick 3d                   Use archived Kick messages from last 3 days
+  /open kick                       Open Kick in mpv or the default browser
+  /open youtube                    Open the configured YouTube stream
+  /open twitch                     Open the configured Twitch channel
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 The last selected outbound target is restored on the next run when available.
@@ -372,6 +376,8 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
 		remoteClear := newRemoteClearController(kickClient, archiveMessageIDFile{path: c.Storage.SQLitePath})
 		targets.RegisterControl("clear", remoteClear)
+		opener := openController{config: c, kick: kickClient, launcher: launcher.New()}
+		targets.RegisterControl("open", outbound.ControlFunc(opener.Open))
 		registerShutdownControls(targets)
 	}
 	return runAdapters(ctx, adapters, c, input, targets, status, out, errw)
