@@ -176,6 +176,141 @@ func TestScreenSerializesConcurrentInputAndMessages(t *testing.T) {
 	}
 }
 
+func TestScreenCleanAllPreservesPartialUnicodeInput(t *testing.T) {
+	var output bytes.Buffer
+	screen := NewScreen(&output, func() int { return 40 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetTarget("kk")
+	for _, r := range "partly 你好🙂" {
+		screen.Feed(r)
+	}
+	for _, r := range "\x1b[D\x1b[D" {
+		screen.Feed(r)
+	}
+	cursorBefore := screen.editor.Cursor()
+	for _, message := range []DisplayMessage{
+		{Platform: "kick", Author: "Alice", Line: "[KICK] Alice  one\n"},
+		{Platform: "youtube", Author: "Bob", Line: "[YT] Bob  two\n"},
+	} {
+		if err := screen.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output.Reset()
+	removed, err := screen.CleanAll()
+	if err != nil || removed != 2 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	if screen.Text() != "partly 你好🙂" {
+		t.Fatalf("input changed: %q", screen.Text())
+	}
+	if screen.editor.Cursor() != cursorBefore {
+		t.Fatalf("cursor changed: got=%d want=%d", screen.editor.Cursor(), cursorBefore)
+	}
+	raw := output.String()
+	if !strings.Contains(raw, "\x1b[2J\x1b[H\x1b[999B\r") || !strings.Contains(plainTerminalOutput(raw), "[KICK] > partly 你好🙂") {
+		t.Fatalf("view/input redraw missing: %q", raw)
+	}
+	if strings.Contains(raw, "Alice") || strings.Contains(raw, "Bob") {
+		t.Fatalf("cleaned messages were replayed: %q", raw)
+	}
+}
+
+func TestScreenCleanPlatformAndCaseInsensitiveAuthor(t *testing.T) {
+	var output bytes.Buffer
+	screen := NewScreen(&output, func() int { return 50 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []DisplayMessage{
+		{Platform: "kick", Author: "BotRix", Line: "kick bot\n"},
+		{Platform: "youtube", Author: "BotRix", Line: "youtube bot\n"},
+		{Platform: "kick", Author: "Viewer", Line: "kick viewer\n"},
+	} {
+		if err := screen.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output.Reset()
+	removed, err := screen.CleanPlatform("KICK")
+	if err != nil || removed != 2 || len(screen.messages) != 1 || screen.messages[0].Platform != "youtube" {
+		t.Fatalf("platform clean removed=%d messages=%v err=%v", removed, screen.messages, err)
+	}
+	if !strings.Contains(output.String(), "youtube bot") || strings.Contains(output.String(), "kick bot") || strings.Contains(output.String(), "kick viewer") {
+		t.Fatalf("platform redraw=%q", output.String())
+	}
+	removed, err = screen.CleanAuthor("bOtRiX")
+	if err != nil || removed != 1 || len(screen.messages) != 0 {
+		t.Fatalf("author clean removed=%d messages=%v err=%v", removed, screen.messages, err)
+	}
+}
+
+func TestScreenCleanNoMatchDoesNotRedrawAndIncomingContinues(t *testing.T) {
+	var output bytes.Buffer
+	screen := NewScreen(&output, func() int { return 40 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(DisplayMessage{Platform: "kick", Author: "Alice", Line: "old message\n"}); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	removed, err := screen.CleanAuthor("missing")
+	if err != nil || removed != 0 || output.Len() != 0 {
+		t.Fatalf("removed=%d output=%q err=%v", removed, output.String(), err)
+	}
+	if _, err = screen.CleanAll(); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err = screen.AppendMessage(DisplayMessage{Platform: "kick", Author: "New", Line: "new after clean\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "new after clean") || len(screen.messages) != 1 {
+		t.Fatalf("incoming message did not continue: %q messages=%v", output.String(), screen.messages)
+	}
+}
+
+func TestScreenDisplayBufferIsBounded(t *testing.T) {
+	screen := NewScreen(io.Discard, func() int { return 40 })
+	for i := 0; i < displayMessageLimit+25; i++ {
+		if err := screen.AppendMessage(DisplayMessage{Platform: "kick", Author: "user", Line: fmt.Sprintf("message %d\n", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(screen.messages) != displayMessageLimit || screen.messages[0].Line != "message 25\n" {
+		t.Fatalf("buffer len=%d first=%q", len(screen.messages), screen.messages[0].Line)
+	}
+}
+
+func TestScreenConcurrentIncomingAndCleanIsRaceSafe(t *testing.T) {
+	var destination synchronizedBuffer
+	screen := NewScreen(&destination, func() int { return 50 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = screen.AppendMessage(DisplayMessage{Platform: "kick", Author: "viewer", Line: fmt.Sprintf("incoming %d\n", i)})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			_, _ = screen.CleanPlatform("kick")
+		}
+	}()
+	wg.Wait()
+	if len(screen.messages) > displayMessageLimit {
+		t.Fatalf("buffer exceeded limit: %d", len(screen.messages))
+	}
+}
+
 func TestTerminalCloseRestoresOnce(t *testing.T) {
 	var output bytes.Buffer
 	screen := NewScreen(&output, func() int { return 40 })

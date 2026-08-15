@@ -66,6 +66,16 @@ Basic moderation controls also currently target Kick only and are independent of
 
 The platform is always explicit and is not inferred from `/kk` or any future outbound target; only `kick` is currently supported. `/ban kick` permanently bans the resolved Kick user. `/timeout kick` accepts `s`, `m`, or `h` syntax but must resolve to the official API's whole-minute range of 1–10,080 minutes; for example, `10m`, `1h`, and `60s` are valid, while `1s` and `30s` are not. Kick may remove affected messages from visible chat. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
 
+Local display cleaning is available in the interactive terminal:
+
+```text
+/clean streamchat
+/clean kick
+/clean USER
+```
+
+`/clean streamchat` removes all messages from the current local view, `/clean kick` removes displayed Kick messages, and `/clean USER` removes displayed messages from a case-insensitive author match. The words `streamchat`, `kick`, `youtube`, and `twitch` are reserved clean targets rather than usernames; YouTube and Twitch display cleaning are not implemented yet. `/clean` affects only the current Streamchat display. It never changes platform chat and never deletes archived messages. The interactive view keeps only the latest 500 rendered messages for local redraws; it does not retrieve history from SQLite.
+
 Exit the interactive client cleanly with either command:
 
 ```text

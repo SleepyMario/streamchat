@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -14,15 +15,25 @@ import (
 	"golang.org/x/term"
 )
 
-const defaultWidth = 80
+const (
+	defaultWidth        = 80
+	displayMessageLimit = 500
+)
+
+type DisplayMessage struct {
+	Platform string
+	Author   string
+	Line     string
+}
 
 type Screen struct {
-	mu      sync.Mutex
-	out     io.Writer
-	width   func() int
-	editor  Editor
-	target  string
-	visible bool
+	mu       sync.Mutex
+	out      io.Writer
+	width    func() int
+	editor   Editor
+	target   string
+	messages []DisplayMessage
+	visible  bool
 }
 
 func NewScreen(out io.Writer, width func() int) *Screen {
@@ -91,6 +102,78 @@ func (s *Screen) Text() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.editor.Text()
+}
+
+func (s *Screen) AppendMessage(message DisplayMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = append(s.messages, message)
+	if len(s.messages) > displayMessageLimit {
+		copy(s.messages, s.messages[len(s.messages)-displayMessageLimit:])
+		s.messages = s.messages[:displayMessageLimit]
+	}
+	if !s.visible {
+		return nil
+	}
+	if err := s.clearLocked(); err != nil {
+		return err
+	}
+	if _, err := writeTerminalLine(s.out, []byte(message.Line)); err != nil {
+		return err
+	}
+	return s.drawInputLocked(s.terminalWidth())
+}
+
+func (s *Screen) CleanAll() (int, error) {
+	return s.cleanMessages(func(DisplayMessage) bool { return true })
+}
+
+func (s *Screen) CleanPlatform(platform string) (int, error) {
+	return s.cleanMessages(func(message DisplayMessage) bool {
+		return strings.EqualFold(message.Platform, platform)
+	})
+}
+
+func (s *Screen) CleanAuthor(author string) (int, error) {
+	return s.cleanMessages(func(message DisplayMessage) bool {
+		return strings.EqualFold(message.Author, author)
+	})
+}
+
+func (s *Screen) cleanMessages(matches func(DisplayMessage) bool) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.messages[:0]
+	removed := 0
+	for _, message := range s.messages {
+		if matches(message) {
+			removed++
+			continue
+		}
+		kept = append(kept, message)
+	}
+	s.messages = kept
+	if removed == 0 || !s.visible {
+		return removed, nil
+	}
+	return removed, s.redrawViewLocked()
+}
+
+func (s *Screen) redrawViewLocked() error {
+	if _, err := io.WriteString(s.out, "\r\x1b[2J\x1b[H\x1b[999B\r"); err != nil {
+		return err
+	}
+	if len(s.messages) > 0 {
+		if _, err := fmt.Fprintf(s.out, "\x1b[%dA", len(s.messages)); err != nil {
+			return err
+		}
+	}
+	for _, message := range s.messages {
+		if _, err := writeTerminalLine(s.out, []byte(message.Line)); err != nil {
+			return err
+		}
+	}
+	return s.drawInputLocked(s.terminalWidth())
 }
 
 func (s *Screen) Writer(destination io.Writer) io.Writer {
@@ -242,6 +325,16 @@ func (t *Terminal) Next() (Event, error) {
 }
 
 func (t *Terminal) SetTarget(command string) { t.screen.SetTarget(command) }
+func (t *Terminal) AppendMessage(message DisplayMessage) error {
+	return t.screen.AppendMessage(message)
+}
+func (t *Terminal) CleanAll() (int, error) { return t.screen.CleanAll() }
+func (t *Terminal) CleanPlatform(platform string) (int, error) {
+	return t.screen.CleanPlatform(platform)
+}
+func (t *Terminal) CleanAuthor(author string) (int, error) {
+	return t.screen.CleanAuthor(author)
+}
 func (t *Terminal) Writer(destination io.Writer) io.Writer {
 	return t.screen.Writer(destination)
 }

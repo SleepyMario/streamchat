@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,6 +52,9 @@ Interactive commands:
   /category Just Chatting          Update the Kick stream category
   /ban kick USER                   Permanently ban a user from Kick chat
   /timeout kick USER 10m           Temporarily timeout a user from Kick chat
+  /clean streamchat                Clear the current local chat view
+  /clean kick                      Hide displayed Kick messages locally
+  /clean USER                      Hide a user's displayed messages locally
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
@@ -502,6 +506,11 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	var shutdownRequests <-chan struct{}
 	var inputDone <-chan struct{}
 	if in != nil && targets != nil {
+		clean := cleanController{}
+		if terminal != nil {
+			clean.display = terminal
+		}
+		targets.RegisterControl("clean", outbound.ControlFunc(clean.Clean))
 		requests := make(chan struct{}, 1)
 		done := make(chan struct{})
 		shutdownRequests = requests
@@ -530,7 +539,8 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	}
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: c.QueueSize, DuplicateCapacity: c.DuplicateCapacity, ReorderWindow: 100 * time.Millisecond})
 	merged, aerrs := ag.Run(ctx, inputs...)
-	term := render.New(safeOut, render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor)})
+	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor)}
+	term := render.New(safeOut, renderOptions)
 	var log *logging.Logger
 	var e error
 	if c.LogFile != "" {
@@ -577,7 +587,19 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 				merged = nil
 				continue
 			}
-			if e = term.Render(m); e != nil {
+			if terminal == nil {
+				e = term.Render(m)
+			} else {
+				var line bytes.Buffer
+				if e = render.New(&line, renderOptions).Render(m); e == nil {
+					author := render.Sanitize(m.AuthorDisplayName)
+					if author == "" {
+						author = "system"
+					}
+					e = terminal.AppendMessage(terminalui.DisplayMessage{Platform: string(m.Platform), Author: author, Line: line.String()})
+				}
+			}
+			if e != nil {
 				return e
 			}
 			if log != nil {
@@ -598,6 +620,46 @@ type lockedWriter struct {
 type terminalInput struct {
 	io.Reader
 	file *os.File
+}
+
+type localDisplay interface {
+	CleanAll() (int, error)
+	CleanPlatform(string) (int, error)
+	CleanAuthor(string) (int, error)
+}
+
+type cleanController struct {
+	display localDisplay
+}
+
+func (c cleanController) Clean(_ context.Context, argument string) (string, error) {
+	fields := strings.Fields(argument)
+	if len(fields) != 1 {
+		return "Usage: /clean streamchat|kick|USER", nil
+	}
+	if c.display == nil {
+		return "Local display cleaning requires an interactive terminal.", nil
+	}
+	target := fields[0]
+	var removed int
+	var err error
+	switch strings.ToLower(target) {
+	case "streamchat":
+		removed, err = c.display.CleanAll()
+	case "kick":
+		removed, err = c.display.CleanPlatform("kick")
+	case "youtube", "twitch":
+		return "Display cleaning is not implemented for: " + target, nil
+	default:
+		removed, err = c.display.CleanAuthor(target)
+	}
+	if err != nil {
+		return "", fmt.Errorf("redraw local display: %w", err)
+	}
+	if removed == 0 {
+		return "No displayed messages matched: " + target, nil
+	}
+	return "", nil
 }
 
 func (w *lockedWriter) Write(p []byte) (int, error) {

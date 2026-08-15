@@ -30,7 +30,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -309,6 +309,108 @@ func TestModerationCommandDoesNotDeleteArchiveRows(t *testing.T) {
 	stats, err := store.Stats(context.Background())
 	if err != nil || stats.Total != 1 {
 		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+}
+
+type recordingLocalDisplay struct {
+	all       int
+	platforms []string
+	authors   []string
+	removed   int
+}
+
+func (d *recordingLocalDisplay) CleanAll() (int, error) {
+	d.all++
+	return d.removed, nil
+}
+
+func (d *recordingLocalDisplay) CleanPlatform(platform string) (int, error) {
+	d.platforms = append(d.platforms, platform)
+	return d.removed, nil
+}
+
+func (d *recordingLocalDisplay) CleanAuthor(author string) (int, error) {
+	d.authors = append(d.authors, author)
+	return d.removed, nil
+}
+
+func TestCleanCommandsAreLocalAndPreserveSelectedTarget(t *testing.T) {
+	display := &recordingLocalDisplay{removed: 1}
+	sender := &recordingOutboundSender{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	targets.RegisterControl("clean", outbound.ControlFunc(cleanController{display: display}.Clean))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/kk\n/clean streamchat\n/clean kick\n/clean bOtRiX\nhello\n"), targets, &out, &errw, func() {})
+	if display.all != 1 || !reflect.DeepEqual(display.platforms, []string{"kick"}) || !reflect.DeepEqual(display.authors, []string{"bOtRiX"}) {
+		t.Fatalf("display=%+v", display)
+	}
+	if !reflect.DeepEqual(sender.messages, []string{"hello"}) || targets.Selected() != "kk" {
+		t.Fatalf("chat=%v selected=%q", sender.messages, targets.Selected())
+	}
+	if out.Len() != 0 || errw.Len() != 0 {
+		t.Fatalf("out=%q err=%q", out.String(), errw.String())
+	}
+}
+
+func TestCleanNoMatchReservedTargetsAndUsage(t *testing.T) {
+	display := &recordingLocalDisplay{}
+	targets := outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}})
+	targets.RegisterControl("clean", outbound.ControlFunc(cleanController{display: display}.Clean))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/clean\n/clean MissingUser\n/clean youtube\n/clean twitch\n"), targets, &out, &errw, func() {})
+	got := out.String()
+	for _, want := range []string{
+		"Usage: /clean streamchat|kick|USER",
+		"No displayed messages matched: MissingUser",
+		"Display cleaning is not implemented for: youtube",
+		"Display cleaning is not implemented for: twitch",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if !reflect.DeepEqual(display.authors, []string{"MissingUser"}) || len(display.platforms) != 0 || errw.Len() != 0 {
+		t.Fatalf("display=%+v err=%q", display, errw.String())
+	}
+}
+
+func TestCleanNeverInvokesProviderAPIAndNonTTYFallbackIsSane(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+	provider := &kickOutboundSender{config: config.Kick{AccessToken: "access-token", APIBaseURL: server.URL}, http: server.Client()}
+	targets := outbound.New(map[string]outbound.Sender{"kk": provider})
+	targets.RegisterControl("clean", outbound.ControlFunc(cleanController{}.Clean))
+	var out, errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("/kk\n/clean streamchat\n"), targets, &out, &errw, func() {})
+	if requests != 0 || targets.Selected() != "kk" || errw.Len() != 0 {
+		t.Fatalf("requests=%d selected=%q err=%q", requests, targets.Selected(), errw.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "Local display cleaning requires an interactive terminal." || strings.Contains(got, "\x1b") {
+		t.Fatalf("output=%q", got)
+	}
+}
+
+func TestEveryCleanTargetPreservesArchiveRows(t *testing.T) {
+	store, err := archivepkg.Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	archived := chat.Message{ID: "historical", Platform: chat.PlatformKick, Timestamp: time.Now(), AuthorDisplayName: "BotRix", Text: "keep forever", EventType: chat.EventMessage}
+	if inserted, storeErr := store.Store(context.Background(), archived); storeErr != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, storeErr)
+	}
+	display := &recordingLocalDisplay{removed: 1}
+	controller := cleanController{display: display}
+	for _, argument := range []string{"streamchat", "kick", "BotRix"} {
+		if result, cleanErr := controller.Clean(context.Background(), argument); cleanErr != nil || result != "" {
+			t.Fatalf("argument=%q result=%q err=%v", argument, result, cleanErr)
+		}
+		stats, statsErr := store.Stats(context.Background())
+		if statsErr != nil || stats.Total != 1 {
+			t.Fatalf("argument=%q stats=%+v err=%v", argument, stats, statsErr)
+		}
 	}
 }
 
