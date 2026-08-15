@@ -30,3 +30,58 @@ func TestNOColor(t *testing.T) {
 		t.Fatal("NO_COLOR ignored")
 	}
 }
+
+func TestRoleBadgeRendering(t *testing.T) {
+	tests := []struct {
+		name   string
+		badges []chat.Badge
+		want   string
+	}{
+		{
+			name:   "moderator",
+			badges: []chat.Badge{{Type: "moderator", Text: "Moderator"}},
+			want:   "[KICK] user [MOD]          hello\n",
+		},
+		{
+			name:   "broadcaster omitted",
+			badges: []chat.Badge{{Type: "broadcaster", Text: "Broadcaster"}, {Type: "subscriber", Text: "Subscriber"}},
+			want:   "[KICK] user [SUBSCRIBER]   hello\n",
+		},
+		{
+			name:   "verified channel omitted",
+			badges: []chat.Badge{{Type: "verified", Text: "Verified Channel"}, {Type: "subscriber", Text: "Subscriber"}},
+			want:   "[KICK] user [SUBSCRIBER]   hello\n",
+		},
+		{
+			name: "moderator and verified channel",
+			badges: []chat.Badge{
+				{Type: "moderator", Text: "Moderator"},
+				{Type: "verified", Text: "Verified Channel"},
+			},
+			want: "[KICK] user [MOD]          hello\n",
+		},
+		{
+			name:   "broadcaster only",
+			badges: []chat.Badge{{Type: "broadcaster", Text: "Broadcaster"}},
+			want:   "[KICK] user                hello\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b bytes.Buffer
+			m := chat.Message{
+				Platform:          chat.PlatformKick,
+				AuthorDisplayName: "user",
+				Badges:            tt.badges,
+				Text:              "hello",
+			}
+			if err := New(&b, Options{AuthorWidth: 4}).Render(m); err != nil {
+				t.Fatal(err)
+			}
+			if got := b.String(); got != tt.want {
+				t.Fatalf("Render() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -47,6 +47,30 @@ func ColorEnabled(no bool) bool {
 	st, e := os.Stdout.Stat()
 	return e == nil && (st.Mode()&os.ModeCharDevice) != 0
 }
+
+func renderBadge(b chat.Badge) string {
+	typeName := strings.ToLower(strings.TrimSpace(b.Type))
+	text := strings.ToLower(strings.TrimSpace(b.Text))
+
+	switch {
+	case typeName == "moderator" || text == "moderator":
+		return "[MOD]"
+	case typeName == "broadcaster" || text == "broadcaster":
+		return ""
+	case typeName == "verified channel" || text == "verified channel":
+		return ""
+	}
+
+	label := b.Text
+	if label == "" {
+		label = b.Type
+	}
+	if label == "" {
+		return ""
+	}
+	return "[" + strings.ToUpper(Sanitize(label)) + "]"
+}
+
 func (t *Terminal) Render(m chat.Message) error {
 	label := "YT"
 	if m.Platform == chat.PlatformKick {
@@ -56,12 +80,8 @@ func (t *Terminal) Render(m chat.Message) error {
 	}
 	bs := []string{}
 	for _, b := range m.Badges {
-		x := b.Text
-		if x == "" {
-			x = b.Type
-		}
-		if x != "" {
-			bs = append(bs, "["+strings.ToUpper(Sanitize(x))+"]")
+		if badge := renderBadge(b); badge != "" {
+			bs = append(bs, badge)
 		}
 	}
 	p := ""
