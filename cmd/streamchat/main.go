@@ -59,7 +59,7 @@ Interactive commands:
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
 Title, category, and moderation commands currently target Kick only.
-On a terminal, a persistent bottom bar provides basic cursor editing.
+On a terminal, an alternate-screen bottom bar provides basic cursor editing.
 
 Useful commands:
   streamchat setup youtube|kick|twitch [--config PATH]

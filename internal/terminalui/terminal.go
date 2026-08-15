@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	defaultWidth        = 80
-	displayMessageLimit = 500
+	defaultWidth         = 80
+	displayMessageLimit  = 500
+	enterAlternateScreen = "\x1b[?1049h\x1b[2J\x1b[H"
+	leaveAlternateScreen = "\x1b[0m\x1b[?1049l"
 )
 
 type DisplayMessage struct {
@@ -47,7 +49,7 @@ func (s *Screen) Start() error {
 		return nil
 	}
 	s.visible = true
-	if _, err := io.WriteString(s.out, "\x1b[999B\r\x1b[2K\r"); err != nil {
+	if _, err := io.WriteString(s.out, enterAlternateScreen+"\x1b[999B\r\x1b[2K\r"); err != nil {
 		return err
 	}
 	return s.drawInputLocked(s.terminalWidth())
@@ -60,7 +62,7 @@ func (s *Screen) Close() error {
 		return nil
 	}
 	s.visible = false
-	_, err := io.WriteString(s.out, "\r\x1b[2K\r")
+	_, err := io.WriteString(s.out, "\r\x1b[2K\r"+leaveAlternateScreen)
 	return err
 }
 
@@ -306,14 +308,22 @@ func Open(in, out *os.File, reader io.Reader) (*Terminal, error) {
 		}
 		return width
 	})
-	if err = screen.Start(); err != nil {
-		_ = restore()
+	if err = startScreen(screen, restore); err != nil {
 		return nil, err
 	}
 	t := &Terminal{reader: bufio.NewReader(reader), screen: screen, restore: restore, stop: make(chan struct{}), done: make(chan struct{}), resize: make(chan os.Signal, 1)}
 	signal.Notify(t.resize, syscall.SIGWINCH)
 	go t.watchResize()
 	return t, nil
+}
+
+func startScreen(screen *Screen, restore func() error) error {
+	if err := screen.Start(); err != nil {
+		screenErr := screen.Close()
+		restoreErr := restore()
+		return errors.Join(err, screenErr, restoreErr)
+	}
+	return nil
 }
 
 func (t *Terminal) Next() (Event, error) {

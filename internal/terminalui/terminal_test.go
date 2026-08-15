@@ -3,6 +3,7 @@ package terminalui
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -92,6 +93,9 @@ func TestScreenStartsAtColumnOneAndUsesDefaultNamedColors(t *testing.T) {
 	}
 	screen.SetTarget("kk")
 	raw := output.String()
+	if !strings.Contains(raw, "cursor is not at column one"+enterAlternateScreen) {
+		t.Fatalf("alternate screen was not entered first: %q", raw)
+	}
 	if !strings.Contains(raw, "\x1b[999B\r\x1b[2K\r") {
 		t.Fatalf("screen did not reset to column one: %q", raw)
 	}
@@ -216,6 +220,9 @@ func TestScreenCleanAllPreservesPartialUnicodeInput(t *testing.T) {
 	if strings.Contains(raw, "Alice") || strings.Contains(raw, "Bob") {
 		t.Fatalf("cleaned messages were replayed: %q", raw)
 	}
+	if strings.Contains(raw, leaveAlternateScreen) {
+		t.Fatalf("clean unexpectedly left the alternate screen: %q", raw)
+	}
 }
 
 func TestScreenCleanPlatformAndCaseInsensitiveAuthor(t *testing.T) {
@@ -333,6 +340,28 @@ func TestTerminalCloseRestoresOnce(t *testing.T) {
 	if restored != 1 {
 		t.Fatalf("restore calls=%d", restored)
 	}
+	if count := strings.Count(output.String(), leaveAlternateScreen); count != 1 {
+		t.Fatalf("alternate-screen leave count=%d output=%q", count, output.String())
+	}
+}
+
+func TestScreenStartupErrorLeavesAlternateScreenAndRestoresTerminal(t *testing.T) {
+	output := &failNthWriter{failAt: 2}
+	screen := NewScreen(output, func() int { return 40 })
+	restored := 0
+	err := startScreen(screen, func() error {
+		restored++
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected startup failure")
+	}
+	if restored != 1 {
+		t.Fatalf("terminal restore calls=%d", restored)
+	}
+	if !strings.Contains(output.String(), enterAlternateScreen) || !strings.Contains(output.String(), leaveAlternateScreen) {
+		t.Fatalf("startup cleanup sequences missing: %q", output.String())
+	}
 }
 
 func TestTerminalCloseStopsResizeWatcher(t *testing.T) {
@@ -364,6 +393,7 @@ func TestTerminalExitQuitAndCtrlCCleanup(t *testing.T) {
 		{name: "exit", input: "/exit\r", wantLine: "/exit"},
 		{name: "quit", input: "/quit\r", wantLine: "/quit"},
 		{name: "ctrl-c", input: "\x03"},
+		{name: "ctrl-d", input: "\x04"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -400,9 +430,28 @@ func TestTerminalExitQuitAndCtrlCCleanup(t *testing.T) {
 			if !restored {
 				t.Fatal("terminal state was not restored")
 			}
+			if !strings.Contains(output.String(), leaveAlternateScreen) {
+				t.Fatalf("main screen was not restored: %q", output.String())
+			}
 		})
 	}
 }
+
+type failNthWriter struct {
+	writes int
+	failAt int
+	b      bytes.Buffer
+}
+
+func (w *failNthWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("injected write failure")
+	}
+	return w.b.Write(p)
+}
+
+func (w *failNthWriter) String() string { return w.b.String() }
 
 type synchronizedBuffer struct {
 	mu sync.Mutex

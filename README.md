@@ -85,7 +85,7 @@ Exit the interactive client cleanly with either command:
 
 Both commands work regardless of the selected outbound target, are never sent to chat, and apply only to `streamchat run`. They cancel active adapters so relay/WebSocket connections use their normal shutdown path before the client exits successfully.
 
-When standard input and output are terminals, `streamchat run` uses a persistent single-line input bar beneath incoming chat. It starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are printed above the bar without discarding the current input or cursor position. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Terminal state is restored on every exit path. Piped/non-TTY input retains the line-oriented behavior without ANSI redraw sequences.
+When standard input and output are terminals, `streamchat run` uses the terminal's alternate screen with a persistent single-line input bar beneath incoming chat. It starts as `[NONE] >` and changes to `[KICK] >` after `/kk`. Incoming messages are printed above the bar without discarding the current input or cursor position. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible. Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without alternate-screen or redraw sequences.
 
 ## Server/client mode and archive
 
