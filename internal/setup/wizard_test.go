@@ -87,6 +87,8 @@ func TestKickInstructionsExplainPortalWebhookSourceOfTruth(t *testing.T) {
 		"does not send it in the Kick event-subscription request",
 		"Changing the JSON value alone does not change Kick's webhook destination",
 		"streamchat kick subscribe",
+		"chat:write",
+		"does not request moderation access",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Kick instructions missing %q:\n%s", want, text)

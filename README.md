@@ -15,7 +15,7 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 | Platform | What Streamchat needs | Where to get it | Setup command |
 | --- | --- | --- | --- |
 | YouTube | A restricted API key for local public-chat mode, or a Desktop-app OAuth client for unattended server mode | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` or `streamchat setup youtube-server` |
-| Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
+| Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe chat:write`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
 | Twitch | A Twitch app Client ID and Client Secret and a browser-created user access/refresh token with only `user:read:chat`; a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [EventSub chat authentication](https://dev.twitch.tv/docs/chat/authenticating/) | `streamchat setup twitch` |
 
 No real-looking credentials are included in this repository.
@@ -33,15 +33,32 @@ streamchat archive stats
 
 `run` activates configured platforms through the internal platform registry. If a configured YouTube or Twitch target is missing, Streamchat asks for the live URL/video ID or channel name rather than asking for a numeric platform ID.
 
+While `streamchat run` is displaying incoming chat, select Kick as the session's outbound target and then type plain messages:
+
+```text
+/kk
+hello
+```
+
+The selection-and-send shorthand is:
+
+```text
+/kk hello
+```
+
+`/kk` selects Kick as the current outbound target. Subsequent plain lines go to Kick until another target-selection command is used. The selection exists only for the current `streamchat run` process; before a target is selected, plain text is not sent. Successful sends rely on the normal incoming Kick event for display rather than printing a separate local echo.
+
 ## Server/client mode and archive
 
-Run `streamchat serve` on the utility VM and let the interactive machine connect to it. The server receives verified Kick webhooks, discovers and streams the authenticated YouTube account's active live chat, writes every accepted normalized Kick/YouTube event to SQLite, then relays it live. Twitch remains on the interactive client for now. There is no history replay or outgoing-chat support.
+Run `streamchat serve` on the utility VM and let the interactive machine connect to it. The server receives verified Kick webhooks, discovers and streams the authenticated YouTube account's active live chat, writes every accepted normalized Kick/YouTube event to SQLite, then relays it live. Twitch remains on the interactive client for now. There is no history replay. Kick chatback is sent directly from the interactive client to Kick's official API using its locally stored OAuth token; it does not pass through `/relay` and adds no public endpoint.
 
 ```text
 Kick → public VPS HTTPS reverse proxy ─┐
                                       ├→ utility VM streamchat serve → SQLite
 YouTube official API streamList ──────┘                 ↓ private WebSocket
                                                  main machine streamchat run
+                                                         ↓ official chat API
+                                                        Kick
 ```
 
 Generate one shared token and store the same value in private mode-`0600` configuration files on both machines:
@@ -108,6 +125,8 @@ streamchat run
 
 The client sends the token only in the WebSocket `Authorization: Bearer` header, never in the URL. When a remote server URL is configured, `run` consumes relayed Kick and YouTube messages instead of starting those local adapters; configured Twitch still runs normally. The legacy local-only YouTube and `streamchat kick serve` commands remain available.
 
+Kick chatback still requires the interactive machine's config to contain the Kick OAuth credentials and broadcaster ID created by `streamchat setup kick`. Those credentials are used only for a direct official Kick API request and are never sent to the Streamchat server or relay.
+
 The archive defaults to `/var/lib/streamchat/streamchat.db`. The example systemd unit uses `StateDirectory=streamchat`, so systemd creates that private writable directory for the dedicated `streamchat` account despite the read-only filesystem sandbox. Verify ingestion without installing the `sqlite3` CLI:
 
 ```sh
@@ -143,9 +162,10 @@ For the utility server, `streamchat setup youtube-server` performs Google's offi
 Kick requires an application created in Developer settings. Its Client ID identifies the app, while its Client Secret authenticates OAuth exchanges and must remain private. Streamchat runs an OAuth 2.1 authorization-code flow with PKCE on a loopback callback and requests:
 
 - `user:read` to retrieve the authorized user's numeric broadcaster ID automatically;
-- `events:subscribe` to create the `chat.message.sent` version 1 subscription.
+- `events:subscribe` to create the `chat.message.sent` version 1 subscription;
+- `chat:write` to send chat messages from the interactive CLI.
 
-The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens.
+The user does not need to discover a broadcaster ID or paste a temporary token. Streamchat stores and rotates the access/refresh tokens. Existing installations authorized before chatback support must rerun `streamchat setup kick` to grant `chat:write`; no moderation or channel-management scope is requested.
 
 Kick sends events only to the publicly reachable HTTPS webhook configured in the Kick developer application. `kick.webhook_url` must match that portal setting, but Streamchat does not send the local value in the `events/subscriptions` request; `streamchat kick subscribe` creates `method=webhook` subscriptions using the destination already held by Kick. Changing only the local JSON does not update that destination. After changing the portal URL, run `streamchat kick subscribe`.
 
@@ -198,7 +218,8 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/chat`: normalized credential-free message and adapter contract
 - `internal/platform`: registry/factory and platform selection
 - `internal/platform/youtube`: official Data/Live Streaming API adapter
-- `internal/platform/kick`: OAuth, subscriptions, verified webhook receiver
+- `internal/platform/kick`: OAuth, chat sending, subscriptions, verified webhook receiver
+- `internal/outbound`: session-local outbound target selection
 - `internal/platform/twitch`: OAuth/API support and EventSub WebSocket adapter
 - `internal/relay`: authenticated in-memory WebSocket broadcast server/client
 - `internal/archive`: versioned SQLite storage and operational statistics

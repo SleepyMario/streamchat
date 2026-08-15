@@ -1,6 +1,7 @@
 package kick
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rsa"
@@ -19,9 +20,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
 )
+
+var (
+	ErrChatAuthentication  = errors.New("Kick chat authentication failed")
+	ErrChatWritePermission = errors.New("Kick chat-write permission is missing; reauthorize Kick with chat:write")
+	ErrChatRateLimit       = errors.New("Kick chat API rate limit exceeded; try again later")
+)
+
+const ChatWriteScope = "chat:write"
 
 const OfficialPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq/+l1WnlRrGSolDMA+A8
@@ -241,6 +251,64 @@ func (s *Server) Run(ctx context.Context, out chan<- chat.Message) error {
 type SubscriptionClient struct {
 	HTTP                 *http.Client
 	BaseURL, AccessToken string
+}
+
+type ChatClient struct {
+	HTTP                 *http.Client
+	BaseURL, AccessToken string
+}
+
+func (c ChatClient) Send(ctx context.Context, broadcaster, message string) error {
+	if c.AccessToken == "" {
+		return fmt.Errorf("%w; run: streamchat setup kick", ErrChatAuthentication)
+	}
+	broadcasterID, err := strconv.ParseInt(broadcaster, 10, 64)
+	if err != nil || broadcasterID <= 0 {
+		return errors.New("Kick broadcaster user ID is missing; run: streamchat setup kick")
+	}
+	if strings.TrimSpace(message) == "" {
+		return errors.New("Kick chat message cannot be empty")
+	}
+	if utf8.RuneCountInString(message) > 500 {
+		return errors.New("Kick chat messages are limited to 500 characters")
+	}
+	body, err := json.Marshal(struct {
+		BroadcasterUserID int64  `json:"broadcaster_user_id"`
+		Content           string `json:"content"`
+		Type              string `json:"type"`
+	}{BroadcasterUserID: broadcasterID, Content: message, Type: "user"})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/chat", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	r, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("Kick chat request failed: %w", err)
+	}
+	defer r.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+	switch r.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("%w (HTTP 401); run: streamchat setup kick", ErrChatAuthentication)
+	case http.StatusForbidden:
+		return fmt.Errorf("%w (HTTP 403); run: streamchat setup kick", ErrChatWritePermission)
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("%w (HTTP 429)", ErrChatRateLimit)
+	default:
+		return fmt.Errorf("Kick chat API failed (HTTP %d)", r.StatusCode)
+	}
 }
 
 type Token struct {

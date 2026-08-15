@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
+	"github.com/SleepyMario/streamchat/internal/outbound"
 )
 
 func TestDemoOfflineAndHelp(t *testing.T) {
@@ -24,7 +27,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kk hello") || !strings.Contains(out.String(), "Selection lasts for this run") {
 		t.Fatal(out.String())
 	}
 }
@@ -57,12 +60,100 @@ func TestRunMultipleAdapters(t *testing.T) {
 	c := config.Defaults()
 	c.NoColor = true
 	var out, errw bytes.Buffer
-	if err := runAdapters(context.Background(), adapters, c, &out, &errw); err != nil {
+	if err := runAdapters(context.Background(), adapters, c, nil, nil, &out, &errw); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "[YT]") || !strings.Contains(out.String(), "[TW]") {
 		t.Fatalf("%s / %s", out.String(), errw.String())
 	}
+}
+
+type blockingSender struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSender) Send(ctx context.Context, _ string) error {
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type triggeredAdapter struct{ trigger <-chan struct{} }
+
+func (a triggeredAdapter) Name() string { return "kick" }
+func (a triggeredAdapter) Run(ctx context.Context, out chan<- chat.Message) error {
+	select {
+	case <-a.trigger:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	message := chat.Message{ID: "incoming", Platform: chat.PlatformKick, Timestamp: time.Now(), AuthorDisplayName: "viewer", Text: "still live", EventType: chat.EventMessage}
+	select {
+	case out <- message:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type channelWriter struct{ writes chan string }
+
+func (w channelWriter) Write(p []byte) (int, error) {
+	w.writes <- string(p)
+	return len(p), nil
+}
+
+func TestIncomingRendersWhileOutboundSendIsActive(t *testing.T) {
+	sender := &blockingSender{started: make(chan struct{}), release: make(chan struct{})}
+	targets := outbound.New(map[string]outbound.Sender{"kk": sender})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writes := make(chan string, 2)
+	done := make(chan error, 1)
+	c := config.Defaults()
+	c.NoColor = true
+	go func() {
+		done <- runAdapters(ctx, []chat.Adapter{triggeredAdapter{trigger: sender.started}}, c, strings.NewReader("/kk sending\n"), targets, channelWriter{writes: writes}, io.Discard)
+	}()
+	select {
+	case line := <-writes:
+		if !strings.Contains(line, "still live") {
+			t.Fatalf("unexpected render: %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("incoming chat was not rendered while outbound send was blocked")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAdapters did not stop")
+	}
+}
+
+func TestOutboundInputDisplaysNoTargetInstruction(t *testing.T) {
+	var errw bytes.Buffer
+	runOutboundInput(context.Background(), strings.NewReader("hello\n"), outbound.New(map[string]outbound.Sender{"kk": &recordingOutboundSender{}}), &errw)
+	if got := strings.TrimSpace(errw.String()); got != outbound.NoTargetInstruction {
+		t.Fatalf("got %q", got)
+	}
+}
+
+type recordingOutboundSender struct{ messages []string }
+
+func (s *recordingOutboundSender) Send(_ context.Context, message string) error {
+	s.messages = append(s.messages, message)
+	return nil
 }
 
 func TestRemoteServerReplacesServerOwnedAdapters(t *testing.T) {

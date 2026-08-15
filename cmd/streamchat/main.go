@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/logging"
+	"github.com/SleepyMario/streamchat/internal/outbound"
 	platformreg "github.com/SleepyMario/streamchat/internal/platform"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
@@ -39,6 +41,12 @@ Start here:
 Server/client mode:
   streamchat serve                 Ingest, archive, and relay Kick/YouTube chat
   streamchat run                   Connect to the configured Streamchat server
+
+Interactive Kick chatback:
+  /kk                              Select Kick as the outbound target
+  /kk hello                        Select Kick and send "hello"
+  hello                            Send to the selected target
+Selection lasts for this run until another target command is used.
 
 Useful commands:
   streamchat setup youtube|kick|twitch [--config PATH]
@@ -317,7 +325,15 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 	if len(adapters) == 0 {
 		return errors.New("no runnable chat target is configured. Run 'streamchat setup', configure client.server_url, or supply --youtube-video/--twitch-channel")
 	}
-	return runAdapters(ctx, adapters, c, out, errw)
+	var input io.Reader
+	var targets *outbound.Session
+	if mode == "run" {
+		input = reader
+		targets = outbound.New(map[string]outbound.Sender{
+			"kk": &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}},
+		})
+	}
+	return runAdapters(ctx, adapters, c, input, targets, out, errw)
 }
 
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
@@ -436,9 +452,14 @@ func archiveStats(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, out, errw io.Writer) error {
+func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, out, errw io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	safeOut := &lockedWriter{writer: out}
+	safeErr := &lockedWriter{writer: errw}
+	if in != nil && targets != nil {
+		go runOutboundInput(ctx, in, targets, safeErr)
+	}
 	inputs := make([]<-chan chat.Message, 0, len(adapters))
 	errc := make(chan error, len(adapters))
 	for _, a := range adapters {
@@ -448,7 +469,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	}
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: c.QueueSize, DuplicateCapacity: c.DuplicateCapacity, ReorderWindow: 100 * time.Millisecond})
 	merged, aerrs := ag.Run(ctx, inputs...)
-	term := render.New(out, render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor)})
+	term := render.New(safeOut, render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor)})
 	var log *logging.Logger
 	var e error
 	if c.LogFile != "" {
@@ -468,7 +489,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		case er := <-adapterErrs:
 			remaining--
 			if er != nil && !errors.Is(er, context.Canceled) {
-				fmt.Fprintf(errw, "adapter error: %s\n", safeError(er))
+				fmt.Fprintf(safeErr, "adapter error: %s\n", safeError(er))
 				if firstAdapterError == nil {
 					firstAdapterError = er
 				}
@@ -480,7 +501,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 			if !ok {
 				aerrs = nil
 			} else if er != nil {
-				fmt.Fprintf(errw, "aggregate error: %s\n", er)
+				fmt.Fprintf(safeErr, "aggregate error: %s\n", er)
 			}
 		case m, ok := <-merged:
 			if !ok {
@@ -498,6 +519,85 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		}
 	}
 	return firstAdapterError
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(p)
+}
+
+func runOutboundInput(ctx context.Context, in io.Reader, targets *outbound.Session, errw io.Writer) {
+	scanner := bufio.NewScanner(in)
+	for scanner.Scan() {
+		if err := targets.Handle(ctx, scanner.Text()); err != nil {
+			if errors.Is(err, outbound.ErrNoTarget) {
+				fmt.Fprintln(errw, outbound.NoTargetInstruction)
+			} else if !errors.Is(err, context.Canceled) {
+				fmt.Fprintf(errw, "send failed: %s\n", safeError(err))
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(errw, "terminal input failed: %s\n", safeError(err))
+	}
+}
+
+type kickOutboundSender struct {
+	mu         sync.Mutex
+	config     config.Kick
+	configPath string
+	http       *http.Client
+}
+
+func (s *kickOutboundSender) Send(ctx context.Context, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	refreshed := false
+	if s.config.AccessToken == "" || (!s.config.TokenExpiry.IsZero() && time.Until(s.config.TokenExpiry) < time.Minute) {
+		if s.config.RefreshToken == "" {
+			return errors.New("Kick authorization is missing or expired; run: streamchat setup kick")
+		}
+		if err := s.refresh(ctx); err != nil {
+			return err
+		}
+		refreshed = true
+	}
+	client := kick.ChatClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: s.config.AccessToken}
+	err := client.Send(ctx, s.config.BroadcasterID, message)
+	if !refreshed && errors.Is(err, kick.ErrChatAuthentication) && s.config.RefreshToken != "" {
+		if refreshErr := s.refresh(ctx); refreshErr != nil {
+			return refreshErr
+		}
+		client.AccessToken = s.config.AccessToken
+		return client.Send(ctx, s.config.BroadcasterID, message)
+	}
+	return err
+}
+
+func (s *kickOutboundSender) refresh(ctx context.Context) error {
+	client := kick.OAuthClient{HTTP: s.http, OAuthBaseURL: s.config.OAuthBaseURL, APIBaseURL: s.config.APIBaseURL, ClientID: s.config.ClientID, ClientSecret: s.config.ClientSecret}
+	tok, err := client.Refresh(ctx, s.config.RefreshToken)
+	if err != nil {
+		return err
+	}
+	s.config.AccessToken = tok.AccessToken
+	if tok.RefreshToken != "" {
+		s.config.RefreshToken = tok.RefreshToken
+	}
+	s.config.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	if os.Getenv("STREAMCHAT_KICK_ACCESS_TOKEN") != "" || os.Getenv("STREAMCHAT_KICK_REFRESH_TOKEN") != "" {
+		return nil
+	}
+	return persistKickTokens(s.configPath, s.config)
 }
 
 func demo(ctx context.Context, args []string, out io.Writer) error {

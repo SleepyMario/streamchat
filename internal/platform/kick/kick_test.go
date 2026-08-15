@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +175,65 @@ func TestSubscriptionUsesPortalWebhookWithoutSendingLocalURL(t *testing.T) {
 	client := SubscriptionClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
 	if _, err := client.Do(context.Background(), http.MethodPost, "123"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChatSendUsesOfficialRequestBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("Content-Type") != "application/json" {
+			t.Fatal("missing Kick chat request headers")
+		}
+		var payload struct {
+			BroadcasterUserID int64  `json:"broadcaster_user_id"`
+			Content           string `json:"content"`
+			Type              string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.BroadcasterUserID != 123 || payload.Content != "hello world" || payload.Type != "user" {
+			t.Fatalf("unexpected chat body: %+v", payload)
+		}
+		_, _ = io.WriteString(w, `{"data":{"is_sent":true,"message_id":"00000000-0000-0000-0000-000000000001"}}`)
+	}))
+	defer server.Close()
+	client := ChatClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
+	if err := client.Send(context.Background(), "123", "hello world"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChatSendErrorsAreUsefulAndSanitized(t *testing.T) {
+	tests := []struct {
+		status int
+		want   error
+		text   string
+	}{
+		{http.StatusUnauthorized, ErrChatAuthentication, "setup kick"},
+		{http.StatusForbidden, ErrChatWritePermission, "chat:write"},
+		{http.StatusTooManyRequests, ErrChatRateLimit, "rate limit"},
+		{http.StatusBadGateway, nil, "HTTP 502"},
+	}
+	for _, test := range tests {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			const secret = "provider-reflected-access-token"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, `{"message":"`+secret+`"}`)
+			}))
+			defer server.Close()
+			client := ChatClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
+			err := client.Send(context.Background(), "123", "hello")
+			if err == nil || (test.want != nil && !errors.Is(err, test.want)) || !strings.Contains(err.Error(), test.text) {
+				t.Fatalf("err=%v", err)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("provider response leaked: %v", err)
+			}
+		})
 	}
 }
 

@@ -270,7 +270,7 @@ func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	if e := c.Validate("check"); e != nil {
 		return e
 	}
-	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Kick.OAuthBaseURL, "/") + "/oauth/authorize", ClientID: c.Kick.ClientID, RedirectURI: c.Kick.RedirectURI, Scopes: []string{"user:read", "events:subscribe"}, UsePKCE: true}, w.Out, w.OpenBrowser)
+	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Kick.OAuthBaseURL, "/") + "/oauth/authorize", ClientID: c.Kick.ClientID, RedirectURI: c.Kick.RedirectURI, Scopes: []string{"user:read", "events:subscribe", kick.ChatWriteScope}, UsePKCE: true}, w.Out, w.OpenBrowser)
 	if err != nil {
 		return err
 	}
@@ -316,7 +316,7 @@ func kickInstructions(c config.Config) string {
 After changing the webhook URL in the Kick developer portal, run:
   streamchat kick subscribe
 
-Streamchat requests user:read (to obtain your broadcaster user ID) and events:subscribe (to create the chat webhook subscription). It does not request chat write or moderation access.`
+Streamchat requests user:read (to obtain your broadcaster user ID), events:subscribe (to create the chat webhook subscription), and chat:write (to send messages from streamchat run). It does not request moderation access.`
 }
 
 func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {
