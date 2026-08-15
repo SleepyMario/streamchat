@@ -80,9 +80,12 @@ Remote visible-chat cleanup is a separate, explicit command:
 
 ```text
 /clear kick
+/clear kick 3d
 ```
 
-`/clear kick` snapshots the valid Kick message IDs in the current bounded display buffer and deletes them individually from Kick using the official moderation API. Duplicate IDs are sent once, messages arriving after the snapshot are not included, and an already-absent message counts as cleared. The command does not automatically remove messages from the local display. `/clear youtube` and `/clear twitch` are not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
+`/clear kick` attempts to delete archived Kick messages from the default recent window of 24 hours. `/clear kick 3d` uses archived Kick messages from the last three days; any positive `Nd` value up to 3650 days is accepted. Streamchat queries only distinct, non-empty Kick provider message IDs and timestamps from the configured SQLite archive, completes that snapshot, then deletes each ID individually with Kick's official API. Messages archived after the snapshot begins are not included in that run, and an already-absent message counts as cleared.
+
+Kick exposes only per-message deletion, so archived provider IDs let Streamchat approximate bulk clearing. Messages posted before Streamchat observed and archived them cannot be cleared this way. The configured `storage.sqlite_path` must be accessible to the interactive client; this may require running the command where the server archive resides or making that private database path available locally. `/clear kick` does not automatically remove messages from the local display. `/clear youtube` and `/clear twitch` are not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
 
 Exit the interactive client cleanly with either command:
 

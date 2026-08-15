@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -70,5 +71,36 @@ func TestWriteFailureIsReturned(t *testing.T) {
 	}
 	if _, err = a.Store(context.Background(), message("kick-1", chat.PlatformKick)); err == nil {
 		t.Fatal("expected closed database write to fail")
+	}
+}
+
+func TestMessageIDsSinceFiltersPlatformTimestampAndEmptyIDs(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	for _, m := range []chat.Message{
+		{ID: "old-kick", Platform: chat.PlatformKick, Timestamp: base.Add(-25 * time.Hour), EventType: chat.EventMessage},
+		{ID: "recent-kick", Platform: chat.PlatformKick, Timestamp: base.Add(-2 * time.Hour), EventType: chat.EventMessage},
+		{ID: " recent-kick ", Platform: chat.PlatformKick, Timestamp: base.Add(-time.Hour), EventType: chat.EventMessage},
+		{ID: "recent-youtube", Platform: chat.PlatformYouTube, Timestamp: base.Add(-time.Hour), EventType: chat.EventMessage},
+	} {
+		if inserted, storeErr := a.Store(context.Background(), m); storeErr != nil || !inserted {
+			t.Fatalf("store %q: inserted=%v err=%v", m.ID, inserted, storeErr)
+		}
+	}
+	if _, err = a.db.ExecContext(context.Background(), `INSERT INTO messages (
+        platform, message_id, event_timestamp, event_type, normalized_json, archived_at
+    ) VALUES ('kick', '', ?, 'message', '{}', ?)`, base.Format(time.RFC3339Nano), base.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := a.MessageIDsSince(context.Background(), chat.PlatformKick, base.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []string{"recent-kick"}) {
+		t.Fatalf("IDs=%v", ids)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,12 +56,13 @@ Interactive commands:
   /clean streamchat                Clear the current local chat view
   /clean kick                      Hide displayed Kick messages locally
   /clean USER                      Hide a user's displayed messages locally
-  /clear kick                      Delete known messages from Kick chat
+  /clear kick                      Delete archived Kick messages from last 24h
+  /clear kick 3d                   Use archived Kick messages from last 3 days
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 Selection lasts for this run until another target command is used.
 Title, category, and moderation commands currently target Kick only.
-/clean kick is local-only; /clear kick deletes known messages from Kick.
+/clean kick is local-only; /clear kick uses archived IDs for remote deletion.
 Neither command deletes Streamchat archive records.
 On a terminal, an alternate-screen bottom bar provides basic cursor editing.
 
@@ -357,12 +359,11 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		moderation := newModerationControls(kickClient)
 		targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
-		remoteClear := newRemoteClearController(kickClient)
+		remoteClear := newRemoteClearController(kickClient, archiveMessageIDFile{path: c.Storage.SQLitePath})
 		targets.RegisterControl("clear", remoteClear)
 		registerShutdownControls(targets)
-		return runAdapters(ctx, adapters, c, input, targets, remoteClear, out, errw)
 	}
-	return runAdapters(ctx, adapters, c, input, targets, nil, out, errw)
+	return runAdapters(ctx, adapters, c, input, targets, out, errw)
 }
 
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
@@ -481,7 +482,7 @@ func archiveStats(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, remoteClear *remoteClearController, out, errw io.Writer) (result error) {
+func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, in io.Reader, targets *outbound.Session, out, errw io.Writer) (result error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var safeOut io.Writer = &lockedWriter{writer: out}
@@ -515,9 +516,6 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		clean := cleanController{}
 		if terminal != nil {
 			clean.display = terminal
-			if remoteClear != nil {
-				remoteClear.source = terminal
-			}
 		}
 		targets.RegisterControl("clean", outbound.ControlFunc(clean.Clean))
 		requests := make(chan struct{}, 1)
@@ -671,8 +669,25 @@ func (c cleanController) Clean(_ context.Context, argument string) (string, erro
 	return "", nil
 }
 
-type knownMessageSource interface {
-	KnownMessageIDs(string) []string
+type archiveMessageIDSource interface {
+	MessageIDsSince(context.Context, chat.Platform, time.Time) ([]string, error)
+}
+
+type archiveMessageIDFile struct{ path string }
+
+func (s archiveMessageIDFile) MessageIDsSince(ctx context.Context, platform chat.Platform, since time.Time) ([]string, error) {
+	if _, err := os.Stat(s.path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("SQLite archive does not exist at %s; start streamchat serve or configure storage.sqlite_path", s.path)
+		}
+		return nil, fmt.Errorf("inspect SQLite archive %s: %w", s.path, err)
+	}
+	store, err := archivepkg.Open(s.path)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.MessageIDsSince(ctx, platform, since)
 }
 
 type remoteClearResult struct {
@@ -685,18 +700,19 @@ type remoteClearPlatform interface {
 }
 
 type remoteClearController struct {
-	source    knownMessageSource
+	source    archiveMessageIDSource
 	platforms map[string]remoteClearPlatform
+	now       func() time.Time
 }
 
-func newRemoteClearController(kickClient *kickOutboundSender) *remoteClearController {
-	return &remoteClearController{platforms: map[string]remoteClearPlatform{"kick": kickClient}}
+func newRemoteClearController(kickClient *kickOutboundSender, source archiveMessageIDSource) *remoteClearController {
+	return &remoteClearController{source: source, platforms: map[string]remoteClearPlatform{"kick": kickClient}, now: time.Now}
 }
 
 func (c *remoteClearController) Execute(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
-	if len(fields) != 1 {
-		return "Usage: /clear PLATFORM (supported: kick)", nil
+	if len(fields) < 1 || len(fields) > 2 {
+		return "Usage: /clear kick [Nd] (example: /clear kick 3d)", nil
 	}
 	platform := strings.ToLower(fields[0])
 	provider, ok := c.platforms[platform]
@@ -707,11 +723,27 @@ func (c *remoteClearController) Execute(ctx context.Context, argument string) (s
 		return "Unsupported clear platform: " + fields[0] + ". Supported: kick.", nil
 	}
 	if c.source == nil {
-		return "No known Kick messages to clear.", nil
+		return "SQLite archive is unavailable for remote clearing.", nil
 	}
-	ids := c.source.KnownMessageIDs(platform)
+	days := 1
+	if len(fields) == 2 {
+		var err error
+		days, err = parseClearDays(fields[1])
+		if err != nil {
+			return err.Error(), nil
+		}
+	}
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	since := now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
+	ids, err := c.source.MessageIDsSince(ctx, chat.PlatformKick, since)
+	if err != nil {
+		return "", err
+	}
 	if len(ids) == 0 {
-		return "No known Kick messages to clear.", nil
+		return fmt.Sprintf("No archived Kick messages to clear in the last %dd.", days), nil
 	}
 	result, err := provider.ClearMessages(ctx, ids)
 	if err != nil {
@@ -725,6 +757,25 @@ func (c *remoteClearController) Execute(ctx context.Context, argument string) (s
 		noun = "message"
 	}
 	return fmt.Sprintf("Cleared Kick chat: %d %s", result.Deleted, noun), nil
+}
+
+func parseClearDays(value string) (int, error) {
+	const maxDays = 3650
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) < 2 || value[len(value)-1] != 'd' {
+		return 0, errors.New("clear window must be a positive number of days up to 3650 (example: 3d)")
+	}
+	digits := value[:len(value)-1]
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return 0, errors.New("clear window must be a positive number of days up to 3650 (example: 3d)")
+		}
+	}
+	days, err := strconv.Atoi(digits)
+	if err != nil || days < 1 || days > maxDays {
+		return 0, errors.New("clear window must be a positive number of days up to 3650 (example: 3d)")
+	}
+	return days, nil
 }
 
 func (w *lockedWriter) Write(p []byte) (int, error) {
@@ -937,13 +988,21 @@ func (s *kickOutboundSender) ClearMessages(ctx context.Context, messageIDs []str
 	err := s.withToken(ctx, func(accessToken string) error {
 		result = remoteClearResult{}
 		client := kick.ChatDeleteClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
-		for _, messageID := range messageIDs {
+		for index, messageID := range messageIDs {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			err := client.DeleteMessage(ctx, messageID)
 			switch {
 			case err == nil, errors.Is(err, kick.ErrChatDeleteNotFound):
 				result.Deleted++
 			case errors.Is(err, kick.ErrChatDeleteAuthentication), errors.Is(err, kick.ErrChatDeleteScope):
 				return err
+			case errors.Is(err, kick.ErrChatDeleteRateLimit):
+				// Stop the batch instead of hammering a rate-limited endpoint. The
+				// current and remaining IDs are reported as not deleted.
+				result.Failed += len(messageIDs) - index
+				return nil
 			default:
 				result.Failed++
 			}

@@ -155,6 +155,38 @@ func (a *Archive) Store(ctx context.Context, m chat.Message) (bool, error) {
 	return n == 1, err
 }
 
+// MessageIDsSince returns a point-in-time snapshot of distinct provider
+// message IDs without loading archived message bodies.
+func (a *Archive) MessageIDsSince(ctx context.Context, platform chat.Platform, since time.Time) ([]string, error) {
+	if platform == "" {
+		return nil, errors.New("archive platform is required")
+	}
+	if since.IsZero() {
+		return nil, errors.New("archive start time is required")
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT TRIM(message_id) AS provider_id
+        FROM messages
+        WHERE platform = ? AND event_timestamp >= ? AND TRIM(message_id) <> ''
+        GROUP BY provider_id
+        ORDER BY MIN(event_timestamp) ASC`, platform, since.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("query archived message IDs: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("read archived message ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("read archived message IDs: %w", err)
+	}
+	return ids, nil
+}
+
 func moderationState(m chat.Message) string {
 	if m.EventType != chat.EventModeration {
 		return ""
