@@ -153,6 +153,30 @@ func TestEmoteModeDefaultsEnvironmentAndValidation(t *testing.T) {
 	}
 }
 
+func TestChatColorModeDefaultsEnvironmentAndValidation(t *testing.T) {
+	c := Defaults()
+	if c.ChatColorMode != "line" {
+		t.Fatalf("default mode=%q", c.ChatColorMode)
+	}
+	ApplyEnv(&c, func(key string) string {
+		if key == "STREAMCHAT_CHAT_COLOR_MODE" {
+			return "username"
+		}
+		return ""
+	})
+	if c.ChatColorMode != "username" || c.Validate("run") != nil {
+		t.Fatalf("username mode rejected: %q", c.ChatColorMode)
+	}
+	c.ChatColorMode = "off"
+	if err := c.Validate("run"); err != nil {
+		t.Fatal(err)
+	}
+	c.ChatColorMode = "provider"
+	if err := c.Validate("run"); err == nil || !strings.Contains(err.Error(), "chat_color_mode") {
+		t.Fatalf("invalid mode accepted: %v", err)
+	}
+}
+
 func TestRelayConfigurationDefaultsEnvironmentAndValidation(t *testing.T) {
 	c := Defaults()
 	if c.YouTube.RedirectURI != "http://127.0.0.1:8791" {

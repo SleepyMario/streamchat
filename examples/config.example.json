@@ -42,6 +42,7 @@
     "mode": "auto",
     "debug": false
   },
+  "chat_color_mode": "line",
   "relay_auth_token": "",
   "log_file": "",
   "timestamps": true,

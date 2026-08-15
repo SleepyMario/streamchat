@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/chattercolor"
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 )
@@ -38,6 +39,90 @@ func TestNOColor(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	if ColorEnabled(false) {
 		t.Fatal("NO_COLOR ignored")
+	}
+	line := New(io.Discard, Options{
+		Color:              ColorEnabled(false),
+		ChatColorMode:      chattercolor.ModeLine,
+		ChatterColorSource: chattercolor.NewAllocator(),
+	}).Format(chat.Message{Platform: chat.PlatformKick, AuthorID: "1", AuthorDisplayName: "viewer", Text: "hello"})
+	for _, color := range chattercolor.Palette() {
+		if strings.Contains(line.Text, color.ANSI) {
+			t.Fatalf("NO_COLOR output used %s: %q", color.Name, line.Text)
+		}
+	}
+}
+
+func TestChatterColorModes(t *testing.T) {
+	message := chat.Message{Platform: chat.PlatformKick, AuthorID: "42", AuthorDisplayName: "Alice", Roles: roles(chat.RoleModerator), Text: "hello"}
+	cyan := chattercolor.Palette()[0].ANSI
+
+	line := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
+	if !strings.HasPrefix(line.Text, cyan+"[KICK] [M] Alice") || !strings.HasSuffix(line.Text, "hello\x1b[0m") {
+		t.Fatalf("line mode=%q", line.Text)
+	}
+	if strings.Contains(strings.TrimPrefix(line.Text, cyan), "\x1b[32m") {
+		t.Fatalf("provider color interrupted whole-line color: %q", line.Text)
+	}
+
+	username := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeUsername, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
+	if !strings.Contains(username.Text, "\x1b[32m[KICK]\x1b[0m [M] "+cyan+"Alice\x1b[0m") || strings.Contains(username.Text, cyan+"hello") || !strings.HasSuffix(username.Text, "\x1b[0m") {
+		t.Fatalf("username mode=%q", username.Text)
+	}
+
+	off := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeOff, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
+	wantOff := New(io.Discard, Options{Color: true}).Format(message)
+	if off.Text != wantOff.Text {
+		t.Fatalf("off=%q current=%q", off.Text, wantOff.Text)
+	}
+}
+
+func TestChatterColorsRequireColorSupportAndActualChatter(t *testing.T) {
+	allocator := chattercolor.NewAllocator()
+	options := Options{Color: false, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: allocator}
+	plain := New(io.Discard, options).Format(chat.Message{Platform: chat.PlatformKick, AuthorID: "1", AuthorDisplayName: "viewer", Text: "hello"})
+	if strings.Contains(plain.Text, "\x1b[") {
+		t.Fatalf("--no-color output=%q", plain.Text)
+	}
+
+	system := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: allocator}).Format(chat.Message{Platform: chat.PlatformKick, Text: "local status"})
+	for _, color := range chattercolor.Palette() {
+		if strings.Contains(system.Text, color.ANSI) {
+			t.Fatalf("system message received chatter color: %q", system.Text)
+		}
+	}
+}
+
+func TestChatterANSILeavesUnicodeAlignmentAndEmoteColumnsUnchanged(t *testing.T) {
+	resolve := func(chat.Platform, chat.Emote) (string, bool) { return "/tmp/emote.img", true }
+	message := chat.Message{
+		Platform:          chat.PlatformKick,
+		AuthorID:          "7",
+		AuthorDisplayName: "聊天室",
+		Text:              "你好 [emote:7:WAVE]",
+		Emotes:            []chat.Emote{{ID: "7", Name: "WAVE", URL: "https://example.invalid/emote", Start: 3, End: 16}},
+	}
+	base := New(io.Discard, Options{Emotes: resolve}).Format(message)
+	colored := New(io.Discard, Options{Color: true, Emotes: resolve, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
+	if len(base.Images) != 1 || len(colored.Images) != 1 || base.Images[0].Column != colored.Images[0].Column {
+		t.Fatalf("base=%+v colored=%+v", base.Images, colored.Images)
+	}
+	if Sanitize(colored.Text) != base.Text || Sanitize(colored.GraphicalText) != base.GraphicalText {
+		t.Fatalf("ANSI changed display content: base=%q colored=%q", base.Text, colored.Text)
+	}
+}
+
+func TestRedrawAndRepeatedChatterDoNotAdvanceAssignment(t *testing.T) {
+	allocator := chattercolor.NewAllocator()
+	formatter := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: allocator})
+	first := chat.Message{Platform: chat.PlatformKick, AuthorID: "1", AuthorDisplayName: "first", Text: "one"}
+	for range 5 {
+		if got := formatter.Format(first).Text; !strings.HasPrefix(got, chattercolor.Palette()[0].ANSI) {
+			t.Fatalf("first chatter changed color on redraw: %q", got)
+		}
+	}
+	second := formatter.Format(chat.Message{Platform: chat.PlatformKick, AuthorID: "2", AuthorDisplayName: "second", Text: "two"})
+	if !strings.HasPrefix(second.Text, chattercolor.Palette()[1].ANSI) {
+		t.Fatalf("redraw advanced allocator: %q", second.Text)
 	}
 }
 

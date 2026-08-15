@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/chattercolor"
 )
 
 type Config struct {
@@ -23,6 +25,7 @@ type Config struct {
 	Client            Client  `json:"client"`
 	Storage           Storage `json:"storage"`
 	Emotes            Emotes  `json:"emotes"`
+	ChatColorMode     string  `json:"chat_color_mode,omitempty"`
 	RelayAuthToken    string  `json:"relay_auth_token,omitempty"`
 	LogFile           string  `json:"log_file,omitempty"`
 	Timestamps        bool    `json:"timestamps,omitempty"`
@@ -99,13 +102,14 @@ const legacyYouTubeRedirectURI = "http://localhost:8791/oauth/youtube/callback"
 
 func Defaults() Config {
 	return Config{
-		YouTube:   YouTube{BaseURL: "https://youtube.googleapis.com/youtube/v3", RedirectURI: "http://127.0.0.1:8791"},
-		Kick:      Kick{Listen: "127.0.0.1:8788", RedirectURI: "http://localhost:8789/oauth/kick/callback", APIBaseURL: "https://api.kick.com/public/v1", OAuthBaseURL: "https://id.kick.com", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute},
-		Twitch:    Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
-		Server:    Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
-		Storage:   Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
-		Emotes:    Emotes{Mode: "auto"},
-		QueueSize: 256, DuplicateCapacity: 10000,
+		YouTube:       YouTube{BaseURL: "https://youtube.googleapis.com/youtube/v3", RedirectURI: "http://127.0.0.1:8791"},
+		Kick:          Kick{Listen: "127.0.0.1:8788", RedirectURI: "http://localhost:8789/oauth/kick/callback", APIBaseURL: "https://api.kick.com/public/v1", OAuthBaseURL: "https://id.kick.com", MaxBodyBytes: 1 << 20, MaxAge: 5 * time.Minute},
+		Twitch:        Twitch{RedirectURI: "http://localhost:8790/oauth/twitch/callback", APIBaseURL: "https://api.twitch.tv/helix", OAuthBaseURL: "https://id.twitch.tv/oauth2", WebSocketURL: "wss://eventsub.wss.twitch.tv/ws"},
+		Server:        Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
+		Storage:       Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
+		Emotes:        Emotes{Mode: "auto"},
+		ChatColorMode: chattercolor.ModeLine,
+		QueueSize:     256, DuplicateCapacity: 10000,
 	}
 }
 
@@ -189,6 +193,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Emotes.Mode == "" {
 		c.Emotes.Mode = d.Emotes.Mode
+	}
+	if c.ChatColorMode == "" {
+		c.ChatColorMode = d.ChatColorMode
 	}
 	if c.QueueSize == 0 {
 		c.QueueSize = d.QueueSize
@@ -275,6 +282,7 @@ func ApplyEnv(c *Config, get func(string) string) {
 	set("STREAMCHAT_CLIENT_SERVER_URL", &c.Client.ServerURL)
 	set("STREAMCHAT_STORAGE_SQLITE_PATH", &c.Storage.SQLitePath)
 	set("STREAMCHAT_EMOTES_MODE", &c.Emotes.Mode)
+	set("STREAMCHAT_CHAT_COLOR_MODE", &c.ChatColorMode)
 	if value := get("STREAMCHAT_EMOTES_DEBUG"); value != "" {
 		if enabled, err := strconv.ParseBool(value); err == nil {
 			c.Emotes.Debug = enabled
@@ -289,6 +297,9 @@ func (c Config) HasUsablePlatform() bool {
 }
 
 func (c Config) Validate(mode string) error {
+	if !chattercolor.ValidMode(c.ChatColorMode) {
+		return errors.New("chat_color_mode must be line, username, or off")
+	}
 	if c.Emotes.Mode != "auto" && c.Emotes.Mode != "text" && c.Emotes.Mode != "off" {
 		return errors.New("emotes.mode must be auto, text, or off")
 	}

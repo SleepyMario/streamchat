@@ -122,6 +122,14 @@ Status is fetched immediately from Kick's official authenticated channel endpoin
 
 The input starts as `[KICK] >` when a saved, currently available Kick target is restored; otherwise it starts as `[NONE] >` and changes after `/kick`. Incoming messages are confined between the fixed separators without discarding the current input or cursor position. Provider-neutral author roles appear as temporary letter badges in `[B][M][P][V][O][S][F]` order; raw provider badges remain in the normalized message data. `/clean` redraws only the chat region while retaining status, separators, and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible.
 
+Chatter colors are assigned by first-seen order for each client session and are never persisted or taken from provider preferences. The fixed sequence is Cyan `#00D7D7`, Orange `#FF8700`, Magenta `#D75FD7`, Lime `#87D700`, Blue `#5F87FF`, Yellow `#FFD75F`, Violet `#875FFF`, Teal `#00AF87`, Red `#FF5F5F`, Mint `#5FFFAF`, Pink `#FF87AF`, and Sky `#5FD7FF`, wrapping to Cyan for the thirteenth new chatter. Provider user IDs retain assignments when available; otherwise platform plus case-insensitive username is used. The default `chat_color_mode` is `line`; `username` colors only the username, and `off` keeps the prior platform-only presentation. `--no-color` and `NO_COLOR` disable chatter colors.
+
+```json
+{
+  "chat_color_mode": "line"
+}
+```
+
 Slash commands have prefix-based, hierarchical completion in the interactive terminal. Type a prefix such as `/cl` to see matching commands, use Tab or Up/Down to select, Enter to accept an active suggestion, and Esc to dismiss the popup. Structured second tokens are suggested for commands such as `/clear`, `/ban`, `/timeout`, `/open`, and `/clean`; free-form titles, categories, usernames, durations, and chat text are not suggested. Completion never executes a command automatically.
 
 Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, completion UI, or redraw sequences.
@@ -308,6 +316,7 @@ Advanced environment variables:
 - Storage: `STREAMCHAT_STORAGE_SQLITE_PATH`
 - Output: `STREAMCHAT_LOG_FILE`
 - Emotes: `STREAMCHAT_EMOTES_MODE` (`auto`, `text`, or `off`), `STREAMCHAT_EMOTES_DEBUG` (`true` or `false`)
+- Chatter colors: `STREAMCHAT_CHAT_COLOR_MODE` (`line`, `username`, or `off`)
 
 See `examples/config.example.json` for the manual JSON shape. Environment-provided access tokens are used in memory and are not written back during refresh.
 

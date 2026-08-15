@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/chattercolor"
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/mattn/go-runewidth"
 )
@@ -31,9 +32,11 @@ func Sanitize(s string) string {
 }
 
 type Options struct {
-	Timestamps, Color bool
-	AuthorWidth       int
-	Emotes            emote.Resolver
+	Timestamps, Color  bool
+	AuthorWidth        int
+	Emotes             emote.Resolver
+	ChatColorMode      string
+	ChatterColorSource *chattercolor.Allocator
 }
 type Terminal struct {
 	w   io.Writer
@@ -96,12 +99,23 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 		p = m.Timestamp.Local().Format("15:04:05 ")
 	}
 	author := Sanitize(m.AuthorDisplayName)
+	actualChatter := author != ""
 	if author == "" {
 		author = "system"
 	}
-	identity := author
+	chatterANSI := ""
+	if actualChatter && t.opt.Color && t.opt.ChatColorMode != chattercolor.ModeOff && t.opt.ChatterColorSource != nil {
+		if assigned, ok := t.opt.ChatterColorSource.Assign(m.Platform, m.AuthorID, m.AuthorDisplayName); ok {
+			chatterANSI = assigned.ANSI
+		}
+	}
+	displayAuthor := author
+	if chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeUsername {
+		displayAuthor = chatterANSI + author + "\x1b[0m"
+	}
+	identity := displayAuthor
 	if badges := RenderRoleBadges(m.Roles); badges != "" {
-		identity = badges + " " + author
+		identity = badges + " " + displayAuthor
 	}
 	body := emote.FormatText(m.Platform, m.Text, m.Emotes, Sanitize, t.opt.Emotes)
 	textPrefix := ""
@@ -115,7 +129,7 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 		textPrefix += "[MEMBER] "
 	}
 	pl := "[" + label + "]"
-	if t.opt.Color {
+	if t.opt.Color && !(chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeLine) {
 		c := "\x1b[31m"
 		if m.Platform == chat.PlatformKick {
 			c = "\x1b[32m"
@@ -125,7 +139,7 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 		pl = c + pl + "\x1b[0m"
 	}
 	identityWidth := min(t.opt.AuthorWidth, maxIdentityWidth)
-	padding := max(identityWidth-runewidth.StringWidth(identity), 0)
+	padding := max(identityWidth-runewidth.StringWidth(Sanitize(identity)), 0)
 	prefix := fmt.Sprintf("%s%-6s %s%s%s", p, pl, identity, strings.Repeat(" ", padding+2), textPrefix)
 	line := emote.Line{Text: prefix + body.Text, Images: append([]emote.InlineImage(nil), body.Images...)}
 	if body.GraphicalText != "" {
@@ -134,6 +148,17 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 	offset := runewidth.StringWidth(Sanitize(prefix))
 	for index := range line.Images {
 		line.Images[index].Column += offset
+	}
+	if chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeLine {
+		line.Text = chatterANSI + line.Text + "\x1b[0m"
+		if line.GraphicalText != "" {
+			line.GraphicalText = chatterANSI + line.GraphicalText + "\x1b[0m"
+		}
+	} else if chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeUsername {
+		line.Text += "\x1b[0m"
+		if line.GraphicalText != "" {
+			line.GraphicalText += "\x1b[0m"
+		}
 	}
 	return line
 }

@@ -14,7 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/chattercolor"
 	"github.com/SleepyMario/streamchat/internal/emote"
+	"github.com/SleepyMario/streamchat/internal/render"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -47,6 +50,76 @@ func TestScreenIncomingOutputPreservesInputAndTarget(t *testing.T) {
 	got := plainTerminalOutput(output.String())
 	if !strings.Contains(got, "[KICK] viewer  incoming") || !strings.Contains(got, "[KICK] > hello everyone") {
 		t.Fatalf("chat/input redraw missing: %q", got)
+	}
+}
+
+func TestFixedUIAndAutocompleteDoNotUseChatterPalette(t *testing.T) {
+	var output bytes.Buffer
+	screen := NewScreen(&output, func() int { return 40 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range "/c" {
+		screen.Feed(r)
+	}
+	for _, color := range chattercolor.Palette() {
+		if strings.Contains(output.String(), color.ANSI) {
+			t.Fatalf("fixed UI used chatter color %s: %q", color.Name, output.String())
+		}
+	}
+}
+
+func TestChatterAssignmentsSurviveResizeScrollCleanAndEmoteRedraw(t *testing.T) {
+	var output bytes.Buffer
+	width := 40
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(&output, func() int { return width }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	allocator := chattercolor.NewAllocator()
+	formatter := render.New(io.Discard, render.Options{
+		Color:              true,
+		ChatColorMode:      chattercolor.ModeLine,
+		ChatterColorSource: allocator,
+		Emotes: func(chat.Platform, chat.Emote) (string, bool) {
+			return "/cache/emote.img", true
+		},
+	})
+	first := chat.Message{Platform: chat.PlatformKick, AuthorID: "1", AuthorDisplayName: "first", Text: "[emote:7:wave]", Emotes: []chat.Emote{{ID: "7", Name: "wave", URL: "https://example.invalid/7", Start: 0, End: 13}}}
+	appendMessage := func(id string, message chat.Message) {
+		t.Helper()
+		copyOfMessage := message
+		if err := screen.AppendMessage(DisplayMessage{ID: id, Platform: string(message.Platform), Author: message.AuthorDisplayName, Render: func() emote.Line {
+			return formatter.Format(copyOfMessage)
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendMessage("first", first)
+	width = 32
+	screen.Redraw()
+	for index := 0; index < 6; index++ {
+		appendMessage(fmt.Sprintf("repeat-%d", index), first)
+	}
+	if removed, err := screen.CleanAll(); err != nil || removed != 7 {
+		t.Fatalf("clean removed=%d err=%v", removed, err)
+	}
+	second := chat.Message{Platform: chat.PlatformKick, AuthorID: "2", AuthorDisplayName: "second", Text: "after clean"}
+	appendMessage("second", second)
+	appendMessage("first-again", first)
+	screen.mu.Lock()
+	secondLine := screen.messages[0].rendered().Text
+	firstAgainLine := screen.messages[1].rendered().Text
+	screen.mu.Unlock()
+	if !strings.HasPrefix(secondLine, chattercolor.Palette()[1].ANSI) {
+		t.Fatalf("clean/redraw reset assignment sequence: %q", secondLine)
+	}
+	if !strings.HasPrefix(firstAgainLine, chattercolor.Palette()[0].ANSI) {
+		t.Fatalf("first chatter lost original assignment: %q", firstAgainLine)
+	}
+	if len(backend.latest()) == 0 {
+		t.Fatal("emote redraw path was not exercised")
 	}
 }
 

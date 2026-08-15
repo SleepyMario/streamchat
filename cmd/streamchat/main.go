@@ -20,6 +20,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/aggregate"
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/SleepyMario/streamchat/internal/chattercolor"
 	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/emote"
@@ -612,7 +613,8 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	}
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: c.QueueSize, DuplicateCapacity: c.DuplicateCapacity, ReorderWindow: 100 * time.Millisecond})
 	merged, aerrs := ag.Run(ctx, inputs...)
-	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor), Emotes: emoteResolver}
+	colorAllocator := chattercolor.NewAllocator()
+	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor), Emotes: emoteResolver, ChatColorMode: c.ChatColorMode, ChatterColorSource: colorAllocator}
 	term := render.New(safeOut, renderOptions)
 	formatter := render.New(io.Discard, renderOptions)
 	var log *logging.Logger
@@ -1186,7 +1188,7 @@ func (s *kickOutboundSender) refresh(ctx context.Context) error {
 }
 
 func demo(ctx context.Context, args []string, out io.Writer) error {
-	o, _, e := flags("demo", args)
+	o, c, e := flags("demo", args)
 	if e != nil {
 		return e
 	}
@@ -1204,7 +1206,7 @@ func demo(ctx context.Context, args []string, out io.Writer) error {
 	close(b)
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: 8, DuplicateCapacity: 16, ReorderWindow: time.Millisecond})
 	merged, _ := ag.Run(ctx, a, b)
-	term := render.New(out, render.Options{Timestamps: o.timestamps, Color: render.ColorEnabled(o.noColor)})
+	term := render.New(out, render.Options{Timestamps: o.timestamps, Color: render.ColorEnabled(o.noColor), ChatColorMode: c.ChatColorMode, ChatterColorSource: chattercolor.NewAllocator()})
 	for m := range merged {
 		if e := term.Render(m); e != nil {
 			return e
