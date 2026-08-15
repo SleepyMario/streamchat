@@ -2,13 +2,17 @@ package render
 
 import (
 	"fmt"
-	"github.com/SleepyMario/streamchat/internal/chat"
 	"io"
 	"os"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/SleepyMario/streamchat/internal/chat"
+	"github.com/mattn/go-runewidth"
 )
+
+const maxIdentityWidth = 22
 
 var ansi = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
 
@@ -92,6 +96,10 @@ func (t *Terminal) Render(m chat.Message) error {
 	if author == "" {
 		author = "system"
 	}
+	identity := author
+	if len(bs) > 0 {
+		identity = strings.Join(bs, " ") + " " + author
+	}
 	txt := Sanitize(m.Text)
 	if m.Reply != nil {
 		txt = "↪ " + Sanitize(m.Reply.AuthorDisplayName) + ": " + txt
@@ -112,6 +120,8 @@ func (t *Terminal) Render(m chat.Message) error {
 		}
 		pl = c + pl + "\x1b[0m"
 	}
-	_, e := fmt.Fprintf(t.w, "%s%-6s %-*s %-14s %s\n", p, pl, t.opt.AuthorWidth, author, strings.Join(bs, ""), txt)
+	identityWidth := min(t.opt.AuthorWidth, maxIdentityWidth)
+	padding := max(identityWidth-runewidth.StringWidth(identity), 0)
+	_, e := fmt.Fprintf(t.w, "%s%-6s %s%s%s\n", p, pl, identity, strings.Repeat(" ", padding+2), txt)
 	return e
 }

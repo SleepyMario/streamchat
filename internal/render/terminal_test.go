@@ -2,10 +2,11 @@ package render
 
 import (
 	"bytes"
-	"github.com/SleepyMario/streamchat/internal/chat"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SleepyMario/streamchat/internal/chat"
 )
 
 func TestSanitizeAndUnicode(t *testing.T) {
@@ -31,39 +32,52 @@ func TestNOColor(t *testing.T) {
 	}
 }
 
-func TestRoleBadgeRendering(t *testing.T) {
+func TestIdentityRendering(t *testing.T) {
 	tests := []struct {
-		name   string
-		badges []chat.Badge
-		want   string
+		name        string
+		author      string
+		badges      []chat.Badge
+		authorWidth int
+		want        string
 	}{
 		{
-			name:   "moderator",
+			name:   "normal username alignment",
+			author: "SleepyMario",
+			want:   "[KICK] SleepyMario       hello\n",
+		},
+		{
+			name:   "moderator before username",
+			author: "BotRix",
 			badges: []chat.Badge{{Type: "moderator", Text: "Moderator"}},
-			want:   "[KICK] user [MOD]          hello\n",
+			want:   "[KICK] [MOD] BotRix      hello\n",
 		},
 		{
-			name:   "broadcaster omitted",
-			badges: []chat.Badge{{Type: "broadcaster", Text: "Broadcaster"}, {Type: "subscriber", Text: "Subscriber"}},
-			want:   "[KICK] user [SUBSCRIBER]   hello\n",
+			name:   "long username exceeding cap",
+			author: "abcdefghijklmnopqrstuvwx",
+			want:   "[KICK] abcdefghijklmnopqrstuvwx  hello\n",
 		},
 		{
-			name:   "verified channel omitted",
-			badges: []chat.Badge{{Type: "verified", Text: "Verified Channel"}, {Type: "subscriber", Text: "Subscriber"}},
-			want:   "[KICK] user [SUBSCRIBER]   hello\n",
+			name:        "long moderator identity exceeding cap",
+			author:      "abcdefghijklmnopq",
+			authorWidth: 40,
+			badges:      []chat.Badge{{Type: "moderator", Text: "Moderator"}},
+			want:        "[KICK] [MOD] abcdefghijklmnopq  hello\n",
 		},
 		{
-			name: "moderator and verified channel",
+			name:   "other badges preserved and omitted roles remain omitted",
+			author: "user",
 			badges: []chat.Badge{
-				{Type: "moderator", Text: "Moderator"},
+				{Type: "broadcaster", Text: "Broadcaster"},
 				{Type: "verified", Text: "Verified Channel"},
+				{Type: "subscriber", Text: "Subscriber"},
 			},
-			want: "[KICK] user [MOD]          hello\n",
+			want: "[KICK] [SUBSCRIBER] user  hello\n",
 		},
 		{
-			name:   "broadcaster only",
-			badges: []chat.Badge{{Type: "broadcaster", Text: "Broadcaster"}},
-			want:   "[KICK] user                hello\n",
+			name:        "unicode display width alignment",
+			author:      "名",
+			authorWidth: 4,
+			want:        "[KICK] 名    hello\n",
 		},
 	}
 
@@ -72,11 +86,11 @@ func TestRoleBadgeRendering(t *testing.T) {
 			var b bytes.Buffer
 			m := chat.Message{
 				Platform:          chat.PlatformKick,
-				AuthorDisplayName: "user",
+				AuthorDisplayName: tt.author,
 				Badges:            tt.badges,
 				Text:              "hello",
 			}
-			if err := New(&b, Options{AuthorWidth: 4}).Render(m); err != nil {
+			if err := New(&b, Options{AuthorWidth: tt.authorWidth}).Render(m); err != nil {
 				t.Fatal(err)
 			}
 			if got := b.String(); got != tt.want {

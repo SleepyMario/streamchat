@@ -4,12 +4,14 @@ go 1.24.0
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/mattn/go-runewidth v0.0.19
 	modernc.org/sqlite v1.44.3
 )
 
 require golang.org/x/term v0.34.0
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
