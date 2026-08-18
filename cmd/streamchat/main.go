@@ -59,8 +59,8 @@ Interactive commands:
   /twitch                          Select Twitch as the outbound target
   /twitch hello                    Select Twitch and send "hello"
   hello                            Send to the selected target
-  /title New stream title          Update the Kick stream title
-  /category Just Chatting          Update the Kick stream category
+  /title New stream title          Update the selected channel title
+  /category Just Chatting          Update the selected channel category
   /ban kick USER                   Permanently ban a user from Kick chat
   /timeout kick USER 10m           Temporarily timeout a user from Kick chat
   /clean streamchat                Clear the current local chat view
@@ -387,8 +387,11 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			twitchBroadcasterID = twitchSession.Channel.ID
 			twitchScopes = twitchSession.Identity.Scopes
 		}
-		twitchClient := twitch.NewChatSender(twitchAPI, twitchBroadcasterID, c.Twitch.UserID, twitchScopes)
-		status = kickClient
+		twitchAuth := twitch.NewUserClient(twitchAPI, twitchScopes)
+		twitchClient := &twitchOutboundSender{
+			chat:    twitch.NewChatSenderWithUserClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
+			channel: twitch.NewChannelClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
+		}
 		targets = outbound.NewTargets(
 			outbound.Target{
 				Name:        "kick",
@@ -407,8 +410,15 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		if state, stateErr := clientstate.Default(); stateErr == nil {
 			configureOutboundState(targets, state)
 		}
-		targets.RegisterControl("title", outbound.ControlFunc(kickClient.Title))
-		targets.RegisterControl("category", outbound.ControlFunc(kickClient.Category))
+		targets.RegisterTargetControl("title", "kick", outbound.ControlFunc(kickClient.Title))
+		targets.RegisterTargetControl("title", "twitch", outbound.ControlFunc(twitchClient.Title))
+		targets.RegisterTargetControl("category", "kick", outbound.ControlFunc(kickClient.Category))
+		targets.RegisterTargetControl("category", "twitch", outbound.ControlFunc(twitchClient.Category))
+		statusRouter := newTargetStatusRouter(map[string]statusProvider{"kick": kickClient, "twitch": twitchClient}, targets.Selected())
+		targets.AddSelectionChanged(statusRouter.Select)
+		kickClient.setStatusRefresh(statusRouter.RequestRefresh)
+		twitchClient.setStatusRefresh(statusRouter.RequestRefresh)
+		status = statusRouter
 		moderation := newModerationControls(kickClient)
 		targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
@@ -623,6 +633,9 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 				statusCtx, stopStatus := context.WithCancel(ctx)
 				trigger := make(chan struct{}, 1)
 				done := make(chan struct{})
+				if setter, ok := status.(interface{ setStatusDisplay(statusDisplay) }); ok {
+					setter.setStatusDisplay(terminal)
+				}
 				if setter, ok := status.(interface{ setStatusRefresh(func()) }); ok {
 					setter.setStatusRefresh(func() {
 						select {
@@ -640,6 +653,9 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 					<-done
 					if setter, ok := status.(interface{ setStatusRefresh(func()) }); ok {
 						setter.setStatusRefresh(nil)
+					}
+					if setter, ok := status.(interface{ setStatusDisplay(statusDisplay) }); ok {
+						setter.setStatusDisplay(nil)
 					}
 				}()
 			}
@@ -774,6 +790,79 @@ type statusProvider interface {
 
 type statusDisplay interface {
 	SetStatus(terminalui.StreamStatus)
+}
+
+var errStaleStatus = errors.New("status result belongs to a previously selected target")
+
+type targetStatusRouter struct {
+	mu         sync.RWMutex
+	providers  map[string]statusProvider
+	selected   string
+	generation uint64
+	refresh    func()
+	display    statusDisplay
+}
+
+func newTargetStatusRouter(providers map[string]statusProvider, selected string) *targetStatusRouter {
+	return &targetStatusRouter{providers: providers, selected: selected}
+}
+
+func (r *targetStatusRouter) Select(target string) {
+	r.mu.Lock()
+	if target == r.selected {
+		r.mu.Unlock()
+		return
+	}
+	r.selected = target
+	r.generation++
+	display := r.display
+	refresh := r.refresh
+	r.mu.Unlock()
+	if display != nil {
+		display.SetStatus(terminalui.StreamStatus{Unavailable: true})
+	}
+	if refresh != nil {
+		refresh()
+	}
+}
+
+func (r *targetStatusRouter) StreamStatus(ctx context.Context) (terminalui.StreamStatus, error) {
+	r.mu.RLock()
+	provider := r.providers[r.selected]
+	generation := r.generation
+	r.mu.RUnlock()
+	if provider == nil {
+		return terminalui.StreamStatus{Unavailable: true}, nil
+	}
+	status, err := provider.StreamStatus(ctx)
+	r.mu.RLock()
+	stale := generation != r.generation
+	r.mu.RUnlock()
+	if stale {
+		return terminalui.StreamStatus{}, errStaleStatus
+	}
+	return status, err
+}
+
+func (r *targetStatusRouter) RequestRefresh() {
+	r.mu.RLock()
+	refresh := r.refresh
+	r.mu.RUnlock()
+	if refresh != nil {
+		refresh()
+	}
+}
+
+func (r *targetStatusRouter) setStatusRefresh(refresh func()) {
+	r.mu.Lock()
+	r.refresh = refresh
+	r.mu.Unlock()
+}
+
+func (r *targetStatusRouter) setStatusDisplay(display statusDisplay) {
+	r.mu.Lock()
+	r.display = display
+	r.mu.Unlock()
 }
 
 func runStatusRefresher(ctx context.Context, interval time.Duration, trigger <-chan struct{}, provider statusProvider, display statusDisplay) {
@@ -1106,6 +1195,80 @@ func (s *kickOutboundSender) setStatusRefresh(refresh func()) {
 }
 
 func (s *kickOutboundSender) requestStatusRefresh() {
+	s.refreshMu.RLock()
+	refresh := s.refreshNow
+	s.refreshMu.RUnlock()
+	if refresh != nil {
+		refresh()
+	}
+}
+
+type twitchOutboundSender struct {
+	chat       *twitch.ChatSender
+	channel    *twitch.ChannelClient
+	refreshMu  sync.RWMutex
+	refreshNow func()
+}
+
+func (s *twitchOutboundSender) Send(ctx context.Context, message string) error {
+	if s.chat == nil {
+		return twitch.ErrChatAuthentication
+	}
+	return s.chat.Send(ctx, message)
+}
+
+func (s *twitchOutboundSender) Title(ctx context.Context, title string) (string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "Usage: /title NEW STREAM TITLE", nil
+	}
+	if s.channel == nil {
+		return "", twitch.ErrChannelNotFound
+	}
+	if err := s.channel.UpdateTitle(ctx, title); err != nil {
+		return "", err
+	}
+	s.requestStatusRefresh()
+	return "Title updated: " + title, nil
+}
+
+func (s *twitchOutboundSender) Category(ctx context.Context, argument string) (string, error) {
+	argument = strings.TrimSpace(argument)
+	if argument == "" {
+		return "Usage: /category CATEGORY NAME OR ID", nil
+	}
+	if s.channel == nil {
+		return "", twitch.ErrChannelNotFound
+	}
+	if err := s.channel.RequireManagement(); err != nil {
+		return "", err
+	}
+	category, err := s.channel.ResolveCategory(ctx, argument)
+	if err != nil {
+		return "", err
+	}
+	if err = s.channel.UpdateCategory(ctx, category.ID); err != nil {
+		return "", err
+	}
+	s.requestStatusRefresh()
+	return "Category updated: " + category.Name, nil
+}
+
+func (s *twitchOutboundSender) StreamStatus(ctx context.Context) (terminalui.StreamStatus, error) {
+	if s.channel == nil {
+		return terminalui.StreamStatus{}, twitch.ErrChannelNotFound
+	}
+	status, err := s.channel.GetStatus(ctx)
+	return terminalui.StreamStatus{Title: status.Title, Category: status.Category, ViewerCount: status.ViewerCount, Live: status.Live}, err
+}
+
+func (s *twitchOutboundSender) setStatusRefresh(refresh func()) {
+	s.refreshMu.Lock()
+	s.refreshNow = refresh
+	s.refreshMu.Unlock()
+}
+
+func (s *twitchOutboundSender) requestStatusRefresh() {
 	s.refreshMu.RLock()
 	refresh := s.refreshNow
 	s.refreshMu.RUnlock()

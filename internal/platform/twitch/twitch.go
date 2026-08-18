@@ -17,15 +17,18 @@ import (
 )
 
 const (
-	ReadChatScope  = "user:read:chat"
-	WriteChatScope = "user:write:chat"
-	EventType      = "channel.chat.message"
+	ReadChatScope        = "user:read:chat"
+	WriteChatScope       = "user:write:chat"
+	ManageBroadcastScope = "channel:manage:broadcast"
+	EventType            = "channel.chat.message"
 )
 
 var RequiredChatScopes = []string{ReadChatScope, WriteChatScope}
+var SetupScopes = []string{ReadChatScope, WriteChatScope, ManageBroadcastScope}
 
 var (
 	ErrWriteScope         = errors.New("Twitch authorization lacks user:write:chat; run: streamchat setup twitch")
+	ErrManageScope        = errors.New("Twitch authorization lacks channel:manage:broadcast; run: streamchat setup twitch")
 	ErrChatAuthentication = errors.New("Twitch chat authorization failed; run: streamchat setup twitch")
 	ErrChatRateLimit      = errors.New("Twitch chat rate limit exceeded; try again shortly")
 	ErrChatRejected       = errors.New("Twitch rejected the chat message")
@@ -127,6 +130,9 @@ func RequireScopes(scopes []string, required ...string) error {
 		if scope == WriteChatScope {
 			return ErrWriteScope
 		}
+		if scope == ManageBroadcastScope {
+			return ErrManageScope
+		}
 		return fmt.Errorf("Twitch authorization lacks %s; run: streamchat setup twitch", scope)
 	}
 	return nil
@@ -225,23 +231,23 @@ func (a *API) httpClient() *http.Client {
 }
 
 type ChatSender struct {
-	API                     *API
+	Auth                    *UserClient
 	BroadcasterID, SenderID string
-	Scopes                  []string
-	mu                      sync.Mutex
 }
 
 func NewChatSender(api *API, broadcasterID, senderID string, scopes []string) *ChatSender {
-	return &ChatSender{API: api, BroadcasterID: broadcasterID, SenderID: senderID, Scopes: append([]string(nil), scopes...)}
+	return NewChatSenderWithUserClient(NewUserClient(api, scopes), broadcasterID, senderID)
+}
+
+func NewChatSenderWithUserClient(auth *UserClient, broadcasterID, senderID string) *ChatSender {
+	return &ChatSender{Auth: auth, BroadcasterID: broadcasterID, SenderID: senderID}
 }
 
 func (s *ChatSender) Send(ctx context.Context, message string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.API == nil {
+	if s.Auth == nil {
 		return ErrChatAuthentication
 	}
-	if err := RequireScopes(s.Scopes, WriteChatScope); err != nil {
+	if err := s.Auth.RequireScopes(WriteChatScope); err != nil {
 		return err
 	}
 	if strings.TrimSpace(s.BroadcasterID) == "" || strings.TrimSpace(s.SenderID) == "" {
@@ -250,42 +256,22 @@ func (s *ChatSender) Send(ctx context.Context, message string) error {
 	if strings.TrimSpace(message) == "" {
 		return errors.New("Twitch chat message is empty")
 	}
-	status, response, err := s.API.sendChat(ctx, s.BroadcasterID, s.SenderID, message)
+	response, err := s.Auth.Do(ctx, []string{WriteChatScope}, func(accessToken string) (*http.Request, error) {
+		return buildChatRequest(s.Auth.API, accessToken, s.BroadcasterID, s.SenderID, message)
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("Twitch chat request failed: %w", err)
 	}
-	if status == http.StatusUnauthorized && s.API.RefreshToken != "" {
-		tok, refreshErr := s.API.Refresh(ctx, s.API.RefreshToken)
-		if refreshErr != nil {
-			return refreshErr
+	defer response.Body.Close()
+	var result chatSendResponse
+	if response.StatusCode/100 == 2 {
+		if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+			return errors.New("Twitch chat returned an invalid response")
 		}
-		s.API.AccessToken = tok.AccessToken
-		if tok.RefreshToken != "" {
-			s.API.RefreshToken = tok.RefreshToken
-		}
-		if len(tok.Scopes) > 0 {
-			s.Scopes = append(s.Scopes[:0], tok.Scopes...)
-		} else {
-			identity, validateErr := s.API.ValidateToken(ctx)
-			if validateErr != nil {
-				return validateErr
-			}
-			s.Scopes = append(s.Scopes[:0], identity.Scopes...)
-		}
-		if scopeErr := RequireScopes(s.Scopes, RequiredChatScopes...); scopeErr != nil {
-			return scopeErr
-		}
-		if s.API.OnToken != nil {
-			if persistErr := s.API.OnToken(tok); persistErr != nil {
-				return persistErr
-			}
-		}
-		status, response, err = s.API.sendChat(ctx, s.BroadcasterID, s.SenderID, message)
-		if err != nil {
-			return err
-		}
+	} else {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 	}
-	return chatSendResult(status, response)
+	return chatSendResult(response.StatusCode, result)
 }
 
 type chatSendResponse struct {
@@ -298,36 +284,23 @@ type chatSendResponse struct {
 	} `json:"data"`
 }
 
-func (a *API) sendChat(ctx context.Context, broadcasterID, senderID, message string) (int, chatSendResponse, error) {
+func buildChatRequest(api *API, accessToken, broadcasterID, senderID, message string) (*http.Request, error) {
 	body, err := json.Marshal(map[string]string{
 		"broadcaster_id": broadcasterID,
 		"sender_id":      senderID,
 		"message":        message,
 	})
 	if err != nil {
-		return 0, chatSendResponse{}, err
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.APIBaseURL, "/")+"/chat/messages", strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(api.APIBaseURL, "/")+"/chat/messages", strings.NewReader(string(body)))
 	if err != nil {
-		return 0, chatSendResponse{}, err
+		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
-	req.Header.Set("Client-Id", a.ClientID)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Client-Id", api.ClientID)
 	req.Header.Set("Content-Type", "application/json")
-	r, err := a.httpClient().Do(req)
-	if err != nil {
-		return 0, chatSendResponse{}, fmt.Errorf("Twitch chat request failed: %w", err)
-	}
-	defer r.Body.Close()
-	var response chatSendResponse
-	if r.StatusCode/100 == 2 {
-		if err = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&response); err != nil {
-			return 0, chatSendResponse{}, errors.New("Twitch chat returned an invalid response")
-		}
-	} else {
-		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
-	}
-	return r.StatusCode, response, nil
+	return req, nil
 }
 
 func chatSendResult(status int, response chatSendResponse) error {

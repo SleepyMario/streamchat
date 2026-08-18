@@ -130,7 +130,7 @@ func TestPrepareTwitchRejectsReadOnlyAuthorizationForSending(t *testing.T) {
 	}
 }
 
-func TestPrepareTwitchRefreshPreservesRefreshTokenAndRequiredScopes(t *testing.T) {
+func TestPrepareTwitchRefreshPreservesChatAuthorizationWithoutManagementScope(t *testing.T) {
 	requests := map[string]int{}
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests[r.URL.Path]++
@@ -410,6 +410,145 @@ func (d *recordingStatusDisplay) count() int {
 	return len(d.statuses)
 }
 
+func (d *recordingStatusDisplay) last() terminalui.StreamStatus {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.statuses) == 0 {
+		return terminalui.StreamStatus{}
+	}
+	return d.statuses[len(d.statuses)-1]
+}
+
+type blockingStatusProvider struct {
+	started chan struct{}
+	release chan struct{}
+	status  terminalui.StreamStatus
+}
+
+func (p *blockingStatusProvider) StreamStatus(context.Context) (terminalui.StreamStatus, error) {
+	close(p.started)
+	<-p.release
+	return p.status, nil
+}
+
+func TestTargetStatusRouterSwitchesKickAndTwitchImmediately(t *testing.T) {
+	kickStatus := terminalui.StreamStatus{Title: "Kick title", Category: "Kick category", Live: true, ViewerCount: 10}
+	twitchStatus := terminalui.StreamStatus{Title: "Twitch title", Category: "Twitch category", Live: true, ViewerCount: 20}
+	router := newTargetStatusRouter(map[string]statusProvider{
+		"kick":   &scriptedStatusProvider{statuses: []terminalui.StreamStatus{kickStatus}},
+		"twitch": &scriptedStatusProvider{statuses: []terminalui.StreamStatus{twitchStatus}},
+	}, "kick")
+	display := &recordingStatusDisplay{}
+	refreshes := 0
+	router.setStatusDisplay(display)
+	router.setStatusRefresh(func() { refreshes++ })
+	status, err := router.StreamStatus(context.Background())
+	if err != nil || status != kickStatus {
+		t.Fatalf("kick status=%+v err=%v", status, err)
+	}
+	router.Select("twitch")
+	if refreshes != 1 || !display.last().Unavailable {
+		t.Fatalf("Twitch selection refreshes=%d display=%+v", refreshes, display.last())
+	}
+	status, err = router.StreamStatus(context.Background())
+	if err != nil || status != twitchStatus {
+		t.Fatalf("Twitch status=%+v err=%v", status, err)
+	}
+	router.Select("kick")
+	if refreshes != 2 || !display.last().Unavailable {
+		t.Fatalf("Kick selection refreshes=%d display=%+v", refreshes, display.last())
+	}
+	status, err = router.StreamStatus(context.Background())
+	if err != nil || status != kickStatus {
+		t.Fatalf("restored Kick status=%+v err=%v", status, err)
+	}
+}
+
+func TestSlashTargetCommandsSwitchStatusSource(t *testing.T) {
+	targets := outbound.NewTargets(
+		outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}},
+		outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: &recordingOutboundSender{}},
+	)
+	router := newTargetStatusRouter(map[string]statusProvider{
+		"kick":   &scriptedStatusProvider{statuses: []terminalui.StreamStatus{{Title: "Kick"}}},
+		"twitch": &scriptedStatusProvider{statuses: []terminalui.StreamStatus{{Title: "Twitch"}}},
+	}, targets.Selected())
+	refreshes := 0
+	router.setStatusRefresh(func() { refreshes++ })
+	targets.AddSelectionChanged(router.Select)
+	if err := targets.Handle(context.Background(), "/twitch"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := router.StreamStatus(context.Background())
+	if err != nil || status.Title != "Twitch" {
+		t.Fatalf("Twitch status=%+v err=%v", status, err)
+	}
+	if err = targets.Handle(context.Background(), "/kick"); err != nil {
+		t.Fatal(err)
+	}
+	status, err = router.StreamStatus(context.Background())
+	if err != nil || status.Title != "Kick" || refreshes != 2 {
+		t.Fatalf("Kick status=%+v refreshes=%d err=%v", status, refreshes, err)
+	}
+}
+
+func TestTargetStatusRouterRejectsStaleCrossProviderResult(t *testing.T) {
+	kick := &blockingStatusProvider{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		status:  terminalui.StreamStatus{Title: "stale Kick"},
+	}
+	twitchStatus := terminalui.StreamStatus{Title: "current Twitch", Live: true, ViewerCount: 7}
+	router := newTargetStatusRouter(map[string]statusProvider{
+		"kick":   kick,
+		"twitch": &scriptedStatusProvider{statuses: []terminalui.StreamStatus{twitchStatus}},
+	}, "kick")
+	display := &recordingStatusDisplay{}
+	router.setStatusDisplay(display)
+	type result struct {
+		status terminalui.StreamStatus
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		status, err := router.StreamStatus(context.Background())
+		done <- result{status: status, err: err}
+	}()
+	<-kick.started
+	router.Select("twitch")
+	close(kick.release)
+	stale := <-done
+	if !errors.Is(stale.err, errStaleStatus) || !display.last().Unavailable {
+		t.Fatalf("stale result=%+v display=%+v", stale, display.last())
+	}
+	status, err := router.StreamStatus(context.Background())
+	if err != nil || status != twitchStatus {
+		t.Fatalf("Twitch status=%+v err=%v", status, err)
+	}
+}
+
+func TestPersistedTwitchTargetStartsWithTwitchStatusProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	state := clientstate.New(path)
+	if err := state.Save(clientstate.State{LastOutboundTarget: "twitch"}); err != nil {
+		t.Fatal(err)
+	}
+	targets := outbound.NewTargets(
+		outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingOutboundSender{}},
+		outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: &recordingOutboundSender{}},
+	)
+	configureOutboundState(targets, state)
+	want := terminalui.StreamStatus{Title: "Persisted Twitch", Live: false}
+	router := newTargetStatusRouter(map[string]statusProvider{
+		"kick":   &scriptedStatusProvider{statuses: []terminalui.StreamStatus{{Title: "wrong Kick"}}},
+		"twitch": &scriptedStatusProvider{statuses: []terminalui.StreamStatus{want}},
+	}, targets.Selected())
+	got, err := router.StreamStatus(context.Background())
+	if err != nil || got != want {
+		t.Fatalf("selected=%q status=%+v err=%v", targets.Selected(), got, err)
+	}
+}
+
 func TestStatusRefresherRunsImmediatelyPeriodicallyAndPreservesPriorOnFailure(t *testing.T) {
 	known := terminalui.StreamStatus{Title: "Known", Category: "Games", Live: true, ViewerCount: 9}
 	provider := &scriptedStatusProvider{statuses: []terminalui.StreamStatus{known}, errors: []error{nil, errors.New("temporary failure")}}
@@ -458,6 +597,54 @@ func TestSuccessfulTitleAndCategoryTriggerImmediateStatusRefresh(t *testing.T) {
 	}
 	if len(refreshes) != 2 {
 		t.Fatalf("immediate refresh signals=%d", len(refreshes))
+	}
+}
+
+func TestSuccessfulTwitchTitleAndCategoryUseCanonicalResultAndRefreshStatus(t *testing.T) {
+	patches := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/search/categories":
+			_, _ = io.WriteString(w, `{"data":[{"id":"509658","name":"Just Chatting"}]}`)
+		case request.Method == http.MethodPatch && request.URL.Path == "/channels":
+			patches++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.String())
+		}
+	}))
+	defer server.Close()
+	api := &twitch.API{HTTP: server.Client(), APIBaseURL: server.URL, OAuthBaseURL: server.URL, ClientID: "client", AccessToken: "token"}
+	auth := twitch.NewUserClient(api, twitch.SetupScopes)
+	client := &twitchOutboundSender{
+		chat:    twitch.NewChatSenderWithUserClient(auth, "100", "100"),
+		channel: twitch.NewChannelClient(auth, "100", "100"),
+	}
+	refreshes := 0
+	client.setStatusRefresh(func() { refreshes++ })
+	result, err := client.Title(context.Background(), "Twitch title")
+	if err != nil || result != "Title updated: Twitch title" {
+		t.Fatalf("title result=%q err=%v", result, err)
+	}
+	result, err = client.Category(context.Background(), "just chatting")
+	if err != nil || result != "Category updated: Just Chatting" {
+		t.Fatalf("category result=%q err=%v", result, err)
+	}
+	if patches != 2 || refreshes != 2 {
+		t.Fatalf("patches=%d refreshes=%d", patches, refreshes)
+	}
+}
+
+func TestTwitchCategoryChecksManagementScopeBeforeLookup(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+	api := &twitch.API{HTTP: server.Client(), APIBaseURL: server.URL, ClientID: "client", AccessToken: "token"}
+	auth := twitch.NewUserClient(api, twitch.RequiredChatScopes)
+	client := &twitchOutboundSender{channel: twitch.NewChannelClient(auth, "100", "100")}
+	_, err := client.Category(context.Background(), "Just Chatting")
+	if !errors.Is(err, twitch.ErrManageScope) || !strings.Contains(err.Error(), "streamchat setup twitch") || requests != 0 {
+		t.Fatalf("err=%v requests=%d", err, requests)
 	}
 }
 

@@ -295,6 +295,14 @@ func TestScreenRendersThreeFixedStatusLinesAndLiveOfflineViewers(t *testing.T) {
 	if plain = plainTerminalOutput(output.String()); !strings.Contains(plain, "Viewers:  OFFLINE") || strings.Contains(plain, "Viewers:  99") {
 		t.Fatalf("offline viewers=%q", plain)
 	}
+	output.Reset()
+	screen.SetStatus(StreamStatus{Unavailable: true})
+	plain = plainTerminalOutput(output.String())
+	for _, want := range []string{"Title:    unavailable", "Category: unavailable", "Viewers:  unavailable"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing neutral target status %q: %q", want, plain)
+		}
+	}
 }
 
 func TestScreenRendersLocalDateAndTimeAtRightEdge(t *testing.T) {

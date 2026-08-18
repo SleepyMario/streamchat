@@ -28,13 +28,13 @@ func TestAuthorizationURLStateScopesAndPKCE(t *testing.T) {
 }
 
 func TestTwitchChatAuthorizationScopes(t *testing.T) {
-	u, err := AuthorizationURL(Request{AuthorizeURL: "https://id.twitch.tv/oauth2/authorize", ClientID: "client", RedirectURI: "http://localhost:8790/oauth/twitch/callback", Scopes: []string{"user:read:chat", "user:write:chat"}}, "state", "")
+	u, err := AuthorizationURL(Request{AuthorizeURL: "https://id.twitch.tv/oauth2/authorize", ClientID: "client", RedirectURI: "http://localhost:8790/oauth/twitch/callback", Scopes: []string{"user:read:chat", "user:write:chat", "channel:manage:broadcast"}}, "state", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	q, _ := url.Parse(u)
 	scope := q.Query().Get("scope")
-	if scope != "user:read:chat user:write:chat" || strings.Contains(scope, "moderator") || strings.Contains(scope, "channel:") || strings.Contains(scope, "user:bot") {
+	if scope != "user:read:chat user:write:chat channel:manage:broadcast" || strings.Contains(scope, "moderator") || strings.Contains(scope, "channel:bot") || strings.Contains(scope, "user:bot") {
 		t.Fatalf("scope %q", scope)
 	}
 }

@@ -109,26 +109,27 @@ func TestKickOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 	}
 }
 
-func TestTwitchOAuthScopesIncludeOnlyReadAndWriteChat(t *testing.T) {
-	want := []string{twitch.ReadChatScope, twitch.WriteChatScope}
-	if !reflect.DeepEqual(twitch.RequiredChatScopes, want) {
-		t.Fatalf("scopes=%v want=%v", twitch.RequiredChatScopes, want)
+func TestTwitchOAuthScopesIncludeOnlyChatAndBroadcastManagement(t *testing.T) {
+	want := []string{twitch.ReadChatScope, twitch.WriteChatScope, twitch.ManageBroadcastScope}
+	if !reflect.DeepEqual(twitch.SetupScopes, want) {
+		t.Fatalf("scopes=%v want=%v", twitch.SetupScopes, want)
 	}
 }
 
-func TestTwitchInstructionsExplainReadWriteReauthorization(t *testing.T) {
+func TestTwitchInstructionsExplainChatAndBroadcastManagementReauthorization(t *testing.T) {
 	text := twitchInstructions(config.Defaults())
 	for _, want := range []string{
 		"http://localhost:8790/oauth/twitch/callback",
-		"exactly user:read:chat and user:write:chat",
-		"receive channel.chat.message events and send chat messages",
+		"exactly user:read:chat, user:write:chat, and channel:manage:broadcast",
+		"receive channel.chat.message events, send chat messages, and update the authenticated broadcaster's title/category",
+		"Existing chat authorizations continue to work for chat",
 		"streamchat setup twitch",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Twitch instructions missing %q:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"moderator:", "channel:bot", "user:bot", "channel:manage"} {
+	for _, unwanted := range []string{"moderator:", "channel:bot", "user:bot", "channel:manage:moderators"} {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("Twitch instructions contain unrelated scope %q:\n%s", unwanted, text)
 		}

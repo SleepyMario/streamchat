@@ -54,8 +54,9 @@ type Session struct {
 	targets          map[string]registeredTarget
 	canonical        map[string]registeredTarget
 	controls         map[string]Control
+	targetControls   map[string]map[string]Control
 	selected         string
-	selectionChanged func(string)
+	selectionChanged []func(string)
 }
 
 func New(targets map[string]Sender) *Session {
@@ -68,7 +69,7 @@ func New(targets map[string]Sender) *Session {
 }
 
 func NewTargets(targets ...Target) *Session {
-	s := &Session{targets: make(map[string]registeredTarget), canonical: make(map[string]registeredTarget), controls: make(map[string]Control)}
+	s := &Session{targets: make(map[string]registeredTarget), canonical: make(map[string]registeredTarget), controls: make(map[string]Control), targetControls: make(map[string]map[string]Control)}
 	for _, target := range targets {
 		name := normalizeTarget(target.Name)
 		if name == "" || target.Sender == nil {
@@ -87,6 +88,20 @@ func NewTargets(targets ...Target) *Session {
 
 func (s *Session) RegisterControl(command string, control Control) {
 	s.controls[strings.TrimPrefix(command, "/")] = control
+}
+
+// RegisterTargetControl dispatches a shared command through the currently
+// selected provider without introducing provider-specific command syntax.
+func (s *Session) RegisterTargetControl(command, target string, control Control) {
+	command = strings.TrimPrefix(command, "/")
+	target = normalizeTarget(target)
+	if command == "" || target == "" || control == nil {
+		return
+	}
+	if s.targetControls[command] == nil {
+		s.targetControls[command] = make(map[string]Control)
+	}
+	s.targetControls[command][target] = control
 }
 
 // Handle selects a registered slash-command target and optionally sends the
@@ -112,6 +127,20 @@ func (s *Session) Process(ctx context.Context, line string) (string, error) {
 				if errors.Is(err, ErrShutdownRequested) {
 					return "", err
 				}
+				return "", &ControlError{Err: err}
+			}
+			return result, nil
+		}
+		if controls, ok := s.targetControls[command]; ok {
+			if s.selected == "" {
+				return "", &ControlError{Err: errors.New("select /kick or /twitch before /" + command)}
+			}
+			control, available := controls[s.selected]
+			if !available {
+				return "", &ControlError{Err: errors.New("/" + command + " is unavailable for the selected target")}
+			}
+			result, err := control.Execute(ctx, message)
+			if err != nil {
 				return "", &ControlError{Err: err}
 			}
 			return result, nil
@@ -148,7 +177,16 @@ func (s *Session) Restore(name string) bool {
 }
 
 func (s *Session) SetSelectionChanged(callback func(string)) {
-	s.selectionChanged = callback
+	s.selectionChanged = nil
+	if callback != nil {
+		s.selectionChanged = append(s.selectionChanged, callback)
+	}
+}
+
+func (s *Session) AddSelectionChanged(callback func(string)) {
+	if callback != nil {
+		s.selectionChanged = append(s.selectionChanged, callback)
+	}
 }
 
 func (s *Session) selectTarget(name string) {
@@ -156,8 +194,8 @@ func (s *Session) selectTarget(name string) {
 		return
 	}
 	s.selected = name
-	if s.selectionChanged != nil {
-		s.selectionChanged(name)
+	for _, callback := range s.selectionChanged {
+		callback(name)
 	}
 }
 

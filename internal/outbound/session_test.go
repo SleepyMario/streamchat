@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -167,5 +168,51 @@ func TestKickControlsParseArgumentsAndNeverBecomeChat(t *testing.T) {
 	}
 	if !reflect.DeepEqual(kick.messages, []string{"hello"}) {
 		t.Fatalf("existing /kick behavior changed: %v", kick.messages)
+	}
+}
+
+func TestTargetControlsDispatchThroughSelectedProvider(t *testing.T) {
+	kickSender := &recordingSender{}
+	twitchSender := &recordingSender{}
+	kickTitle := &recordingControl{result: "kick title"}
+	twitchTitle := &recordingControl{result: "twitch title"}
+	s := NewTargets(
+		Target{Name: "kick", Aliases: []string{"kick"}, Sender: kickSender},
+		Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: twitchSender},
+	)
+	s.RegisterTargetControl("title", "kick", kickTitle)
+	s.RegisterTargetControl("title", "twitch", twitchTitle)
+	if _, err := s.Process(context.Background(), "/title no target"); err == nil || !strings.Contains(err.Error(), "select /kick or /twitch") {
+		t.Fatalf("missing-target error=%v", err)
+	}
+	if err := s.Handle(context.Background(), "/twitch"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Process(context.Background(), "/title Twitch title")
+	if err != nil || result != "twitch title" {
+		t.Fatalf("result=%q err=%v", result, err)
+	}
+	if err = s.Handle(context.Background(), "/kick"); err != nil {
+		t.Fatal(err)
+	}
+	result, err = s.Process(context.Background(), "/title Kick title")
+	if err != nil || result != "kick title" {
+		t.Fatalf("result=%q err=%v", result, err)
+	}
+	if !reflect.DeepEqual(twitchTitle.arguments, []string{"Twitch title"}) || !reflect.DeepEqual(kickTitle.arguments, []string{"Kick title"}) {
+		t.Fatalf("twitch=%v kick=%v", twitchTitle.arguments, kickTitle.arguments)
+	}
+}
+
+func TestSelectionChangeSupportsPersistenceAndStatusObservers(t *testing.T) {
+	s := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: &recordingSender{}})
+	var persisted, status []string
+	s.SetSelectionChanged(func(target string) { persisted = append(persisted, target) })
+	s.AddSelectionChanged(func(target string) { status = append(status, target) })
+	if err := s.Handle(context.Background(), "/kick"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persisted, []string{"kick"}) || !reflect.DeepEqual(status, []string{"kick"}) {
+		t.Fatalf("persisted=%v status=%v", persisted, status)
 	}
 }

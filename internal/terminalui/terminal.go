@@ -49,6 +49,7 @@ type StreamStatus struct {
 	Category    string
 	ViewerCount int
 	Live        bool
+	Unavailable bool
 }
 
 type Screen struct {
@@ -483,7 +484,7 @@ func (s *Screen) drawInputLocked(width, height int) error {
 
 func (s *Screen) drawStatusLocked(width, height int) error {
 	values := []string{"unavailable", "unavailable", "unavailable"}
-	if s.known {
+	if s.known && !s.status.Unavailable {
 		values[0] = statusValue(s.status.Title)
 		values[1] = statusValue(s.status.Category)
 		if s.status.Live {

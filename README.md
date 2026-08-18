@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat `v0.1.0-beta.1` is the first public beta, focused on Kick. Kick remains the beta-complete path, and post-beta main development now includes core Twitch chat ingestion, archive/relay, outbound sending, and target persistence. YouTube remains preliminary. Streamchat uses only documented official platform APIs.
+Streamchat `v0.1.0-beta.1` is the first public beta, focused on Kick. Kick remains the beta-complete path, and post-beta main development now includes Twitch chat ingestion, archive/relay, outbound sending, target persistence, status, and title/category controls. YouTube remains preliminary. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
@@ -17,7 +17,7 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 | --- | --- | --- | --- |
 | YouTube | A restricted API key for local public-chat mode, or a Desktop-app OAuth client for unattended server mode | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` or `streamchat setup youtube-server` |
 | Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe chat:write channel:write`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
-| Twitch | A Twitch app Client ID and Client Secret, a browser-created user access/refresh token with exactly `user:read:chat user:write:chat`, and a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [EventSub chat authentication](https://dev.twitch.tv/docs/chat/authenticating/) | `streamchat setup twitch` |
+| Twitch | A Twitch app Client ID and Client Secret, a browser-created user access/refresh token with exactly `user:read:chat user:write:chat channel:manage:broadcast`, and a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [EventSub chat authentication](https://dev.twitch.tv/docs/chat/authenticating/) | `streamchat setup twitch` |
 
 No real-looking credentials are included in this repository.
 
@@ -52,14 +52,16 @@ The selection-and-send shorthand is:
 
 `/kick` and `/twitch` select the current outbound target. A message on the same command line is sent immediately; subsequent plain lines keep using that target until another target is selected. Streamchat stores the canonical target name (`kick` or `twitch`) in `${XDG_STATE_HOME:-$HOME/.local/state}/streamchat/client.json` and restores it on the next `streamchat run` only when that sender is currently available. Missing, invalid, or unavailable saved targets fall back to `[NONE] >`; before a target is selected, plain text is not sent. The state file contains no credentials. Successful sends rely on the normal incoming provider event for display rather than printing a separate local echo.
 
-Basic channel controls currently target Kick only and are independent of `/kick` selection:
+Basic channel controls follow the selected Kick or Twitch outbound target:
 
 ```text
 /title New stream title
 /category Just Chatting
 ```
 
-`/title` updates the authenticated Kick channel after Kick confirms the request. `/category` accepts a positive numeric category ID or searches official Kick categories by name. A single case-insensitive exact match is preferred, a sole search result is accepted, and multiple plausible results are listed with IDs without changing the category.
+`/title` and `/category` follow the selected outbound target. Kick behavior is unchanged. Twitch updates require the authorized user to own the selected channel and to have `channel:manage:broadcast`; older Twitch read/write-chat authorizations continue to receive and send chat but management commands ask you to rerun `streamchat setup twitch`.
+
+`/category` accepts a positive numeric provider category ID or searches the selected provider's official category API. Kick keeps its existing matching policy. Twitch validates numeric IDs with `GET /helix/games`; name searches use `GET /helix/search/categories?first=100` and accept only one case-insensitive exact canonical name. Non-exact or multiple results are listed with IDs, without changing the channel, so Streamchat never guesses from Twitch's broad substring matches.
 
 Basic moderation controls also currently target Kick only and are independent of `/kick` selection:
 
@@ -110,7 +112,7 @@ Exit the interactive client cleanly with either command:
 
 Both commands work regardless of the selected outbound target, are never sent to chat, and apply only to `streamchat run`. They cancel active adapters so relay/WebSocket connections use their normal shutdown path before the client exits successfully.
 
-When standard input and output are terminals, `streamchat run` uses the terminal's alternate screen with three fixed Kick status lines at the top, scrolling chat in the middle, and a persistent single-line input bar at the bottom:
+When standard input and output are terminals, `streamchat run` uses the terminal's alternate screen with three fixed target-aware status lines at the top, scrolling chat in the middle, and a persistent single-line input bar at the bottom:
 
 ```text
 Title:    Current stream title                         2026-08-15
@@ -122,7 +124,7 @@ chat
 [KICK] >
 ```
 
-Status is fetched immediately from Kick's official authenticated channel endpoint, refreshed every 30 seconds, and refreshed after successful `/title` and `/category` commands. The interactive client shows its local date and time at the right edge and updates them once per minute. Offline streams show `Viewers:  OFFLINE`; until the first successful fetch, all three values show `unavailable`. Transient refresh failures preserve the previous status.
+The header follows the selected outbound target: `/kick` uses Kick status and `/twitch` combines Twitch `GET /helix/channels` title/category data with `GET /helix/streams` live/viewer data. A restored target selects its provider at startup. Target changes clear the old provider's data and trigger an immediate fetch; one generation-checked refresher prevents a slower response from the previous provider from overwriting the new selection. Status also refreshes every 30 seconds and after successful `/title` or `/category` commands. Offline streams show `Viewers:  OFFLINE` without inventing a count. With no status-capable target, all three values show `unavailable`; transient failures do not destroy the terminal UI.
 
 The input starts as `[KICK] >` or `[TW] >` when that saved target is restored; otherwise it starts as `[NONE] >` and changes after `/kick` or `/twitch`. Incoming messages are confined between the fixed separators without discarding the current input or cursor position. Provider-neutral author roles appear as temporary letter badges in `[B][M][P][V][O][S][F]` order; raw provider badges remain in the normalized message data. `/clean` redraws only the chat region while retaining status, separators, and input. Basic Unicode insertion, Backspace, Left/Right, Home/End, Enter, Ctrl-C, and Ctrl-D are supported; long input scrolls horizontally to keep the cursor visible.
 
@@ -199,7 +201,7 @@ The browser flow uses the loopback callback `http://127.0.0.1:8791`, PKCE, and o
 
 Google’s official `liveChatMessages.streamList` HTTP transport supplies live messages and a continuation token. Streamchat reconnects with that token after recoverable failures and waits between broadcasts so the service can remain running continuously.
 
-To enable server-side Twitch ingestion, run `streamchat setup twitch --config /etc/streamchat/config.json`, authorize exactly `user:read:chat` and `user:write:chat`, and choose the channel. The server resolves the channel with `GET /helix/users`, subscribes to `channel.chat.message` version 1, follows EventSub reconnect URLs without creating a duplicate subscription, and keeps Kick/relay running if Twitch later stops with a terminal provider error.
+To enable server-side Twitch ingestion, run `streamchat setup twitch --config /etc/streamchat/config.json`, authorize exactly `user:read:chat`, `user:write:chat`, and `channel:manage:broadcast`, and choose the channel. The management scope is used only by the interactive client; `streamchat serve` remains read-only apart from chat ingestion. The server resolves the channel with `GET /helix/users`, subscribes to `channel.chat.message` version 1, follows EventSub reconnect URLs without creating a duplicate subscription, and keeps Kick/relay running if Twitch later stops with a terminal provider error.
 
 Start it with:
 
@@ -234,7 +236,7 @@ streamchat run
 
 The client sends the relay token only in the WebSocket `Authorization: Bearer` header, never in the URL. When a remote server URL is configured, `run` consumes relayed Kick, YouTube, and Twitch messages and does not start duplicate local adapters. The legacy standalone adapters remain available when no relay is configured.
 
-Kick chatback and channel controls require the interactive machine's config to contain the Kick OAuth credentials and broadcaster ID created by `streamchat setup kick`. Twitch chatback similarly requires `streamchat setup twitch` in the interactive machine's config. Provider credentials are used only for direct official API requests and are never sent to the Streamchat server or relay.
+Kick chatback and channel controls require the interactive machine's config to contain the Kick OAuth credentials and broadcaster ID created by `streamchat setup kick`. Twitch chatback, status, and channel controls similarly require `streamchat setup twitch` in the interactive machine's config. Provider credentials are used only for direct official API requests and are never sent to the Streamchat server or relay. The headless server never changes a Twitch title or category.
 
 The archive defaults to `/var/lib/streamchat/streamchat.db`. The example systemd unit uses `StateDirectory=streamchat`, so systemd creates that private writable directory for the dedicated `streamchat` account despite the read-only filesystem sandbox. Verify ingestion without installing the `sqlite3` CLI:
 
@@ -290,9 +292,9 @@ Webhook verification remains fail-closed. Streamchat verifies Kick's RSA/SHA-256
 
 The wizard asks the user to register the displayed localhost redirect URI in the [Twitch Developer Console](https://dev.twitch.tv/console/apps). It then opens the Twitch authorization page and always prints the URL as a fallback. The callback binds only to loopback, validates a cryptographically random OAuth state value, and exchanges the returned code for access and refresh tokens.
 
-Streamchat requests exactly `user:read:chat` and `user:write:chat`: the first authorizes `channel.chat.message` version 1, and the second authorizes `POST /helix/chat/messages`. It does not request moderation, `user:bot`, `channel:bot`, or broadcaster-management permissions. Existing read-only authorizations are insufficient for sending and produce a clear instruction to rerun `streamchat setup twitch`. Streamchat validates tokens, stores rotated refresh tokens, and resolves channel names to numeric IDs through `GET /helix/users`.
+Streamchat requests exactly `user:read:chat`, `user:write:chat`, and `channel:manage:broadcast`: the first authorizes `channel.chat.message` version 1, the second authorizes `POST /helix/chat/messages`, and the third authorizes title/category changes through `PATCH /helix/channels`. It does not request moderation, `user:bot`, `channel:bot`, or other broadcaster-management permissions. Existing read/write-chat authorizations remain valid for chat; only title/category controls require reauthorization. Streamchat validates tokens, stores rotated refresh tokens, and resolves channel names to numeric IDs through `GET /helix/users`.
 
-The reused adapter handles welcome, notification, keepalive, reconnect, revocation, duplicate delivery, and shutdown. Server mode sends its normalized messages through the same archive/relay channel as Kick and YouTube; relay clients do not start another local Twitch subscriber. Before connecting, Streamchat validates the token and refreshes and atomically persists it when required. Twitch broadcaster, moderator, partner, VIP, and subscriber badges map only when supplied by Twitch. Outbound sends include the resolved broadcaster ID and authenticated sender ID, refresh and retry once after an expired-token response, and report authorization, rate-limit, rejection, and network failures without exposing credentials.
+The reused adapter handles welcome, notification, keepalive, reconnect, revocation, duplicate delivery, and shutdown. Server mode sends its normalized messages through the same archive/relay channel as Kick and YouTube; relay clients do not start another local Twitch subscriber. Before connecting, Streamchat validates the token and refreshes and atomically persists it when required. Twitch broadcaster, moderator, partner, VIP, and subscriber badges map only when supplied by Twitch. One serialized interactive user-token client now shares refresh, persistence, and one-retry behavior across chat sends, status reads, and channel controls. Twitch requires the `broadcaster_id` on `PATCH /helix/channels` to equal the user ID in the access token; Streamchat rejects a known mismatch locally and does not claim moderator ownership. Errors report authentication, missing scope, ownership, rate-limit, rejection, and network failures without exposing credentials.
 
 ## Configuration and security
 

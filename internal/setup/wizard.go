@@ -332,7 +332,7 @@ func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {
 	if err != nil {
 		return err
 	}
-	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Twitch.OAuthBaseURL, "/") + "/authorize", ClientID: c.Twitch.ClientID, RedirectURI: c.Twitch.RedirectURI, Scopes: twitch.RequiredChatScopes}, w.Out, w.OpenBrowser)
+	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Twitch.OAuthBaseURL, "/") + "/authorize", ClientID: c.Twitch.ClientID, RedirectURI: c.Twitch.RedirectURI, Scopes: twitch.SetupScopes}, w.Out, w.OpenBrowser)
 	if err != nil {
 		return err
 	}
@@ -346,7 +346,7 @@ func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if err = twitch.RequireScopes(id.Scopes, twitch.RequiredChatScopes...); err != nil {
+	if err = twitch.RequireScopes(id.Scopes, twitch.SetupScopes...); err != nil {
 		return err
 	}
 	c.Twitch.AccessToken = tok.AccessToken
@@ -372,9 +372,9 @@ func twitchInstructions(c config.Config) string {
 2. Add this exact OAuth redirect URI:
    ` + c.Twitch.RedirectURI + `
 3. The Client ID identifies your app. The Client Secret authenticates the local authorization-code exchange and must remain private.
-4. Your browser will ask for exactly user:read:chat and user:write:chat. These allow Streamchat to receive channel.chat.message events and send chat messages. Streamchat stores the user access token and refresh token privately and refreshes authorization when required.
+4. Your browser will ask for exactly user:read:chat, user:write:chat, and channel:manage:broadcast. These allow Streamchat to receive channel.chat.message events, send chat messages, and update the authenticated broadcaster's title/category. Streamchat stores the user access token and refresh token privately and refreshes authorization when required.
 
-The Twitch account you authorize is the identity Streamchat reads and sends chat as. Channel names are resolved to numeric IDs automatically. Existing read-only authorizations must be replaced by rerunning streamchat setup twitch.`
+The Twitch account you authorize is the identity Streamchat reads and sends chat as. Channel names are resolved to numeric IDs automatically. Existing chat authorizations continue to work for chat, but title/category controls require reauthorization by rerunning streamchat setup twitch.`
 }
 
 func ParsePlatforms(args []string) ([]string, error) {
