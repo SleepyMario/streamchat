@@ -43,19 +43,21 @@ var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
 const usage = `Streamchat is a public beta focused on Kick.
-Kick is beta-complete. YouTube and Twitch support remains preliminary.
+Kick is beta-complete. Core Twitch chat support is available; YouTube remains preliminary.
 
 Start here:
   streamchat setup                 Configure one or more services interactively
   streamchat run                   Read all configured chat targets
 
 Server/client mode:
-  streamchat serve                 Ingest, archive, and relay Kick/YouTube chat
+  streamchat serve                 Ingest, archive, and relay Kick/YouTube/Twitch chat
   streamchat run                   Connect to the configured Streamchat server
 
 Interactive commands:
   /kick                            Select Kick as the outbound target
   /kick hello                      Select Kick and send "hello"
+  /twitch                          Select Twitch as the outbound target
+  /twitch hello                    Select Twitch and send "hello"
   hello                            Send to the selected target
   /title New stream title          Update the Kick stream title
   /category Just Chatting          Update the Kick stream category
@@ -310,11 +312,6 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 	if e = c.Validate(validationMode); e != nil {
 		return e
 	}
-	if mode == "run" && c.Twitch.ClientID != "" && c.Twitch.AccessToken != "" {
-		if e = prepareTwitch(ctx, &c, o.config); e != nil {
-			return e
-		}
-	}
 	r := platformreg.Default()
 	explicit := map[string]bool{}
 	if mode != "run" {
@@ -331,7 +328,7 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			}
 			continue
 		}
-		if mode == "run" && c.Client.ServerURL != "" && (d.Name == "kick" || d.Name == "youtube") {
+		if mode == "run" && c.Client.ServerURL != "" && (d.Name == "kick" || d.Name == "youtube" || d.Name == "twitch") {
 			continue
 		}
 		if d.TargetPrompt != "" && d.Target(c) == "" {
@@ -345,14 +342,33 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			}
 		}
 	}
+	var twitchSession *twitchRuntime
+	var twitchPrepareErr error
+	if mode == "run" && c.Twitch.ClientID != "" && (c.Twitch.AccessToken != "" || c.Twitch.RefreshToken != "") && c.Twitch.Channel != "" {
+		if twitchSession, twitchPrepareErr = prepareTwitch(ctx, &c, o.config); twitchPrepareErr != nil {
+			fmt.Fprintf(errw, "Twitch unavailable; continuing with other configured inputs: %s\n", safeError(twitchPrepareErr))
+		}
+	}
 	adapters, e := r.Select(&c, explicit)
 	if e != nil {
 		return e
+	}
+	if twitchPrepareErr != nil {
+		available := adapters[:0]
+		for _, adapter := range adapters {
+			if adapter.Name() != "twitch" {
+				available = append(available, adapter)
+			}
+		}
+		adapters = available
 	}
 	if mode == "run" && c.Client.ServerURL != "" {
 		adapters = useRemoteServer(adapters, c)
 	}
 	if len(adapters) == 0 {
+		if twitchPrepareErr != nil {
+			return twitchPrepareErr
+		}
 		return errors.New("no runnable chat target is configured. Run 'streamchat setup', configure client.server_url, or supply --youtube-video/--twitch-channel")
 	}
 	var input io.Reader
@@ -364,13 +380,29 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			input = &terminalInput{Reader: reader, file: inputFile}
 		}
 		kickClient := &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}}
+		twitchAPI := newTwitchAPI(&c, o.config)
+		twitchBroadcasterID := ""
+		var twitchScopes []string
+		if twitchSession != nil {
+			twitchBroadcasterID = twitchSession.Channel.ID
+			twitchScopes = twitchSession.Identity.Scopes
+		}
+		twitchClient := twitch.NewChatSender(twitchAPI, twitchBroadcasterID, c.Twitch.UserID, twitchScopes)
 		status = kickClient
-		targets = outbound.NewTargets(outbound.Target{
-			Name:        "kick",
-			Aliases:     []string{"kick"},
-			Sender:      kickClient,
-			Unavailable: c.Kick.BroadcasterID == "" || (c.Kick.AccessToken == "" && c.Kick.RefreshToken == ""),
-		})
+		targets = outbound.NewTargets(
+			outbound.Target{
+				Name:        "kick",
+				Aliases:     []string{"kick"},
+				Sender:      kickClient,
+				Unavailable: c.Kick.BroadcasterID == "" || (c.Kick.AccessToken == "" && c.Kick.RefreshToken == ""),
+			},
+			outbound.Target{
+				Name:        "twitch",
+				Aliases:     []string{"twitch"},
+				Sender:      twitchClient,
+				Unavailable: twitchSession == nil,
+			},
+		)
 		registerRetiredTargetCommands(targets)
 		if state, stateErr := clientstate.Default(); stateErr == nil {
 			configureOutboundState(targets, state)
@@ -409,7 +441,7 @@ func registerRetiredTargetCommands(targets *outbound.Session) {
 func useRemoteServer(adapters []chat.Adapter, c config.Config) []chat.Adapter {
 	local := adapters[:0]
 	for _, adapter := range adapters {
-		if adapter.Name() != "kick" && adapter.Name() != "youtube" {
+		if adapter.Name() != "kick" && adapter.Name() != "youtube" && adapter.Name() != "twitch" {
 			local = append(local, adapter)
 		}
 	}
@@ -449,6 +481,21 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.Run(serverCtx, messages) }()
 
+	twitchEnabled := c.Twitch.ClientID != "" && c.Twitch.Channel != "" && (c.Twitch.AccessToken != "" || c.Twitch.RefreshToken != "")
+	var twitchErr <-chan error
+	if twitchEnabled {
+		runtime, prepareErr := prepareTwitch(serverCtx, &c, o.config)
+		if prepareErr != nil {
+			fmt.Fprintf(out, "Twitch server ingestion unavailable: %s\n", safeError(prepareErr))
+		} else {
+			api := newTwitchAPI(&c, o.config)
+			tw := twitch.New(api, c.Twitch.WebSocketURL, c.Twitch.Channel, runtime.Identity.UserID)
+			ch := make(chan error, 1)
+			twitchErr = ch
+			go func() { ch <- tw.Run(serverCtx, messages) }()
+		}
+	}
+
 	youtubeEnabled := c.YouTube.RefreshToken != "" || (c.YouTube.VideoID != "" && (c.YouTube.APIKey != "" || c.YouTube.AccessToken != ""))
 	var youtubeErr <-chan error
 	if youtubeEnabled {
@@ -475,20 +522,36 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	if youtubeEnabled {
 		fmt.Fprintln(out, "YouTube server ingestion enabled (active broadcast discovery + streamList).")
 	}
-	select {
-	case <-ctx.Done():
-		cancel()
-		<-serverErr
-		return nil
-	case err = <-serverErr:
-		return err
-	case err = <-youtubeErr:
-		cancel()
-		<-serverErr
-		if err == nil {
-			return errors.New("YouTube server ingestion stopped unexpectedly")
+	if twitchErr != nil {
+		fmt.Fprintln(out, "Twitch server ingestion enabled (EventSub channel.chat.message v1).")
+	}
+	return waitForServer(ctx, cancel, serverErr, youtubeErr, twitchErr, out)
+}
+
+func waitForServer(ctx context.Context, cancel context.CancelFunc, serverErr, youtubeErr, twitchErr <-chan error, out io.Writer) error {
+	var err error
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-serverErr
+			return nil
+		case err = <-serverErr:
+			return err
+		case err = <-youtubeErr:
+			cancel()
+			<-serverErr
+			if err == nil {
+				return errors.New("YouTube server ingestion stopped unexpectedly")
+			}
+			return fmt.Errorf("YouTube server ingestion: %w", err)
+		case err = <-twitchErr:
+			twitchErr = nil
+			if err == nil {
+				err = errors.New("stopped unexpectedly")
+			}
+			fmt.Fprintf(out, "Twitch server ingestion stopped; Kick and relay remain active: %s\n", safeError(err))
 		}
-		return fmt.Errorf("YouTube server ingestion: %w", err)
 	}
 }
 
@@ -1328,46 +1391,86 @@ func subscribe(ctx context.Context, args []string, out io.Writer) error {
 	return e
 }
 
-func prepareTwitch(ctx context.Context, c *config.Config, path string) error {
-	api := &twitch.API{HTTP: &http.Client{Timeout: 20 * time.Second}, APIBaseURL: c.Twitch.APIBaseURL, OAuthBaseURL: c.Twitch.OAuthBaseURL, ClientID: c.Twitch.ClientID, ClientSecret: c.Twitch.ClientSecret, AccessToken: c.Twitch.AccessToken}
-	refresh := !c.Twitch.TokenExpiry.IsZero() && time.Until(c.Twitch.TokenExpiry) < time.Minute
+type twitchRuntime struct {
+	Identity twitch.Identity
+	Channel  twitch.User
+}
+
+func newTwitchAPI(c *config.Config, path string) *twitch.API {
+	api := &twitch.API{
+		HTTP:         &http.Client{Timeout: 20 * time.Second},
+		APIBaseURL:   c.Twitch.APIBaseURL,
+		OAuthBaseURL: c.Twitch.OAuthBaseURL,
+		ClientID:     c.Twitch.ClientID,
+		ClientSecret: c.Twitch.ClientSecret,
+		AccessToken:  c.Twitch.AccessToken,
+		RefreshToken: c.Twitch.RefreshToken,
+	}
+	api.OnToken = func(tok twitch.Token) error {
+		c.Twitch.AccessToken = tok.AccessToken
+		if tok.RefreshToken != "" {
+			c.Twitch.RefreshToken = tok.RefreshToken
+		}
+		c.Twitch.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+		if os.Getenv("STREAMCHAT_TWITCH_ACCESS_TOKEN") != "" || os.Getenv("STREAMCHAT_TWITCH_REFRESH_TOKEN") != "" {
+			return nil
+		}
+		return persistTwitchTokens(path, c.Twitch)
+	}
+	return api
+}
+
+func prepareTwitch(ctx context.Context, c *config.Config, path string) (*twitchRuntime, error) {
+	api := newTwitchAPI(c, path)
+	refresh := c.Twitch.AccessToken == "" || (!c.Twitch.TokenExpiry.IsZero() && time.Until(c.Twitch.TokenExpiry) < time.Minute)
+	var identity twitch.Identity
 	if !refresh {
-		if identity, err := api.ValidateToken(ctx); err != nil {
+		var err error
+		if identity, err = api.ValidateToken(ctx); err != nil {
 			var ae *chat.AdapterError
 			if errors.As(err, &ae) && ae.Kind == chat.Authentication {
 				refresh = true
 			} else {
-				return err
+				return nil, err
 			}
 		} else {
-			c.Twitch.UserID = identity.UserID
-			c.Twitch.UserLogin = identity.Login
+			if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredChatScopes...); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if !refresh {
-		return nil
-	}
-	if c.Twitch.RefreshToken == "" {
-		return errors.New("Twitch authorization expired and no refresh token is stored. Run: streamchat setup twitch")
-	}
-	tok, err := api.Refresh(ctx, c.Twitch.RefreshToken)
-	if err != nil {
-		return err
-	}
-	c.Twitch.AccessToken = tok.AccessToken
-	c.Twitch.RefreshToken = tok.RefreshToken
-	c.Twitch.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
-	api.AccessToken = tok.AccessToken
-	identity, err := api.ValidateToken(ctx)
-	if err != nil {
-		return err
+	if refresh {
+		if c.Twitch.RefreshToken == "" {
+			return nil, errors.New("Twitch authorization expired and no refresh token is stored. Run: streamchat setup twitch")
+		}
+		tok, err := api.Refresh(ctx, c.Twitch.RefreshToken)
+		if err != nil {
+			return nil, err
+		}
+		api.AccessToken = tok.AccessToken
+		if tok.RefreshToken != "" {
+			api.RefreshToken = tok.RefreshToken
+		}
+		if api.OnToken != nil {
+			if err = api.OnToken(tok); err != nil {
+				return nil, err
+			}
+		}
+		identity, err = api.ValidateToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredChatScopes...); err != nil {
+			return nil, err
+		}
 	}
 	c.Twitch.UserID = identity.UserID
 	c.Twitch.UserLogin = identity.Login
-	if os.Getenv("STREAMCHAT_TWITCH_ACCESS_TOKEN") == "" {
-		return persistTwitchTokens(path, c.Twitch)
+	channel, err := api.User(ctx, c.Twitch.Channel)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return &twitchRuntime{Identity: identity, Channel: channel}, nil
 }
 
 func persistTwitchTokens(path string, v config.Twitch) error {

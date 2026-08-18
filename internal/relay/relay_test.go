@@ -20,6 +20,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
+	"github.com/SleepyMario/streamchat/internal/platform/twitch"
 	"github.com/gorilla/websocket"
 )
 
@@ -56,6 +57,53 @@ func TestPersistenceAndRelayUseSameMessage(t *testing.T) {
 	stats, err := store.Stats(context.Background())
 	if err != nil || stats.Total != 1 {
 		t.Fatalf("archive stats %+v, %v", stats, err)
+	}
+}
+
+func TestKickAndTwitchShareArchiveAndRelayPipeline(t *testing.T) {
+	store, err := archive.Open(filepath.Join(t.TempDir(), "streamchat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := NewServer("", "/relay", testToken, nil)
+	server.Accept = store.Store
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	conn, _, err := connect(t, websocketURL(httpServer.URL), testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	waitFor(t, func() bool { return server.hub.count() == 1 })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	messages := make(chan chat.Message, 2)
+	done := make(chan error, 1)
+	go func() { done <- server.forward(ctx, messages) }()
+	kickMessage := testMessage("kick-concurrent")
+	_, parsedTwitch, err := twitch.ParseEvent([]byte(`{"metadata":{"message_id":"delivery","message_type":"notification","message_timestamp":"2026-08-19T00:00:00Z","subscription_type":"channel.chat.message","subscription_version":"1"},"payload":{"event":{"broadcaster_user_id":"channel","broadcaster_user_name":"Channel","broadcaster_user_login":"channel","chatter_user_id":"viewer-id","chatter_user_name":"viewer","chatter_user_login":"viewer","message_id":"twitch-concurrent","badges":[],"message":{"text":"hello from Twitch","fragments":[{"type":"text","text":"hello from Twitch"}]}}}}`))
+	if err != nil || parsedTwitch == nil {
+		t.Fatalf("parse Twitch event=%+v err=%v", parsedTwitch, err)
+	}
+	twitchMessage := *parsedTwitch
+	go func() { messages <- kickMessage }()
+	go func() { messages <- twitchMessage }()
+	seen := map[string]chat.Platform{}
+	for range 2 {
+		message := readMessage(t, conn)
+		seen[message.ID] = message.Platform
+	}
+	if seen[kickMessage.ID] != chat.PlatformKick || seen[twitchMessage.ID] != chat.PlatformTwitch {
+		t.Fatalf("relayed=%v", seen)
+	}
+	stats, err := store.Stats(context.Background())
+	if err != nil || stats.Total != 2 || len(stats.Platforms) != 2 {
+		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

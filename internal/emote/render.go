@@ -54,10 +54,10 @@ func FormatText(platform chat.Platform, text string, structured []chat.Emote, sa
 		appendText(string(runes[cursor:item.Start]))
 		if path, ok := resolveImage(resolve, platform, item); ok {
 			result.Images = append(result.Images, InlineImage{Path: path, Column: runewidth.StringWidth(graphical.String()), Width: inlineWidth})
-			readable.WriteString(fallback(item, sanitize))
+			readable.WriteString(fallback(platform, item, sanitize))
 			graphical.WriteString(strings.Repeat(" ", inlineWidth))
 		} else {
-			appendText(fallback(item, sanitize))
+			appendText(fallback(platform, item, sanitize))
 		}
 		cursor = item.End + 1
 	}
@@ -77,13 +77,16 @@ func resolveImage(resolve Resolver, platform chat.Platform, item chat.Emote) (st
 	return path, ok && path != ""
 }
 
-func fallback(item chat.Emote, sanitize func(string) string) string {
+func fallback(platform chat.Platform, item chat.Emote, sanitize func(string) string) string {
 	name := strings.Trim(sanitize(item.Name), " :")
 	if name == "" && item.ID != "" {
 		name = "emote-" + sanitize(item.ID)
 	}
 	if name == "" {
 		name = "emote"
+	}
+	if platform == chat.PlatformTwitch {
+		return name
 	}
 	return ":" + name + ":"
 }

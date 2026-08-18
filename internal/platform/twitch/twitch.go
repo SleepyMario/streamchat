@@ -16,8 +16,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const ReadChatScope = "user:read:chat"
-const EventType = "channel.chat.message"
+const (
+	ReadChatScope  = "user:read:chat"
+	WriteChatScope = "user:write:chat"
+	EventType      = "channel.chat.message"
+)
+
+var RequiredChatScopes = []string{ReadChatScope, WriteChatScope}
+
+var (
+	ErrWriteScope         = errors.New("Twitch authorization lacks user:write:chat; run: streamchat setup twitch")
+	ErrChatAuthentication = errors.New("Twitch chat authorization failed; run: streamchat setup twitch")
+	ErrChatRateLimit      = errors.New("Twitch chat rate limit exceeded; try again shortly")
+	ErrChatRejected       = errors.New("Twitch rejected the chat message")
+)
 
 type Token struct {
 	AccessToken  string   `json:"access_token"`
@@ -42,7 +54,7 @@ func (a *API) token(ctx context.Context, form url.Values) (Token, error) {
 		return Token{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r, err := a.HTTP.Do(req)
+	r, err := a.httpClient().Do(req)
 	if err != nil {
 		return Token{}, err
 	}
@@ -80,7 +92,7 @@ func (a *API) ValidateToken(ctx context.Context) (Identity, error) {
 		return Identity{}, err
 	}
 	req.Header.Set("Authorization", "OAuth "+a.AccessToken)
-	r, err := a.HTTP.Do(req)
+	r, err := a.httpClient().Do(req)
 	if err != nil {
 		return Identity{}, err
 	}
@@ -107,6 +119,19 @@ func (a *API) ValidateToken(ctx context.Context) (Identity, error) {
 	return Identity{v.ClientID, v.UserID, v.Login, v.Scopes, v.ExpiresIn}, nil
 }
 
+func RequireScopes(scopes []string, required ...string) error {
+	for _, scope := range required {
+		if contains(scopes, scope) {
+			continue
+		}
+		if scope == WriteChatScope {
+			return ErrWriteScope
+		}
+		return fmt.Errorf("Twitch authorization lacks %s; run: streamchat setup twitch", scope)
+	}
+	return nil
+}
+
 type User struct{ ID, Login, DisplayName string }
 
 func (a *API) User(ctx context.Context, login string) (User, error) {
@@ -117,7 +142,7 @@ func (a *API) User(ctx context.Context, login string) (User, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
 	req.Header.Set("Client-Id", a.ClientID)
-	r, err := a.HTTP.Do(req)
+	r, err := a.httpClient().Do(req)
 	if err != nil {
 		return User{}, err
 	}
@@ -183,13 +208,149 @@ func (a *API) subscribe(ctx context.Context, body []byte) (int, error) {
 	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
 	req.Header.Set("Client-Id", a.ClientID)
 	req.Header.Set("Content-Type", "application/json")
-	r, err := a.HTTP.Do(req)
+	r, err := a.httpClient().Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer r.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
 	return r.StatusCode, nil
+}
+
+func (a *API) httpClient() *http.Client {
+	if a.HTTP != nil {
+		return a.HTTP
+	}
+	return http.DefaultClient
+}
+
+type ChatSender struct {
+	API                     *API
+	BroadcasterID, SenderID string
+	Scopes                  []string
+	mu                      sync.Mutex
+}
+
+func NewChatSender(api *API, broadcasterID, senderID string, scopes []string) *ChatSender {
+	return &ChatSender{API: api, BroadcasterID: broadcasterID, SenderID: senderID, Scopes: append([]string(nil), scopes...)}
+}
+
+func (s *ChatSender) Send(ctx context.Context, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.API == nil {
+		return ErrChatAuthentication
+	}
+	if err := RequireScopes(s.Scopes, WriteChatScope); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.BroadcasterID) == "" || strings.TrimSpace(s.SenderID) == "" {
+		return errors.New("Twitch chat target is unavailable; run: streamchat setup twitch")
+	}
+	if strings.TrimSpace(message) == "" {
+		return errors.New("Twitch chat message is empty")
+	}
+	status, response, err := s.API.sendChat(ctx, s.BroadcasterID, s.SenderID, message)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusUnauthorized && s.API.RefreshToken != "" {
+		tok, refreshErr := s.API.Refresh(ctx, s.API.RefreshToken)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		s.API.AccessToken = tok.AccessToken
+		if tok.RefreshToken != "" {
+			s.API.RefreshToken = tok.RefreshToken
+		}
+		if len(tok.Scopes) > 0 {
+			s.Scopes = append(s.Scopes[:0], tok.Scopes...)
+		} else {
+			identity, validateErr := s.API.ValidateToken(ctx)
+			if validateErr != nil {
+				return validateErr
+			}
+			s.Scopes = append(s.Scopes[:0], identity.Scopes...)
+		}
+		if scopeErr := RequireScopes(s.Scopes, RequiredChatScopes...); scopeErr != nil {
+			return scopeErr
+		}
+		if s.API.OnToken != nil {
+			if persistErr := s.API.OnToken(tok); persistErr != nil {
+				return persistErr
+			}
+		}
+		status, response, err = s.API.sendChat(ctx, s.BroadcasterID, s.SenderID, message)
+		if err != nil {
+			return err
+		}
+	}
+	return chatSendResult(status, response)
+}
+
+type chatSendResponse struct {
+	Data []struct {
+		MessageID  string `json:"message_id"`
+		IsSent     bool   `json:"is_sent"`
+		DropReason *struct {
+			Code string `json:"code"`
+		} `json:"drop_reason"`
+	} `json:"data"`
+}
+
+func (a *API) sendChat(ctx context.Context, broadcasterID, senderID, message string) (int, chatSendResponse, error) {
+	body, err := json.Marshal(map[string]string{
+		"broadcaster_id": broadcasterID,
+		"sender_id":      senderID,
+		"message":        message,
+	})
+	if err != nil {
+		return 0, chatSendResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.APIBaseURL, "/")+"/chat/messages", strings.NewReader(string(body)))
+	if err != nil {
+		return 0, chatSendResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	req.Header.Set("Client-Id", a.ClientID)
+	req.Header.Set("Content-Type", "application/json")
+	r, err := a.httpClient().Do(req)
+	if err != nil {
+		return 0, chatSendResponse{}, fmt.Errorf("Twitch chat request failed: %w", err)
+	}
+	defer r.Body.Close()
+	var response chatSendResponse
+	if r.StatusCode/100 == 2 {
+		if err = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&response); err != nil {
+			return 0, chatSendResponse{}, errors.New("Twitch chat returned an invalid response")
+		}
+	} else {
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+	}
+	return r.StatusCode, response, nil
+}
+
+func chatSendResult(status int, response chatSendResponse) error {
+	switch status {
+	case http.StatusOK:
+		if len(response.Data) == 1 && response.Data[0].IsSent && response.Data[0].MessageID != "" {
+			return nil
+		}
+		if len(response.Data) == 1 && response.Data[0].DropReason != nil && response.Data[0].DropReason.Code != "" {
+			return fmt.Errorf("%w (%s)", ErrChatRejected, response.Data[0].DropReason.Code)
+		}
+		return ErrChatRejected
+	case http.StatusUnauthorized:
+		return ErrChatAuthentication
+	case http.StatusForbidden:
+		return fmt.Errorf("%w: sender is not permitted in this channel", ErrChatRejected)
+	case http.StatusTooManyRequests:
+		return ErrChatRateLimit
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w (HTTP %d)", ErrChatRejected, status)
+	default:
+		return fmt.Errorf("Twitch chat API failed (HTTP %d)", status)
+	}
 }
 
 func ParseChannel(input string) (string, error) {
@@ -321,16 +482,19 @@ func ParseEvent(b []byte) (envelope, *chat.Message, error) {
 		return v, nil, err
 	}
 	e := v.Payload.Event
-	m := chat.Message{ID: e.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: e.ChatterID, AuthorDisplayName: e.ChatterName, AuthorColor: e.Color, Text: e.Message.Text, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"twitch_login": e.ChatterLogin}}
+	m := chat.Message{ID: e.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: e.ChatterID, AuthorDisplayName: e.ChatterName, AuthorColor: e.Color, Text: e.Message.Text, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"twitch_login": e.ChatterLogin, "twitch_broadcaster_login": e.BroadcasterLogin}}
 	pos := 0
 	for _, f := range e.Message.Fragments {
 		if f.Emote != nil {
-			m.Emotes = append(m.Emotes, chat.Emote{ID: f.Emote.ID, Name: f.Text, Start: pos, End: pos + len([]rune(f.Text))})
+			length := len([]rune(f.Text))
+			if length > 0 {
+				m.Emotes = append(m.Emotes, chat.Emote{ID: f.Emote.ID, Name: f.Text, Start: pos, End: pos + length - 1})
+			}
 		}
 		pos += len([]rune(f.Text))
 	}
 	for _, b := range e.Badges {
-		m.Badges = append(m.Badges, chat.Badge{Type: b.SetID})
+		m.Badges = append(m.Badges, chat.Badge{Type: b.SetID, Text: b.ID})
 		switch strings.ToLower(strings.TrimSpace(b.SetID)) {
 		case "broadcaster":
 			m.Roles.Add(chat.RoleBroadcaster)
@@ -366,6 +530,10 @@ func (c *Client) duplicate(id string) bool {
 }
 
 func (c *Client) runSocket(ctx context.Context, conn wsConn, broadcaster string, inherited bool, out chan<- chat.Message) (string, error) {
+	return c.runSocketConnected(ctx, conn, broadcaster, inherited, out, nil)
+}
+
+func (c *Client) runSocketConnected(ctx context.Context, conn wsConn, broadcaster string, inherited bool, out chan<- chat.Message, onWelcome func()) (string, error) {
 	welcomed := false
 	keepalive := 10 * time.Second
 	for {
@@ -386,6 +554,10 @@ func (c *Client) runSocket(ctx context.Context, conn wsConn, broadcaster string,
 		switch v.Metadata.MessageType {
 		case "session_welcome":
 			welcomed = true
+			if onWelcome != nil {
+				onWelcome()
+				onWelcome = nil
+			}
 			timeout := v.Payload.Session.Keepalive
 			if timeout <= 0 {
 				timeout = 10
@@ -433,6 +605,13 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 	u := c.WebSocketURL
 	inherited := false
 	backoff := time.Second
+	var previous wsConn
+	var previousDone chan error
+	defer func() {
+		if previous != nil {
+			_ = previous.Close()
+		}
+	}()
 	for {
 		conn, err := c.Dial(ctx, u)
 		if err != nil {
@@ -442,9 +621,19 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
-			u = c.WebSocketURL
-			inherited = false
+			if !inherited {
+				u = c.WebSocketURL
+			}
 			continue
+		}
+		if inherited && previous != nil && previousDone == nil {
+			previousDone = make(chan error, 1)
+			old := previous
+			done := previousDone
+			go func() {
+				_, oldErr := c.runSocket(ctx, old, user.ID, true, out)
+				done <- oldErr
+			}()
 		}
 		closed := make(chan struct{})
 		go func() {
@@ -454,9 +643,19 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 			case <-closed:
 			}
 		}()
-		next, runErr := c.runSocket(ctx, conn, user.ID, inherited, out)
+		adopted := !inherited
+		next, runErr := c.runSocketConnected(ctx, conn, user.ID, inherited, out, func() {
+			adopted = true
+			if previous != nil {
+				_ = previous.Close()
+				previous = nil
+				previousDone = nil
+			}
+		})
 		close(closed)
-		_ = conn.Close()
+		if next == "" {
+			_ = conn.Close()
+		}
 		if errors.Is(runErr, context.Canceled) {
 			return nil
 		}
@@ -471,13 +670,20 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
-			u = c.WebSocketURL
-			inherited = false
+			if adopted {
+				u = c.WebSocketURL
+				inherited = false
+			}
 			continue
 		}
 		if next == "" {
 			return nil
 		}
+		if previous != nil {
+			_ = previous.Close()
+		}
+		previous = conn
+		previousDone = nil
 		u = next
 		inherited = true
 		backoff = time.Second

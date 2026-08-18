@@ -293,7 +293,7 @@ func ApplyEnv(c *Config, get func(string) string) {
 }
 
 func (c Config) HasUsablePlatform() bool {
-	return c.YouTube.APIKey != "" || c.YouTube.AccessToken != "" || (c.Kick.AccessToken != "" && c.Kick.WebhookURL != "") || (c.Twitch.ClientID != "" && c.Twitch.AccessToken != "") || (c.Client.ServerURL != "" && c.RelayAuthToken != "")
+	return c.YouTube.APIKey != "" || c.YouTube.AccessToken != "" || (c.Kick.AccessToken != "" && c.Kick.WebhookURL != "") || (c.Twitch.ClientID != "" && (c.Twitch.AccessToken != "" || c.Twitch.RefreshToken != "")) || (c.Client.ServerURL != "" && c.RelayAuthToken != "")
 }
 
 func (c Config) Validate(mode string) error {

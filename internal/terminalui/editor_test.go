@@ -79,8 +79,8 @@ func TestEditorUnicodeDisplayWidthWindow(t *testing.T) {
 }
 
 func TestTargetLabel(t *testing.T) {
-	if TargetLabel("") != "NONE" || TargetLabel("kick") != "KICK" || TargetLabel("yt") != "YT" {
-		t.Fatalf("labels: none=%q kick=%q youtube=%q", TargetLabel(""), TargetLabel("kick"), TargetLabel("yt"))
+	if TargetLabel("") != "NONE" || TargetLabel("kick") != "KICK" || TargetLabel("twitch") != "TW" || TargetLabel("yt") != "YT" {
+		t.Fatalf("labels: none=%q kick=%q twitch=%q youtube=%q", TargetLabel(""), TargetLabel("kick"), TargetLabel("twitch"), TargetLabel("yt"))
 	}
 }
 
@@ -105,6 +105,7 @@ func TestEditorTopLevelAutocompletePrefixes(t *testing.T) {
 	}{
 		{input: "/c", want: []string{"category", "clean", "clear"}},
 		{input: "/cl", want: []string{"clean", "clear"}},
+		{input: "/tw", want: []string{"twitch"}},
 	} {
 		editor := autocompleteEditor()
 		feed(t, &editor, test.input)

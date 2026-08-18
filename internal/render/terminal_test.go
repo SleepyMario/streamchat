@@ -137,6 +137,32 @@ func TestStructuredEmotesUseReadableTextFallbackWithoutImageBackend(t *testing.T
 	}
 }
 
+func TestTwitchRolesChatterIDsCJKAndEmoteFallbackRenderTogether(t *testing.T) {
+	allocator := chattercolor.NewAllocator()
+	formatter := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: allocator})
+	message := chat.Message{
+		Platform:          chat.PlatformTwitch,
+		AuthorID:          "twitch-user-1",
+		AuthorDisplayName: "觀眾",
+		Roles:             roles(chat.RoleBroadcaster, chat.RoleModerator, chat.RolePartner, chat.RoleVIP, chat.RoleSubscriber),
+		Text:              "你好 Kappa",
+		Emotes:            []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}},
+	}
+	first := formatter.Format(message)
+	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[TW]") || !strings.Contains(Sanitize(first.Text), "[B][M][P][V][S] 觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
+		t.Fatalf("first=%q", first.Text)
+	}
+	message.AuthorDisplayName = "renamed"
+	repeated := formatter.Format(message)
+	if !strings.HasPrefix(repeated.Text, chattercolor.Palette()[0].ANSI) {
+		t.Fatalf("Twitch chatter ID color changed: %q", repeated.Text)
+	}
+	second := formatter.Format(chat.Message{Platform: chat.PlatformTwitch, AuthorID: "twitch-user-2", AuthorDisplayName: "second", Text: "hello"})
+	if !strings.HasPrefix(second.Text, chattercolor.Palette()[1].ANSI) {
+		t.Fatalf("second Twitch chatter color=%q", second.Text)
+	}
+}
+
 type availableImageBackend struct{}
 
 func (availableImageBackend) Available() bool          { return true }

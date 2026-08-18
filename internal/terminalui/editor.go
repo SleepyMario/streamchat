@@ -297,6 +297,8 @@ func TargetLabel(command string) string {
 		return "NONE"
 	case "kick":
 		return "KICK"
+	case "twitch":
+		return "TW"
 	default:
 		return strings.ToUpper(command)
 	}

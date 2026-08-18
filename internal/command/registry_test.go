@@ -17,6 +17,7 @@ func TestStreamchatTopLevelPrefixSuggestions(t *testing.T) {
 		{prefix: "clea", want: []string{"clean", "clear"}},
 		{prefix: "b", want: []string{"ban"}},
 		{prefix: "o", want: []string{"open"}},
+		{prefix: "tw", want: []string{"twitch"}},
 	} {
 		if got := registry.Suggest(nil, test.prefix); !reflect.DeepEqual(got, test.want) {
 			t.Fatalf("prefix=%q got=%v want=%v", test.prefix, got, test.want)

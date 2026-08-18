@@ -20,6 +20,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/outbound"
+	"github.com/SleepyMario/streamchat/internal/platform/twitch"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
@@ -33,13 +34,13 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kick hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/open kick") || !strings.Contains(out.String(), "/open youtube") || !strings.Contains(out.String(), "/open twitch") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kick hello") || !strings.Contains(out.String(), "/twitch hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/open kick") || !strings.Contains(out.String(), "/open youtube") || !strings.Contains(out.String(), "/open twitch") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
 		t.Fatal(out.String())
 	}
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "public beta focused on Kick") || !strings.Contains(out.String(), "YouTube and Twitch support remains preliminary") {
+	if !strings.Contains(out.String(), "public beta focused on Kick") || !strings.Contains(out.String(), "Core Twitch chat support is available") {
 		t.Fatalf("help does not describe beta support accurately: %s", out.String())
 	}
 }
@@ -72,6 +73,111 @@ func TestOutboundTargetStatePersistsAcrossSimulatedSessions(t *testing.T) {
 	configureOutboundState(second, state)
 	if second.Selected() != "kick" || terminalui.TargetLabel(second.Selected()) != "KICK" {
 		t.Fatalf("restored=%q label=%q", second.Selected(), terminalui.TargetLabel(second.Selected()))
+	}
+}
+
+func TestTwitchTargetStateRestoresOnlyWhenAvailable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "streamchat", "client.json")
+	state := clientstate.New(path)
+	twitchSender := &recordingOutboundSender{}
+	first := outbound.NewTargets(outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: twitchSender})
+	configureOutboundState(first, state)
+	if _, err := first.Process(context.Background(), "/twitch hello"); err != nil {
+		t.Fatal(err)
+	}
+	if state.Load().LastOutboundTarget != "twitch" || !reflect.DeepEqual(twitchSender.messages, []string{"hello"}) {
+		t.Fatalf("state=%+v messages=%v", state.Load(), twitchSender.messages)
+	}
+	restoredSender := &recordingOutboundSender{}
+	restored := outbound.NewTargets(outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: restoredSender})
+	configureOutboundState(restored, state)
+	if restored.Selected() != "twitch" || terminalui.TargetLabel(restored.Selected()) != "TW" {
+		t.Fatalf("selected=%q label=%q", restored.Selected(), terminalui.TargetLabel(restored.Selected()))
+	}
+	if _, err := restored.Process(context.Background(), "after restart"); err != nil || !reflect.DeepEqual(restoredSender.messages, []string{"after restart"}) {
+		t.Fatalf("messages=%v err=%v", restoredSender.messages, err)
+	}
+	unavailable := outbound.NewTargets(outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: &recordingOutboundSender{}, Unavailable: true})
+	configureOutboundState(unavailable, state)
+	if unavailable.Selected() != "" || terminalui.TargetLabel(unavailable.Selected()) != "NONE" {
+		t.Fatalf("unavailable selected=%q", unavailable.Selected())
+	}
+}
+
+func TestPrepareTwitchRejectsReadOnlyAuthorizationForSending(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/validate" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"client_id":"client","user_id":"sender","login":"sender","scopes":["user:read:chat"],"expires_in":3600}`))
+	}))
+	defer s.Close()
+	c := config.Defaults()
+	c.Twitch.ClientID = "client"
+	c.Twitch.ClientSecret = "client-secret"
+	c.Twitch.AccessToken = "access-token"
+	c.Twitch.Channel = "channel"
+	c.Twitch.APIBaseURL = s.URL
+	c.Twitch.OAuthBaseURL = s.URL
+	_, err := prepareTwitch(context.Background(), &c, filepath.Join(t.TempDir(), "config.json"))
+	if !errors.Is(err, twitch.ErrWriteScope) || !strings.Contains(err.Error(), "streamchat setup twitch") {
+		t.Fatalf("err=%v", err)
+	}
+	for _, secret := range []string{"client-secret", "access-token"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("secret leaked: %v", err)
+		}
+	}
+}
+
+func TestPrepareTwitchRefreshPreservesRefreshTokenAndRequiredScopes(t *testing.T) {
+	requests := map[string]int{}
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests[r.URL.Path]++
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil || r.Form.Get("refresh_token") != "old-refresh" {
+				t.Fatalf("form=%v err=%v", r.Form, err)
+			}
+			_, _ = w.Write([]byte(`{"access_token":"new-access","expires_in":3600,"scope":["user:read:chat","user:write:chat"]}`))
+		case "/validate":
+			if r.Header.Get("Authorization") != "OAuth new-access" {
+				t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
+			}
+			_, _ = w.Write([]byte(`{"client_id":"client","user_id":"sender","login":"sender","scopes":["user:read:chat","user:write:chat"],"expires_in":3600}`))
+		case "/users":
+			_, _ = w.Write([]byte(`{"data":[{"id":"broadcaster","login":"channel","display_name":"Channel"}]}`))
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	defer s.Close()
+	path := filepath.Join(t.TempDir(), "config.json")
+	c := config.Defaults()
+	c.Twitch.ClientID = "client"
+	c.Twitch.ClientSecret = "secret"
+	c.Twitch.AccessToken = "old-access"
+	c.Twitch.RefreshToken = "old-refresh"
+	c.Twitch.TokenExpiry = time.Now().Add(-time.Minute)
+	c.Twitch.Channel = "channel"
+	c.Twitch.APIBaseURL = s.URL
+	c.Twitch.OAuthBaseURL = s.URL
+	if err := config.Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := prepareTwitch(context.Background(), &c, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Identity.UserID != "sender" || runtime.Channel.ID != "broadcaster" || c.Twitch.AccessToken != "new-access" || c.Twitch.RefreshToken != "old-refresh" || requests["/token"] != 1 || requests["/validate"] != 1 || requests["/users"] != 1 {
+		t.Fatalf("runtime=%+v config=%+v requests=%v", runtime, c.Twitch, requests)
+	}
+	persisted, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Twitch.AccessToken != "new-access" || persisted.Twitch.RefreshToken != "old-refresh" {
+		t.Fatalf("persisted tokens access=%q refresh=%q", persisted.Twitch.AccessToken, persisted.Twitch.RefreshToken)
 	}
 }
 
@@ -953,8 +1059,42 @@ func TestRemoteServerReplacesServerOwnedAdapters(t *testing.T) {
 	for _, adapter := range got {
 		names = append(names, adapter.Name())
 	}
-	if strings.Join(names, ",") != "twitch,server" {
+	if strings.Join(names, ",") != "server" {
 		t.Fatalf("unexpected adapters: %v", names)
+	}
+}
+
+func TestTwitchServerFailureDoesNotStopKickRelayAndCancellationShutsDown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	serverErr := make(chan error, 1)
+	twitchErr := make(chan error, 1)
+	twitchErr <- errors.New("EventSub disconnected")
+	writes := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() { done <- waitForServer(ctx, cancel, serverErr, nil, twitchErr, channelWriter{writes: writes}) }()
+	var output string
+	select {
+	case output = <-writes:
+	case <-time.After(time.Second):
+		t.Fatal("Twitch failure was not reported")
+	}
+	if !strings.Contains(output, "Kick and relay remain active") || !strings.Contains(output, "EventSub disconnected") {
+		t.Fatalf("output=%q", output)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Twitch failure stopped the server: %v", err)
+	default:
+	}
+	cancel()
+	serverErr <- nil
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server supervisor did not stop after cancellation")
 	}
 }
 

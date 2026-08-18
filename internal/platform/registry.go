@@ -44,7 +44,9 @@ func Default() Registry {
 			}
 			return kick.NewServer(c.Kick.Listen, k, nil), nil
 		}},
-		{Name: "twitch", DisplayName: "Twitch", TargetPrompt: "Twitch channel", Configured: func(c config.Config) bool { return c.Twitch.ClientID != "" && c.Twitch.AccessToken != "" }, Target: func(c config.Config) string { return c.Twitch.Channel }, SetTarget: func(c *config.Config, v string) error {
+		{Name: "twitch", DisplayName: "Twitch", TargetPrompt: "Twitch channel", Configured: func(c config.Config) bool {
+			return c.Twitch.ClientID != "" && (c.Twitch.AccessToken != "" || c.Twitch.RefreshToken != "")
+		}, Target: func(c config.Config) string { return c.Twitch.Channel }, SetTarget: func(c *config.Config, v string) error {
 			ch, e := twitch.ParseChannel(v)
 			if e == nil {
 				c.Twitch.Channel = ch

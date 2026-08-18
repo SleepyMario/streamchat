@@ -209,6 +209,18 @@ func TestScreenStartsAtColumnOneAndUsesDefaultNamedColors(t *testing.T) {
 	}
 }
 
+func TestScreenUsesCanonicalTwitchTargetPrompt(t *testing.T) {
+	var output bytes.Buffer
+	screen := NewScreen(&output, func() int { return 40 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetTarget("twitch")
+	if got := plainTerminalOutput(output.String()); !strings.Contains(got, "[TW] > ") || strings.Contains(got, "[TWITCH] > ") {
+		t.Fatalf("prompt=%q", got)
+	}
+}
+
 func TestScreenResizeThenIncomingUnicodePreservesInput(t *testing.T) {
 	var output bytes.Buffer
 	width := 24

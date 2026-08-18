@@ -322,15 +322,7 @@ Streamchat requests user:read (to obtain your broadcaster user ID), events:subsc
 }
 
 func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {
-	fmt.Fprintln(w.Out, `Twitch chat uses the official EventSub WebSocket API; no public webhook is needed.
-
-1. Register an application at https://dev.twitch.tv/console/apps
-2. Add this exact OAuth redirect URI:
-   `+c.Twitch.RedirectURI+`
-3. The Client ID identifies your app. The Client Secret authenticates the local authorization-code exchange and must remain private.
-4. Your browser will ask for only user:read:chat, the minimum scope needed to read channel.chat.message events. Streamchat stores the user access token and refresh token privately and refreshes authorization when required.
-
-The Twitch account you authorize is the identity Streamchat reads chat as. Channel names are resolved to numeric IDs automatically.`)
+	fmt.Fprintln(w.Out, twitchInstructions(*c))
 	var err error
 	c.Twitch.ClientID, err = w.value("Twitch Client ID", c.Twitch.ClientID, false)
 	if err != nil {
@@ -340,7 +332,7 @@ The Twitch account you authorize is the identity Streamchat reads chat as. Chann
 	if err != nil {
 		return err
 	}
-	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Twitch.OAuthBaseURL, "/") + "/authorize", ClientID: c.Twitch.ClientID, RedirectURI: c.Twitch.RedirectURI, Scopes: []string{twitch.ReadChatScope}}, w.Out, w.OpenBrowser)
+	res, err := w.Authorize(ctx, oauthpkg.Request{AuthorizeURL: strings.TrimRight(c.Twitch.OAuthBaseURL, "/") + "/authorize", ClientID: c.Twitch.ClientID, RedirectURI: c.Twitch.RedirectURI, Scopes: twitch.RequiredChatScopes}, w.Out, w.OpenBrowser)
 	if err != nil {
 		return err
 	}
@@ -352,6 +344,9 @@ The Twitch account you authorize is the identity Streamchat reads chat as. Chann
 	api.AccessToken = tok.AccessToken
 	id, err := api.ValidateToken(ctx)
 	if err != nil {
+		return err
+	}
+	if err = twitch.RequireScopes(id.Scopes, twitch.RequiredChatScopes...); err != nil {
 		return err
 	}
 	c.Twitch.AccessToken = tok.AccessToken
@@ -368,6 +363,18 @@ The Twitch account you authorize is the identity Streamchat reads chat as. Chann
 		fmt.Fprintf(w.Out, "Authorized Twitch account %s.\n", id.Login)
 	}
 	return err
+}
+
+func twitchInstructions(c config.Config) string {
+	return `Twitch chat uses the official EventSub WebSocket API; no public webhook is needed.
+
+1. Register an application at https://dev.twitch.tv/console/apps
+2. Add this exact OAuth redirect URI:
+   ` + c.Twitch.RedirectURI + `
+3. The Client ID identifies your app. The Client Secret authenticates the local authorization-code exchange and must remain private.
+4. Your browser will ask for exactly user:read:chat and user:write:chat. These allow Streamchat to receive channel.chat.message events and send chat messages. Streamchat stores the user access token and refresh token privately and refreshes authorization when required.
+
+The Twitch account you authorize is the identity Streamchat reads and sends chat as. Channel names are resolved to numeric IDs automatically. Existing read-only authorizations must be replaced by rerunning streamchat setup twitch.`
 }
 
 func ParsePlatforms(args []string) ([]string, error) {

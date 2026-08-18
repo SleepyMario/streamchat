@@ -44,6 +44,23 @@ func TestKickSelectionAndSending(t *testing.T) {
 	}
 }
 
+func TestTwitchSelectionSendingAndTargetSwitching(t *testing.T) {
+	kick := &recordingSender{}
+	twitch := &recordingSender{}
+	s := NewTargets(
+		Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick},
+		Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: twitch},
+	)
+	for _, line := range []string{"/twitch", "hello", "/twitch second", "/kick kick-message", "/twitch final"} {
+		if err := s.Handle(context.Background(), line); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+	}
+	if s.Selected() != "twitch" || !reflect.DeepEqual(twitch.messages, []string{"hello", "second", "final"}) || !reflect.DeepEqual(kick.messages, []string{"kick-message"}) {
+		t.Fatalf("selected=%q twitch=%v kick=%v", s.Selected(), twitch.messages, kick.messages)
+	}
+}
+
 func TestTargetCommandSelectsCanonicalNameAndPersistsOnlyOnChange(t *testing.T) {
 	kick := &recordingSender{}
 	s := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick})
@@ -76,6 +93,9 @@ func TestRestoreRequiresRegisteredAvailableCanonicalTarget(t *testing.T) {
 	unavailable := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick, Unavailable: true})
 	if unavailable.Restore("kick") || unavailable.Selected() != "" {
 		t.Fatalf("unavailable restore selected=%q", unavailable.Selected())
+	}
+	if err := unavailable.Handle(context.Background(), "/kick"); err == nil || unavailable.Selected() != "" {
+		t.Fatalf("unavailable command err=%v selected=%q", err, unavailable.Selected())
 	}
 }
 

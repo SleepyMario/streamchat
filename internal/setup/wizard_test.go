@@ -11,6 +11,7 @@ import (
 
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
+	"github.com/SleepyMario/streamchat/internal/platform/twitch"
 )
 
 func TestSelectionParsing(t *testing.T) {
@@ -105,5 +106,31 @@ func TestKickOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 	want := []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope, kick.ChannelReadScope, kick.ModerationBanScope, kick.ChatMessageManageScope}
 	if !reflect.DeepEqual(kickOAuthScopes, want) {
 		t.Fatalf("scopes=%v want=%v", kickOAuthScopes, want)
+	}
+}
+
+func TestTwitchOAuthScopesIncludeOnlyReadAndWriteChat(t *testing.T) {
+	want := []string{twitch.ReadChatScope, twitch.WriteChatScope}
+	if !reflect.DeepEqual(twitch.RequiredChatScopes, want) {
+		t.Fatalf("scopes=%v want=%v", twitch.RequiredChatScopes, want)
+	}
+}
+
+func TestTwitchInstructionsExplainReadWriteReauthorization(t *testing.T) {
+	text := twitchInstructions(config.Defaults())
+	for _, want := range []string{
+		"http://localhost:8790/oauth/twitch/callback",
+		"exactly user:read:chat and user:write:chat",
+		"receive channel.chat.message events and send chat messages",
+		"streamchat setup twitch",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Twitch instructions missing %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"moderator:", "channel:bot", "user:bot", "channel:manage"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("Twitch instructions contain unrelated scope %q:\n%s", unwanted, text)
+		}
 	}
 }

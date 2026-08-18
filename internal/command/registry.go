@@ -97,6 +97,7 @@ func Streamchat() *Registry {
 	}
 	return New(
 		Entry{Name: "kick"},
+		Entry{Name: "twitch"},
 		Entry{Name: "category"},
 		Entry{Name: "clean", Children: []Entry{{Name: "streamchat"}, {Name: "kick"}}},
 		Entry{Name: "clear", Children: platforms()},

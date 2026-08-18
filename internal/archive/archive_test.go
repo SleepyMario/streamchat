@@ -87,6 +87,46 @@ func TestArchiveNormalizedJSONPreservesProviderNeutralRoles(t *testing.T) {
 	}
 }
 
+func TestTwitchArchivePreservesProviderFieldsWithoutChangingHistoricalRows(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	historical := message("historical-kick", chat.PlatformKick)
+	if inserted, storeErr := a.Store(context.Background(), historical); storeErr != nil || !inserted {
+		t.Fatalf("historical insert=%t err=%v", inserted, storeErr)
+	}
+	twitchMessage := message("twitch-message", chat.PlatformTwitch)
+	twitchMessage.ChannelID = "channel-id"
+	twitchMessage.ChannelDisplayName = "Channel"
+	twitchMessage.AuthorID = "chatter-id"
+	twitchMessage.AuthorDisplayName = "Viewer"
+	twitchMessage.Text = "你好 Kappa"
+	twitchMessage.Badges = []chat.Badge{{Type: "moderator", Text: "1"}}
+	twitchMessage.Roles = chat.NewRoleSet(chat.RoleModerator)
+	twitchMessage.Emotes = []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}}
+	twitchMessage.SafePlatformMetadata = map[string]string{"twitch_login": "viewer"}
+	if inserted, storeErr := a.Store(context.Background(), twitchMessage); storeErr != nil || !inserted {
+		t.Fatalf("Twitch insert=%t err=%v", inserted, storeErr)
+	}
+	var platform, channelID, userID, displayName, text, normalized string
+	if err = a.db.QueryRow(`SELECT platform, channel_id, user_id, display_name, message_text, normalized_json FROM messages WHERE message_id = ?`, twitchMessage.ID).Scan(&platform, &channelID, &userID, &displayName, &text, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	var archived chat.Message
+	if err = json.Unmarshal([]byte(normalized), &archived); err != nil {
+		t.Fatal(err)
+	}
+	if platform != "twitch" || channelID != "channel-id" || userID != "chatter-id" || displayName != "Viewer" || text != "你好 Kappa" || len(archived.Emotes) != 1 || !archived.Roles.Has(chat.RoleModerator) {
+		t.Fatalf("row=%q %q %q %q %q message=%+v", platform, channelID, userID, displayName, text, archived)
+	}
+	var historicalCount int
+	if err = a.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE platform = 'kick' AND message_id = 'historical-kick'`).Scan(&historicalCount); err != nil || historicalCount != 1 {
+		t.Fatalf("historical count=%d err=%v", historicalCount, err)
+	}
+}
+
 func TestEmoteRenderingPreservesArchivedRowsAndStructuredMetadata(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "archive.db"))
 	if err != nil {
