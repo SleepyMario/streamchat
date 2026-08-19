@@ -49,6 +49,13 @@ type PlatformCount struct {
 	Count    int64
 }
 
+// MessageReference is the provider identity and event time needed for remote
+// moderation. Reading these references never changes archived history.
+type MessageReference struct {
+	ID        string
+	Timestamp time.Time
+}
+
 type Stats struct {
 	SchemaVersion int
 	Total         int64
@@ -158,13 +165,27 @@ func (a *Archive) Store(ctx context.Context, m chat.Message) (bool, error) {
 // MessageIDsSince returns a point-in-time snapshot of distinct provider
 // message IDs without loading archived message bodies.
 func (a *Archive) MessageIDsSince(ctx context.Context, platform chat.Platform, since time.Time) ([]string, error) {
+	references, err := a.MessageReferencesSince(ctx, platform, since)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(references))
+	for _, reference := range references {
+		ids = append(ids, reference.ID)
+	}
+	return ids, nil
+}
+
+// MessageReferencesSince returns a point-in-time snapshot of distinct
+// provider message IDs and their earliest archived event timestamp.
+func (a *Archive) MessageReferencesSince(ctx context.Context, platform chat.Platform, since time.Time) ([]MessageReference, error) {
 	if platform == "" {
 		return nil, errors.New("archive platform is required")
 	}
 	if since.IsZero() {
 		return nil, errors.New("archive start time is required")
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT TRIM(message_id) AS provider_id
+	rows, err := a.db.QueryContext(ctx, `SELECT TRIM(message_id) AS provider_id, MIN(event_timestamp)
         FROM messages
         WHERE platform = ? AND event_timestamp >= ? AND TRIM(message_id) <> ''
         GROUP BY provider_id
@@ -173,18 +194,22 @@ func (a *Archive) MessageIDsSince(ctx context.Context, platform chat.Platform, s
 		return nil, fmt.Errorf("query archived message IDs: %w", err)
 	}
 	defer rows.Close()
-	ids := make([]string, 0)
+	references := make([]MessageReference, 0)
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var id, timestamp string
+		if err = rows.Scan(&id, &timestamp); err != nil {
 			return nil, fmt.Errorf("read archived message ID: %w", err)
 		}
-		ids = append(ids, id)
+		parsed, parseErr := time.Parse(time.RFC3339Nano, timestamp)
+		if parseErr != nil {
+			return nil, fmt.Errorf("read archived message timestamp: %w", parseErr)
+		}
+		references = append(references, MessageReference{ID: id, Timestamp: parsed})
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("read archived message IDs: %w", err)
 	}
-	return ids, nil
+	return references, nil
 }
 
 func moderationState(m chat.Message) string {

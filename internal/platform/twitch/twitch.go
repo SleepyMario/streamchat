@@ -17,18 +17,22 @@ import (
 )
 
 const (
-	ReadChatScope        = "user:read:chat"
-	WriteChatScope       = "user:write:chat"
-	ManageBroadcastScope = "channel:manage:broadcast"
-	EventType            = "channel.chat.message"
+	ReadChatScope           = "user:read:chat"
+	WriteChatScope          = "user:write:chat"
+	ManageBroadcastScope    = "channel:manage:broadcast"
+	ManageBannedUsersScope  = "moderator:manage:banned_users"
+	ManageChatMessagesScope = "moderator:manage:chat_messages"
+	EventType               = "channel.chat.message"
 )
 
 var RequiredChatScopes = []string{ReadChatScope, WriteChatScope}
-var SetupScopes = []string{ReadChatScope, WriteChatScope, ManageBroadcastScope}
+var SetupScopes = []string{ReadChatScope, WriteChatScope, ManageBroadcastScope, ManageBannedUsersScope, ManageChatMessagesScope}
 
 var (
 	ErrWriteScope         = errors.New("Twitch authorization lacks user:write:chat; run: streamchat setup twitch")
 	ErrManageScope        = errors.New("Twitch authorization lacks channel:manage:broadcast; run: streamchat setup twitch")
+	ErrBannedUsersScope   = errors.New("Twitch authorization lacks moderator:manage:banned_users; run: streamchat setup twitch")
+	ErrChatMessagesScope  = errors.New("Twitch authorization lacks moderator:manage:chat_messages; run: streamchat setup twitch")
 	ErrChatAuthentication = errors.New("Twitch chat authorization failed; run: streamchat setup twitch")
 	ErrChatRateLimit      = errors.New("Twitch chat rate limit exceeded; try again shortly")
 	ErrChatRejected       = errors.New("Twitch rejected the chat message")
@@ -132,6 +136,12 @@ func RequireScopes(scopes []string, required ...string) error {
 		}
 		if scope == ManageBroadcastScope {
 			return ErrManageScope
+		}
+		if scope == ManageBannedUsersScope {
+			return ErrBannedUsersScope
+		}
+		if scope == ManageChatMessagesScope {
+			return ErrChatMessagesScope
 		}
 		return fmt.Errorf("Twitch authorization lacks %s; run: streamchat setup twitch", scope)
 	}

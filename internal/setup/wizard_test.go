@@ -109,27 +109,28 @@ func TestKickOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 	}
 }
 
-func TestTwitchOAuthScopesIncludeOnlyChatAndBroadcastManagement(t *testing.T) {
-	want := []string{twitch.ReadChatScope, twitch.WriteChatScope, twitch.ManageBroadcastScope}
+func TestTwitchOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
+	want := []string{twitch.ReadChatScope, twitch.WriteChatScope, twitch.ManageBroadcastScope, twitch.ManageBannedUsersScope, twitch.ManageChatMessagesScope}
 	if !reflect.DeepEqual(twitch.SetupScopes, want) {
 		t.Fatalf("scopes=%v want=%v", twitch.SetupScopes, want)
 	}
 }
 
-func TestTwitchInstructionsExplainChatAndBroadcastManagementReauthorization(t *testing.T) {
+func TestTwitchInstructionsExplainFeatureScopedReauthorization(t *testing.T) {
 	text := twitchInstructions(config.Defaults())
 	for _, want := range []string{
 		"http://localhost:8790/oauth/twitch/callback",
-		"exactly user:read:chat, user:write:chat, and channel:manage:broadcast",
-		"receive channel.chat.message events, send chat messages, and update the authenticated broadcaster's title/category",
-		"Existing chat authorizations continue to work for chat",
+		"exactly user:read:chat, user:write:chat, channel:manage:broadcast, moderator:manage:banned_users, and moderator:manage:chat_messages",
+		"ban or timeout users when the account is a channel moderator",
+		"clear or delete Twitch chat messages",
+		"Existing authorizations continue to work for the features covered by their current scopes",
 		"streamchat setup twitch",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Twitch instructions missing %q:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"moderator:", "channel:bot", "user:bot", "channel:manage:moderators"} {
+	for _, unwanted := range []string{"channel:bot", "user:bot", "channel:manage:moderators"} {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("Twitch instructions contain unrelated scope %q:\n%s", unwanted, text)
 		}

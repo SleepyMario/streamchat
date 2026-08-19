@@ -202,4 +202,12 @@ func TestMessageIDsSinceFiltersPlatformTimestampAndEmptyIDs(t *testing.T) {
 	if !reflect.DeepEqual(ids, []string{"recent-kick"}) {
 		t.Fatalf("IDs=%v", ids)
 	}
+	references, err := a.MessageReferencesSince(context.Background(), chat.PlatformKick, base.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReferences := []MessageReference{{ID: "recent-kick", Timestamp: base.Add(-2 * time.Hour)}}
+	if !reflect.DeepEqual(references, wantReferences) {
+		t.Fatalf("references=%v want=%v", references, wantReferences)
+	}
 }

@@ -61,21 +61,25 @@ Interactive commands:
   hello                            Send to the selected target
   /title New stream title          Update the selected channel title
   /category Just Chatting          Update the selected channel category
-  /ban kick USER                   Permanently ban a user from Kick chat
-  /timeout kick USER 10m           Temporarily timeout a user from Kick chat
+  /ban kick USER                   Permanently ban a Kick user
+  /ban twitch USER                 Permanently ban a Twitch user
+  /timeout kick USER 10m           Temporarily timeout a Kick user
+  /timeout twitch USER 30s         Temporarily timeout a Twitch user
   /clean streamchat                Clear the current local chat view
   /clean kick                      Hide displayed Kick messages locally
   /clean USER                      Hide a user's displayed messages locally
   /clear kick                      Delete archived Kick messages from last 24h
-  /clear kick 3d                   Use archived Kick messages from last 3 days
+  /clear twitch                    Clear the current Twitch chat
+  /clear kick 3d                   Use archived Kick message IDs from last 3 days
+  /clear twitch 1d                 Delete eligible archived Twitch message IDs
   /open kick                       Open Kick in mpv or the default browser
   /open youtube                    Open the configured YouTube stream
   /open twitch                     Open the configured Twitch channel
   /exit                            Exit the interactive client cleanly
   /quit                            Same as /exit
 The last selected outbound target is restored on the next run when available.
-Title, category, and moderation commands currently target Kick only.
-/clean kick is local-only; /clear kick uses archived IDs for remote deletion.
+Title and category follow the selected outbound target; moderation names its platform explicitly.
+/clean kick is local-only; /clear uses official remote moderation APIs.
 Neither command deletes Streamchat archive records.
 On a terminal, the alternate screen keeps Kick status at top and input at bottom.
 
@@ -389,8 +393,9 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		}
 		twitchAuth := twitch.NewUserClient(twitchAPI, twitchScopes)
 		twitchClient := &twitchOutboundSender{
-			chat:    twitch.NewChatSenderWithUserClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
-			channel: twitch.NewChannelClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
+			chat:       twitch.NewChatSenderWithUserClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
+			channel:    twitch.NewChannelClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
+			moderation: twitch.NewModerationClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
 		}
 		targets = outbound.NewTargets(
 			outbound.Target{
@@ -419,10 +424,10 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		kickClient.setStatusRefresh(statusRouter.RequestRefresh)
 		twitchClient.setStatusRefresh(statusRouter.RequestRefresh)
 		status = statusRouter
-		moderation := newModerationControls(kickClient)
+		moderation := newModerationControls(kickClient, twitchClient)
 		targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
 		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
-		remoteClear := newRemoteClearController(kickClient, archiveMessageIDFile{path: c.Storage.SQLitePath})
+		remoteClear := newRemoteClearController(kickClient, twitchClient, archiveMessageIDFile{path: c.Storage.SQLitePath})
 		targets.RegisterControl("clear", remoteClear)
 		opener := openController{config: c, kick: kickClient, launcher: launcher.New()}
 		targets.RegisterControl("open", outbound.ControlFunc(opener.Open))
@@ -931,16 +936,14 @@ type archiveMessageIDSource interface {
 	MessageIDsSince(context.Context, chat.Platform, time.Time) ([]string, error)
 }
 
+type archiveMessageReferenceSource interface {
+	MessageReferencesSince(context.Context, chat.Platform, time.Time) ([]archivepkg.MessageReference, error)
+}
+
 type archiveMessageIDFile struct{ path string }
 
 func (s archiveMessageIDFile) MessageIDsSince(ctx context.Context, platform chat.Platform, since time.Time) ([]string, error) {
-	if _, err := os.Stat(s.path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("SQLite archive does not exist at %s; start streamchat serve or configure storage.sqlite_path", s.path)
-		}
-		return nil, fmt.Errorf("inspect SQLite archive %s: %w", s.path, err)
-	}
-	store, err := archivepkg.Open(s.path)
+	store, err := s.open()
 	if err != nil {
 		return nil, err
 	}
@@ -948,13 +951,37 @@ func (s archiveMessageIDFile) MessageIDsSince(ctx context.Context, platform chat
 	return store.MessageIDsSince(ctx, platform, since)
 }
 
+func (s archiveMessageIDFile) MessageReferencesSince(ctx context.Context, platform chat.Platform, since time.Time) ([]archivepkg.MessageReference, error) {
+	store, err := s.open()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.MessageReferencesSince(ctx, platform, since)
+}
+
+func (s archiveMessageIDFile) open() (*archivepkg.Archive, error) {
+	if _, err := os.Stat(s.path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("SQLite archive does not exist at %s; start streamchat serve or configure storage.sqlite_path", s.path)
+		}
+		return nil, fmt.Errorf("inspect SQLite archive %s: %w", s.path, err)
+	}
+	return archivepkg.Open(s.path)
+}
+
 type remoteClearResult struct {
 	Deleted int
 	Failed  int
+	Skipped int
 }
 
 type remoteClearPlatform interface {
 	ClearMessages(context.Context, []string) (remoteClearResult, error)
+}
+
+type remoteClearAllPlatform interface {
+	ClearAll(context.Context) error
 }
 
 type remoteClearController struct {
@@ -963,14 +990,14 @@ type remoteClearController struct {
 	now       func() time.Time
 }
 
-func newRemoteClearController(kickClient *kickOutboundSender, source archiveMessageIDSource) *remoteClearController {
-	return &remoteClearController{source: source, platforms: map[string]remoteClearPlatform{"kick": kickClient}, now: time.Now}
+func newRemoteClearController(kickClient *kickOutboundSender, twitchClient *twitchOutboundSender, source archiveMessageIDSource) *remoteClearController {
+	return &remoteClearController{source: source, platforms: map[string]remoteClearPlatform{"kick": kickClient, "twitch": twitchClient}, now: time.Now}
 }
 
 func (c *remoteClearController) Execute(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) < 1 || len(fields) > 2 {
-		return "Usage: /clear kick [Nd] (example: /clear kick 3d)", nil
+		return "Usage: /clear kick|twitch [Nd] (example: /clear twitch 1d)", nil
 	}
 	platform := strings.ToLower(fields[0])
 	provider, ok := c.platforms[platform]
@@ -978,7 +1005,17 @@ func (c *remoteClearController) Execute(ctx context.Context, argument string) (s
 		if platform == "youtube" || platform == "twitch" {
 			return "Remote chat clearing is not implemented for: " + platform, nil
 		}
-		return "Unsupported clear platform: " + fields[0] + ". Supported: kick.", nil
+		return "Unsupported clear platform: " + fields[0] + ". Supported: kick, twitch.", nil
+	}
+	if platform == "twitch" && len(fields) == 1 {
+		clearAll, ok := provider.(remoteClearAllPlatform)
+		if !ok {
+			return "Remote chat clearing is not implemented for: twitch", nil
+		}
+		if err := clearAll.ClearAll(ctx); err != nil {
+			return "", err
+		}
+		return "Twitch chat cleared.", nil
 	}
 	if c.source == nil {
 		return "SQLite archive is unavailable for remote clearing.", nil
@@ -995,7 +1032,11 @@ func (c *remoteClearController) Execute(ctx context.Context, argument string) (s
 	if c.now != nil {
 		now = c.now
 	}
-	since := now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
+	currentTime := now().UTC()
+	since := currentTime.Add(-time.Duration(days) * 24 * time.Hour)
+	if platform == "twitch" {
+		return c.clearTwitchWindow(ctx, provider, since, days, currentTime)
+	}
 	ids, err := c.source.MessageIDsSince(ctx, chat.PlatformKick, since)
 	if err != nil {
 		return "", err
@@ -1015,6 +1056,48 @@ func (c *remoteClearController) Execute(ctx context.Context, argument string) (s
 		noun = "message"
 	}
 	return fmt.Sprintf("Cleared Kick chat: %d %s", result.Deleted, noun), nil
+}
+
+func (c *remoteClearController) clearTwitchWindow(ctx context.Context, provider remoteClearPlatform, since time.Time, days int, now time.Time) (string, error) {
+	source, ok := c.source.(archiveMessageReferenceSource)
+	if !ok {
+		return "", errors.New("SQLite archive timestamps are unavailable for Twitch message deletion")
+	}
+	references, err := source.MessageReferencesSince(ctx, chat.PlatformTwitch, since)
+	if err != nil {
+		return "", err
+	}
+	if len(references) == 0 {
+		return fmt.Sprintf("No archived Twitch messages to clear in the last %dd.", days), nil
+	}
+	cutoff := now.UTC().Add(-6 * time.Hour)
+	ids := make([]string, 0, len(references))
+	skipped := 0
+	for _, reference := range references {
+		if !reference.Timestamp.UTC().After(cutoff) {
+			skipped++
+			continue
+		}
+		ids = append(ids, reference.ID)
+	}
+	result := remoteClearResult{Skipped: skipped}
+	if len(ids) > 0 {
+		batch, clearErr := provider.ClearMessages(ctx, ids)
+		result.Deleted += batch.Deleted
+		result.Failed += batch.Failed
+		result.Skipped += batch.Skipped
+		if clearErr != nil {
+			return "", clearErr
+		}
+	}
+	message := fmt.Sprintf("Twitch: deleted %d known messages", result.Deleted)
+	if result.Failed > 0 {
+		message += fmt.Sprintf("; %d failed", result.Failed)
+	}
+	if result.Skipped > 0 {
+		message += fmt.Sprintf("; %d archived messages were older than Twitch's 6-hour individual-delete limit", result.Skipped)
+	}
+	return message + ".", nil
 }
 
 func parseClearDays(value string) (int, error) {
@@ -1206,6 +1289,7 @@ func (s *kickOutboundSender) requestStatusRefresh() {
 type twitchOutboundSender struct {
 	chat       *twitch.ChatSender
 	channel    *twitch.ChannelClient
+	moderation *twitch.ModerationClient
 	refreshMu  sync.RWMutex
 	refreshNow func()
 }
@@ -1286,18 +1370,22 @@ type moderationControls struct {
 	platforms map[string]moderationPlatform
 }
 
-func newModerationControls(kickClient *kickOutboundSender) moderationControls {
-	return moderationControls{platforms: map[string]moderationPlatform{"kick": kickClient}}
+func newModerationControls(kickClient *kickOutboundSender, twitchClients ...*twitchOutboundSender) moderationControls {
+	platforms := map[string]moderationPlatform{"kick": kickClient}
+	if len(twitchClients) > 0 && twitchClients[0] != nil {
+		platforms["twitch"] = twitchClients[0]
+	}
+	return moderationControls{platforms: platforms}
 }
 
 func (m moderationControls) Ban(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) != 2 {
-		return "Usage: /ban PLATFORM USER (supported: kick)", nil
+		return "Usage: /ban PLATFORM USER (supported: kick, twitch)", nil
 	}
 	provider, ok := m.platforms[strings.ToLower(fields[0])]
 	if !ok {
-		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick.", nil
+		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick, twitch.", nil
 	}
 	return provider.BanUser(ctx, fields[1])
 }
@@ -1305,11 +1393,11 @@ func (m moderationControls) Ban(ctx context.Context, argument string) (string, e
 func (m moderationControls) Timeout(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) != 3 {
-		return "Usage: /timeout PLATFORM USER DURATION (example: /timeout kick USER 10m)", nil
+		return "Usage: /timeout PLATFORM USER DURATION (examples: /timeout kick USER 10m, /timeout twitch USER 30s)", nil
 	}
 	provider, ok := m.platforms[strings.ToLower(fields[0])]
 	if !ok {
-		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick.", nil
+		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick, twitch.", nil
 	}
 	return provider.TimeoutUser(ctx, fields[1], fields[2])
 }
@@ -1372,6 +1460,73 @@ func (s *kickOutboundSender) ClearMessages(ctx context.Context, messageIDs []str
 		return nil
 	})
 	return result, err
+}
+
+func (s *twitchOutboundSender) BanUser(ctx context.Context, username string) (string, error) {
+	if s.moderation == nil {
+		return "", twitch.ErrModerationAuthentication
+	}
+	user, err := s.moderation.Ban(ctx, username)
+	if err != nil {
+		return "", err
+	}
+	return "Banned: " + twitchModerationName(user), nil
+}
+
+func (s *twitchOutboundSender) TimeoutUser(ctx context.Context, username, duration string) (string, error) {
+	seconds, err := twitch.ParseTimeoutDuration(duration)
+	if err != nil {
+		return "", err
+	}
+	if s.moderation == nil {
+		return "", twitch.ErrModerationAuthentication
+	}
+	user, err := s.moderation.Timeout(ctx, username, seconds)
+	if err != nil {
+		return "", err
+	}
+	return "Timed out: " + twitchModerationName(user) + " for " + strings.ToLower(strings.TrimSpace(duration)), nil
+}
+
+func twitchModerationName(user twitch.User) string {
+	if user.DisplayName != "" {
+		return user.DisplayName
+	}
+	return user.Login
+}
+
+func (s *twitchOutboundSender) ClearAll(ctx context.Context) error {
+	if s.moderation == nil {
+		return twitch.ErrModerationAuthentication
+	}
+	return s.moderation.ClearChat(ctx)
+}
+
+func (s *twitchOutboundSender) ClearMessages(ctx context.Context, messageIDs []string) (remoteClearResult, error) {
+	if s.moderation == nil {
+		return remoteClearResult{}, twitch.ErrModerationAuthentication
+	}
+	var result remoteClearResult
+	for index, messageID := range messageIDs {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		err := s.moderation.DeleteMessage(ctx, messageID)
+		switch {
+		case err == nil:
+			result.Deleted++
+		case errors.Is(err, twitch.ErrChatDeleteNotFound), errors.Is(err, twitch.ErrChatDeleteProtected):
+			result.Failed++
+		case errors.Is(err, twitch.ErrModerationRateLimit):
+			result.Failed += len(messageIDs) - index
+			return result, fmt.Errorf("Twitch clear stopped after %d deletions with %d remaining or failed: %w", result.Deleted, result.Failed, err)
+		case errors.Is(err, twitch.ErrModerationAuthentication), errors.Is(err, twitch.ErrModerationPermission), errors.Is(err, twitch.ErrChatMessagesScope):
+			return result, err
+		default:
+			result.Failed++
+		}
+	}
+	return result, nil
 }
 
 func (s *kickOutboundSender) withToken(ctx context.Context, operation func(string) error) error {

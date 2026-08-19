@@ -17,7 +17,7 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 | --- | --- | --- | --- |
 | YouTube | A restricted API key for local public-chat mode, or a Desktop-app OAuth client for unattended server mode | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` or `streamchat setup youtube-server` |
 | Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe chat:write channel:write`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
-| Twitch | A Twitch app Client ID and Client Secret, a browser-created user access/refresh token with exactly `user:read:chat user:write:chat channel:manage:broadcast`, and a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [EventSub chat authentication](https://dev.twitch.tv/docs/chat/authenticating/) | `streamchat setup twitch` |
+| Twitch | A Twitch app Client ID and Client Secret, a browser-created user access/refresh token with exactly `user:read:chat user:write:chat channel:manage:broadcast moderator:manage:banned_users moderator:manage:chat_messages`, and a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [Twitch moderation](https://dev.twitch.tv/docs/chat/moderation/) | `streamchat setup twitch` |
 
 No real-looking credentials are included in this repository.
 
@@ -63,14 +63,16 @@ Basic channel controls follow the selected Kick or Twitch outbound target:
 
 `/category` accepts a positive numeric provider category ID or searches the selected provider's official category API. Kick keeps its existing matching policy. Twitch validates numeric IDs with `GET /helix/games`; name searches use `GET /helix/search/categories?first=100` and accept only one case-insensitive exact canonical name. Non-exact or multiple results are listed with IDs, without changing the channel, so Streamchat never guesses from Twitch's broad substring matches.
 
-Basic moderation controls also currently target Kick only and are independent of `/kick` selection:
+Moderation controls name their platform explicitly and are independent of outbound selection:
 
 ```text
 /ban kick USER
 /timeout kick USER 10m
+/ban twitch USER
+/timeout twitch USER 30s
 ```
 
-The platform is always explicit and is not inferred from `/kick` or any future outbound target; only `kick` is currently supported. `/ban kick` permanently bans the resolved Kick user. `/timeout kick` accepts `s`, `m`, or `h` syntax but must resolve to the official API's whole-minute range of 1–10,080 minutes; for example, `10m`, `1h`, and `60s` are valid, while `1s` and `30s` are not. Kick may remove affected messages from visible chat. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
+The platform is always explicit and is not inferred from `/kick` or `/twitch`. Kick keeps its official whole-minute timeout range of 1–10,080 minutes. Twitch accepts `s`, `m`, `h`, and `d` syntax from one second through 14 days, so both `1s` and `30s` are valid for Twitch. Targets are resolved through each provider's official API. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
 
 Local display cleaning is available in the interactive terminal:
 
@@ -87,11 +89,13 @@ Remote visible-chat cleanup is a separate, explicit command:
 ```text
 /clear kick
 /clear kick 3d
+/clear twitch
+/clear twitch 1d
 ```
 
 `/clear kick` attempts to delete archived Kick messages from the default recent window of 24 hours. `/clear kick 3d` uses archived Kick messages from the last three days; any positive `Nd` value up to 3650 days is accepted. Streamchat queries only distinct, non-empty Kick provider message IDs and timestamps from the configured SQLite archive, completes that snapshot, then deletes each ID individually with Kick's official API. Messages archived after the snapshot begins are not included in that run, and an already-absent message counts as cleared.
 
-Kick exposes only per-message deletion, so archived provider IDs let Streamchat approximate bulk clearing. Messages posted before Streamchat observed and archived them cannot be cleared this way. The configured `storage.sqlite_path` must be accessible to the interactive client; this may require running the command where the server archive resides or making that private database path available locally. `/clear kick` does not automatically remove messages from the local display. `/clear youtube` and `/clear twitch` are not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
+Kick exposes only per-message deletion, so archived provider IDs let Streamchat approximate bulk clearing. Plain `/clear twitch` instead uses Twitch's official clear-current-chat operation in one request and does not read archived IDs. A time-qualified `/clear twitch Nd` uses known archived Twitch IDs but attempts only messages less than six hours old, reporting older platform-limited rows and individual failures. Messages posted before Streamchat observed and archived them cannot be individually cleared this way. The configured `storage.sqlite_path` must be accessible to the interactive client for archive-backed clears. `/clear` does not automatically remove messages from the local display. `/clear youtube` is not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
 
 Open a configured stream in an external player or browser with an explicit platform:
 
@@ -201,7 +205,7 @@ The browser flow uses the loopback callback `http://127.0.0.1:8791`, PKCE, and o
 
 Google’s official `liveChatMessages.streamList` HTTP transport supplies live messages and a continuation token. Streamchat reconnects with that token after recoverable failures and waits between broadcasts so the service can remain running continuously.
 
-To enable server-side Twitch ingestion, run `streamchat setup twitch --config /etc/streamchat/config.json`, authorize exactly `user:read:chat`, `user:write:chat`, and `channel:manage:broadcast`, and choose the channel. The management scope is used only by the interactive client; `streamchat serve` remains read-only apart from chat ingestion. The server resolves the channel with `GET /helix/users`, subscribes to `channel.chat.message` version 1, follows EventSub reconnect URLs without creating a duplicate subscription, and keeps Kick/relay running if Twitch later stops with a terminal provider error.
+To enable server-side Twitch ingestion, run `streamchat setup twitch --config /etc/streamchat/config.json`, authorize the five scopes listed in the Twitch setup table, and choose the channel. Write and moderation scopes are used only by the interactive client; `streamchat serve` remains read-only apart from chat ingestion. The server resolves the channel with `GET /helix/users`, subscribes to `channel.chat.message` version 1, follows EventSub reconnect URLs without creating a duplicate subscription, and keeps Kick/relay running if Twitch later stops with a terminal provider error.
 
 Start it with:
 
@@ -292,7 +296,9 @@ Webhook verification remains fail-closed. Streamchat verifies Kick's RSA/SHA-256
 
 The wizard asks the user to register the displayed localhost redirect URI in the [Twitch Developer Console](https://dev.twitch.tv/console/apps). It then opens the Twitch authorization page and always prints the URL as a fallback. The callback binds only to loopback, validates a cryptographically random OAuth state value, and exchanges the returned code for access and refresh tokens.
 
-Streamchat requests exactly `user:read:chat`, `user:write:chat`, and `channel:manage:broadcast`: the first authorizes `channel.chat.message` version 1, the second authorizes `POST /helix/chat/messages`, and the third authorizes title/category changes through `PATCH /helix/channels`. It does not request moderation, `user:bot`, `channel:bot`, or other broadcaster-management permissions. Existing read/write-chat authorizations remain valid for chat; only title/category controls require reauthorization. Streamchat validates tokens, stores rotated refresh tokens, and resolves channel names to numeric IDs through `GET /helix/users`.
+Streamchat requests exactly `user:read:chat`, `user:write:chat`, `channel:manage:broadcast`, `moderator:manage:banned_users`, and `moderator:manage:chat_messages`. These authorize EventSub chat reads, chat sends, the authenticated broadcaster's title/category changes, ban/timeouts, and remote chat clearing respectively. Existing authorizations remain valid for the features covered by their scopes; missing moderation scopes do not break chat, status, or channel controls. Streamchat validates tokens, stores rotated refresh tokens, and resolves moderation targets through the official `GET /helix/users` API.
+
+Twitch ban and timeout use `POST /helix/moderation/bans` with the configured channel as `broadcaster_id` and the authenticated account as `moderator_id`. Twitch timeouts accept whole seconds from `1s` through `14d`; Kick keeps its existing whole-minute rules. Plain `/clear twitch` sends one `DELETE /helix/moderation/chat` request without a message ID, which clears current Twitch chat without changing Streamchat's local display or archive. `/clear twitch Nd` reads known Twitch IDs from the SQLite archive and attempts individual deletion only for events less than six hours old. Older rows are reported as platform-limited and all archive rows remain historical.
 
 The reused adapter handles welcome, notification, keepalive, reconnect, revocation, duplicate delivery, and shutdown. Server mode sends its normalized messages through the same archive/relay channel as Kick and YouTube; relay clients do not start another local Twitch subscriber. Before connecting, Streamchat validates the token and refreshes and atomically persists it when required. Twitch broadcaster, moderator, partner, VIP, and subscriber badges map only when supplied by Twitch. One serialized interactive user-token client now shares refresh, persistence, and one-retry behavior across chat sends, status reads, and channel controls. Twitch requires the `broadcaster_id` on `PATCH /helix/channels` to equal the user ID in the access token; Streamchat rejects a known mismatch locally and does not claim moderator ownership. Errors report authentication, missing scope, ownership, rate-limit, rejection, and network failures without exposing credentials.
 

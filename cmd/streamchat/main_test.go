@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -34,7 +35,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatal(s)
 	}
 	out.Reset()
-	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kick hello") || !strings.Contains(out.String(), "/twitch hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/open kick") || !strings.Contains(out.String(), "/open youtube") || !strings.Contains(out.String(), "/open twitch") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
+	if c := run([]string{"--help"}, &out, &err); c != 0 || !strings.Contains(out.String(), "kick subscribe") || !strings.Contains(out.String(), "streamchat serve") || !strings.Contains(out.String(), "/kick hello") || !strings.Contains(out.String(), "/twitch hello") || !strings.Contains(out.String(), "/title New stream title") || !strings.Contains(out.String(), "/category Just Chatting") || !strings.Contains(out.String(), "/ban kick USER") || !strings.Contains(out.String(), "/ban twitch USER") || !strings.Contains(out.String(), "/timeout kick USER 10m") || !strings.Contains(out.String(), "/timeout twitch USER 30s") || !strings.Contains(out.String(), "/clean streamchat") || !strings.Contains(out.String(), "/clean kick") || !strings.Contains(out.String(), "/clean USER") || !strings.Contains(out.String(), "/clear kick 3d") || !strings.Contains(out.String(), "/clear twitch") || !strings.Contains(out.String(), "/open kick") || !strings.Contains(out.String(), "/open youtube") || !strings.Contains(out.String(), "/open twitch") || !strings.Contains(out.String(), "/exit") || !strings.Contains(out.String(), "/quit") || !strings.Contains(out.String(), "last selected outbound target is restored") {
 		t.Fatal(out.String())
 	}
 	if strings.Contains(out.String(), "/kk") {
@@ -735,7 +736,7 @@ func TestModerationRejectsUnsupportedPlatformWithoutAPIRequestOrTargetInference(
 	if requests != 0 || len(sender.messages) != 0 {
 		t.Fatalf("API requests=%d chat=%v", requests, sender.messages)
 	}
-	if got := out.String(); !strings.Contains(got, "Usage: /ban PLATFORM USER") || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") || strings.Count(got, "Unsupported moderation platform: foo. Supported: kick.") != 2 {
+	if got := out.String(); !strings.Contains(got, "Usage: /ban PLATFORM USER") || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") || strings.Count(got, "Unsupported moderation platform: foo. Supported: kick, twitch.") != 2 {
 		t.Fatalf("output=%q", got)
 	}
 	if targets.Selected() != "kick" || errw.Len() != 0 {
@@ -910,9 +911,18 @@ func TestEveryCleanTargetPreservesArchiveRows(t *testing.T) {
 type recordingArchiveSource struct {
 	mu       sync.Mutex
 	ids      []string
+	refs     []archivepkg.MessageReference
 	platform chat.Platform
 	since    time.Time
 	err      error
+}
+
+func (s *recordingArchiveSource) MessageReferencesSince(_ context.Context, platform chat.Platform, since time.Time) ([]archivepkg.MessageReference, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.platform = platform
+	s.since = since
+	return append([]archivepkg.MessageReference(nil), s.refs...), s.err
 }
 
 func (s *recordingArchiveSource) MessageIDsSince(_ context.Context, platform chat.Platform, since time.Time) ([]string, error) {
@@ -945,6 +955,17 @@ func (p *recordingRemoteClear) ClearMessages(_ context.Context, ids []string) (r
 	return p.result, p.err
 }
 
+type recordingTwitchClear struct {
+	recordingRemoteClear
+	clearAll int
+	allErr   error
+}
+
+func (p *recordingTwitchClear) ClearAll(context.Context) error {
+	p.clearAll++
+	return p.allErr
+}
+
 func TestRemoteClearKickSyntaxNoMessagesAndUnsupportedPlatforms(t *testing.T) {
 	fixedNow := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	controller := &remoteClearController{source: &recordingArchiveSource{}, platforms: map[string]remoteClearPlatform{"kick": &recordingRemoteClear{}}, now: func() time.Time { return fixedNow }}
@@ -952,11 +973,11 @@ func TestRemoteClearKickSyntaxNoMessagesAndUnsupportedPlatforms(t *testing.T) {
 		argument string
 		want     string
 	}{
-		{"", "Usage: /clear kick [Nd] (example: /clear kick 3d)"},
+		{"", "Usage: /clear kick|twitch [Nd] (example: /clear twitch 1d)"},
 		{"kick", "No archived Kick messages to clear in the last 1d."},
 		{"youtube", "Remote chat clearing is not implemented for: youtube"},
 		{"twitch", "Remote chat clearing is not implemented for: twitch"},
-		{"foo", "Unsupported clear platform: foo. Supported: kick."},
+		{"foo", "Unsupported clear platform: foo. Supported: kick, twitch."},
 	}
 	for _, test := range tests {
 		got, err := controller.Execute(context.Background(), test.argument)
@@ -1126,6 +1147,193 @@ func TestRemoteClearNeverDeletesArchiveRows(t *testing.T) {
 	stats, err := store.Stats(context.Background())
 	if err != nil || stats.Total != 1 {
 		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+}
+
+func TestTwitchModerationRoutesWithoutDispatchingToKick(t *testing.T) {
+	var banDurations []any
+	twitchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/users":
+			_, _ = io.WriteString(w, `{"data":[{"id":"300","login":"targetuser","display_name":"TargetUser"}]}`)
+		case "/moderation/bans":
+			var payload struct {
+				Data map[string]any `json:"data"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			banDurations = append(banDurations, payload.Data["duration"])
+			_, _ = io.WriteString(w, `{"data":[{}]}`)
+		default:
+			t.Fatalf("unexpected Twitch request: %s %s", request.Method, request.URL.String())
+		}
+	}))
+	defer twitchServer.Close()
+	kickRequests := 0
+	kickServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { kickRequests++ }))
+	defer kickServer.Close()
+	auth := twitch.NewUserClient(&twitch.API{HTTP: twitchServer.Client(), APIBaseURL: twitchServer.URL, OAuthBaseURL: twitchServer.URL, ClientID: "client", AccessToken: "access"}, twitch.SetupScopes)
+	twitchSender := &twitchOutboundSender{moderation: twitch.NewModerationClient(auth, "100", "200")}
+	kickSender := &kickOutboundSender{config: config.Kick{AccessToken: "kick-access", BroadcasterID: "100", APIBaseURL: kickServer.URL}, http: kickServer.Client()}
+	controls := newModerationControls(kickSender, twitchSender)
+	if result, err := controls.Ban(context.Background(), "twitch TARGETUSER"); err != nil || result != "Banned: TargetUser" {
+		t.Fatalf("ban result=%q err=%v", result, err)
+	}
+	if result, err := controls.Timeout(context.Background(), "twitch targetuser 30s"); err != nil || result != "Timed out: TargetUser for 30s" {
+		t.Fatalf("timeout result=%q err=%v", result, err)
+	}
+	if kickRequests != 0 || len(banDurations) != 2 || banDurations[0] != nil || banDurations[1] != float64(30) {
+		t.Fatalf("Kick requests=%d durations=%v", kickRequests, banDurations)
+	}
+}
+
+func TestRemoteClearTwitchPlainUsesOneClearAllWithoutArchive(t *testing.T) {
+	provider := &recordingTwitchClear{}
+	source := &recordingArchiveSource{err: errors.New("archive must not be read")}
+	controller := &remoteClearController{source: source, platforms: map[string]remoteClearPlatform{"twitch": provider}}
+	result, err := controller.Execute(context.Background(), "twitch")
+	if err != nil || result != "Twitch chat cleared." || provider.clearAll != 1 || source.platform != "" {
+		t.Fatalf("result=%q clearAll=%d archivePlatform=%q err=%v", result, provider.clearAll, source.platform, err)
+	}
+}
+
+func TestRemoteClearTwitchWindowUsesEligibleArchivedIDsAndReportsSixHourLimit(t *testing.T) {
+	fixedNow := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	source := &recordingArchiveSource{refs: []archivepkg.MessageReference{
+		{ID: "recent", Timestamp: fixedNow.Add(-time.Hour)},
+		{ID: "boundary", Timestamp: fixedNow.Add(-6 * time.Hour)},
+		{ID: "old", Timestamp: fixedNow.Add(-7 * time.Hour)},
+	}}
+	provider := &recordingTwitchClear{recordingRemoteClear: recordingRemoteClear{result: remoteClearResult{Deleted: 1}}}
+	controller := &remoteClearController{source: source, platforms: map[string]remoteClearPlatform{"twitch": provider}, now: func() time.Time { return fixedNow }}
+	result, err := controller.Execute(context.Background(), "twitch 1d")
+	want := "Twitch: deleted 1 known messages; 2 archived messages were older than Twitch's 6-hour individual-delete limit."
+	if err != nil || result != want || !reflect.DeepEqual(provider.ids, []string{"recent"}) || source.platform != chat.PlatformTwitch || !source.since.Equal(fixedNow.Add(-24*time.Hour)) {
+		t.Fatalf("result=%q ids=%v platform=%q since=%s err=%v", result, provider.ids, source.platform, source.since, err)
+	}
+}
+
+func TestTwitchClearBatchContinues404AndProtectedFailures(t *testing.T) {
+	var requested []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		messageID := request.URL.Query().Get("message_id")
+		requested = append(requested, messageID)
+		switch messageID {
+		case "gone":
+			w.WriteHeader(http.StatusNotFound)
+		case "protected":
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	auth := twitch.NewUserClient(&twitch.API{HTTP: server.Client(), APIBaseURL: server.URL, OAuthBaseURL: server.URL, ClientID: "client", AccessToken: "access"}, twitch.SetupScopes)
+	sender := &twitchOutboundSender{moderation: twitch.NewModerationClient(auth, "100", "200")}
+	result, err := sender.ClearMessages(context.Background(), []string{"one", "gone", "protected", "two"})
+	if err != nil || result != (remoteClearResult{Deleted: 2, Failed: 2}) || !reflect.DeepEqual(requested, []string{"one", "gone", "protected", "two"}) {
+		t.Fatalf("result=%+v requested=%v err=%v", result, requested, err)
+	}
+}
+
+func TestTwitchClearBatchStopsAuthorizationAndRateLimit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		want   error
+	}{{"unauthorized", http.StatusUnauthorized, twitch.ErrModerationAuthentication}, {"forbidden", http.StatusForbidden, twitch.ErrModerationPermission}, {"rate-limit", http.StatusTooManyRequests, twitch.ErrModerationRateLimit}} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests++
+				w.WriteHeader(test.status)
+			}))
+			defer server.Close()
+			api := &twitch.API{HTTP: server.Client(), APIBaseURL: server.URL, OAuthBaseURL: server.URL, ClientID: "client", AccessToken: "access"}
+			auth := twitch.NewUserClient(api, twitch.SetupScopes)
+			sender := &twitchOutboundSender{moderation: twitch.NewModerationClient(auth, "100", "200")}
+			result, err := sender.ClearMessages(context.Background(), []string{"one", "two", "three"})
+			if !errors.Is(err, test.want) || requests != 1 {
+				t.Fatalf("result=%+v requests=%d err=%v", result, requests, err)
+			}
+			if test.status == http.StatusTooManyRequests && result.Failed != 3 {
+				t.Fatalf("rate-limit result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestTwitchModerationAndClearNeverDeleteArchiveRows(t *testing.T) {
+	fixedNow := time.Now().UTC()
+	store, err := archivepkg.Open(filepath.Join(t.TempDir(), "archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	message := chat.Message{ID: "historical", Platform: chat.PlatformTwitch, ChannelID: "100", Timestamp: fixedNow, AuthorID: "300", AuthorDisplayName: "TargetUser", Text: "keep forever", EventType: chat.EventMessage}
+	if inserted, storeErr := store.Store(context.Background(), message); storeErr != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v", inserted, storeErr)
+	}
+	banCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/users":
+			_, _ = io.WriteString(w, `{"data":[{"id":"300","login":"targetuser","display_name":"TargetUser"}]}`)
+		case "/moderation/bans":
+			banCalls++
+			if banCalls == 3 {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			_, _ = io.WriteString(w, `{"data":[{}]}`)
+		case "/moderation/chat":
+			if request.URL.Query().Get("message_id") == "fail" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	auth := twitch.NewUserClient(&twitch.API{HTTP: server.Client(), APIBaseURL: server.URL, OAuthBaseURL: server.URL, ClientID: "client", AccessToken: "access"}, twitch.SetupScopes)
+	sender := &twitchOutboundSender{moderation: twitch.NewModerationClient(auth, "100", "200")}
+	controller := &remoteClearController{source: store, platforms: map[string]remoteClearPlatform{"twitch": sender}, now: func() time.Time { return fixedNow }}
+	operations := []struct {
+		name string
+		run  func() error
+	}{
+		{"ban", func() error {
+			_, operationErr := sender.BanUser(context.Background(), "targetuser")
+			return operationErr
+		}},
+		{"timeout", func() error {
+			_, operationErr := sender.TimeoutUser(context.Background(), "targetuser", "1s")
+			return operationErr
+		}},
+		{"failed-ban", func() error {
+			_, operationErr := sender.BanUser(context.Background(), "targetuser")
+			return operationErr
+		}},
+		{"clear-all", func() error {
+			_, operationErr := controller.Execute(context.Background(), "twitch")
+			return operationErr
+		}},
+		{"batch-clear", func() error {
+			_, operationErr := controller.Execute(context.Background(), "twitch 1d")
+			return operationErr
+		}},
+		{"failed-clear", func() error {
+			_, operationErr := sender.ClearMessages(context.Background(), []string{"fail"})
+			return operationErr
+		}},
+	}
+	for _, operation := range operations {
+		_ = operation.run()
+		stats, statsErr := store.Stats(context.Background())
+		if statsErr != nil || stats.Total != 1 {
+			t.Fatalf("operation=%s stats=%+v err=%v", operation.name, stats, statsErr)
+		}
 	}
 }
 

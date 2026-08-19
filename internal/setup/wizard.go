@@ -372,9 +372,9 @@ func twitchInstructions(c config.Config) string {
 2. Add this exact OAuth redirect URI:
    ` + c.Twitch.RedirectURI + `
 3. The Client ID identifies your app. The Client Secret authenticates the local authorization-code exchange and must remain private.
-4. Your browser will ask for exactly user:read:chat, user:write:chat, and channel:manage:broadcast. These allow Streamchat to receive channel.chat.message events, send chat messages, and update the authenticated broadcaster's title/category. Streamchat stores the user access token and refresh token privately and refreshes authorization when required.
+4. Your browser will ask for exactly user:read:chat, user:write:chat, channel:manage:broadcast, moderator:manage:banned_users, and moderator:manage:chat_messages. These allow Streamchat to receive channel.chat.message events, send chat messages, update the authenticated broadcaster's title/category, ban or timeout users when the account is a channel moderator, and clear or delete Twitch chat messages. Streamchat stores the user access token and refresh token privately and refreshes authorization when required.
 
-The Twitch account you authorize is the identity Streamchat reads and sends chat as. Channel names are resolved to numeric IDs automatically. Existing chat authorizations continue to work for chat, but title/category controls require reauthorization by rerunning streamchat setup twitch.`
+The Twitch account you authorize is the identity Streamchat reads and sends chat as and the moderator identity used by moderation APIs. Channel names are resolved to numeric IDs automatically. Existing authorizations continue to work for the features covered by their current scopes; only a command missing its required scope asks you to rerun streamchat setup twitch.`
 }
 
 func ParsePlatforms(args []string) ([]string, error) {
