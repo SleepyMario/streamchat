@@ -397,6 +397,8 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			chat:       twitch.NewChatSenderWithUserClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
 			channel:    twitch.NewChannelClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
 			moderation: twitch.NewModerationClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
+			userID:     c.Twitch.UserID,
+			userLogin:  c.Twitch.UserLogin,
 		}
 		targets = outbound.NewTargets(
 			outbound.Target{
@@ -617,17 +619,16 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	if inFile != nil {
 		if outFile, outputOK := out.(*os.File); outputOK && terminalui.IsInteractive(inFile, outFile) {
 			var err error
-			emotes := emote.NewDefaultControllerWithOptions(emote.DefaultControllerOptions{Mode: c.Emotes.Mode, TerminalOutput: outFile, Debug: c.Emotes.Debug})
+			imageBackend, resolver := interactiveEmotePresentation()
 			initialTarget := ""
 			if targets != nil {
 				initialTarget = targets.Selected()
 			}
-			terminal, err = terminalui.OpenWithBackendAndTarget(inFile, outFile, in, emotes, initialTarget)
+			terminal, err = terminalui.OpenWithBackendAndTarget(inFile, outFile, in, imageBackend, initialTarget)
 			if err != nil {
 				return fmt.Errorf("initialize interactive terminal: %w", err)
 			}
-			emotes.SetRedraw(terminal.Redraw)
-			emoteResolver = emotes.Resolve
+			emoteResolver = resolver
 			safeOut = terminal.Writer(out)
 			safeErr = terminal.Writer(errw)
 			defer func() {
@@ -667,6 +668,37 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 			}
 		}
 	}
+	colorAllocator := chattercolor.NewAllocator()
+	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor), Emotes: emoteResolver, ChatColorMode: c.ChatColorMode, ChatterColorSource: colorAllocator}
+	term := render.New(safeOut, renderOptions)
+	formatter := render.New(io.Discard, renderOptions)
+	appendTerminalMessage := func(message chat.Message, provisional bool) error {
+		formatted := formatter.Format(message)
+		author := render.Sanitize(message.AuthorDisplayName)
+		if author == "" {
+			author = "system"
+		}
+		return terminal.AppendMessage(terminalui.DisplayMessage{ID: message.ID, Platform: string(message.Platform), Author: author, Line: formatted.Text, Provisional: provisional, Render: func() emote.Line { return formatter.Format(message) }})
+	}
+	var localDisplayErrors <-chan error
+	if terminal != nil && targets != nil {
+		errors := make(chan error, 1)
+		localDisplayErrors = errors
+		targets.SetSentObserver(func(sent outbound.SentMessage) {
+			message := chat.Message{ID: sent.ID, Platform: chat.Platform(sent.Target), Timestamp: time.Now(), AuthorID: sent.AuthorID, AuthorDisplayName: sent.AuthorDisplayName, Text: sent.Text, EventType: chat.EventMessage}
+			if message.Platform == chat.PlatformKick && message.AuthorID != "" {
+				message.ChannelID = message.AuthorID
+				message.Roles.Add(chat.RoleBroadcaster)
+			}
+			if err := appendTerminalMessage(message, true); err != nil {
+				select {
+				case errors <- err:
+				default:
+				}
+			}
+		})
+		defer targets.SetSentObserver(nil)
+	}
 	var shutdownRequests <-chan struct{}
 	var inputDone <-chan struct{}
 	if in != nil && targets != nil {
@@ -703,10 +735,6 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	}
 	ag, _ := aggregate.New(aggregate.Config{QueueSize: c.QueueSize, DuplicateCapacity: c.DuplicateCapacity, ReorderWindow: 100 * time.Millisecond})
 	merged, aerrs := ag.Run(ctx, inputs...)
-	colorAllocator := chattercolor.NewAllocator()
-	renderOptions := render.Options{Timestamps: c.Timestamps, Color: render.ColorEnabled(c.NoColor), Emotes: emoteResolver, ChatColorMode: c.ChatColorMode, ChatterColorSource: colorAllocator}
-	term := render.New(safeOut, renderOptions)
-	formatter := render.New(io.Discard, renderOptions)
 	var log *logging.Logger
 	var e error
 	if c.LogFile != "" {
@@ -721,6 +749,8 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	var firstAdapterError error
 	for remaining > 0 || merged != nil {
 		select {
+		case e = <-localDisplayErrors:
+			return e
 		case <-shutdownRequests:
 			cancel()
 			<-inputDone
@@ -759,13 +789,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 			if terminal == nil {
 				e = term.Render(m)
 			} else {
-				formatted := formatter.Format(m)
-				author := render.Sanitize(m.AuthorDisplayName)
-				if author == "" {
-					author = "system"
-				}
-				message := m
-				e = terminal.AppendMessage(terminalui.DisplayMessage{ID: m.ID, Platform: string(m.Platform), Author: author, Line: formatted.Text, Render: func() emote.Line { return formatter.Format(message) }})
+				e = appendTerminalMessage(m, false)
 			}
 			if e != nil {
 				return e
@@ -778,6 +802,14 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 		}
 	}
 	return firstAdapterError
+}
+
+// interactiveEmotePresentation is the release boundary for graphical terminal
+// presentation. v0.1.1-beta deliberately keeps provider emotes text-only while
+// retaining the parsers, metadata, cache, resolver, and image backend for a
+// future scrolling/reflow renderer overhaul.
+func interactiveEmotePresentation() (emote.Backend, emote.Resolver) {
+	return nil, nil
 }
 
 type lockedWriter struct {
@@ -1208,18 +1240,42 @@ func sanitizeLocalOutput(value string) string {
 
 type kickOutboundSender struct {
 	mu         sync.Mutex
+	authorMu   sync.RWMutex
 	refreshMu  sync.RWMutex
 	refreshNow func()
+	authorName string
 	config     config.Kick
 	configPath string
 	http       *http.Client
 }
 
 func (s *kickOutboundSender) Send(ctx context.Context, message string) error {
-	return s.withToken(ctx, func(accessToken string) error {
+	_, err := s.SendMessage(ctx, message)
+	return err
+}
+
+func (s *kickOutboundSender) SendMessage(ctx context.Context, message string) (outbound.SentMessage, error) {
+	var receipt kick.ChatReceipt
+	err := s.withToken(ctx, func(accessToken string) error {
 		client := kick.ChatClient{HTTP: s.http, BaseURL: s.config.APIBaseURL, AccessToken: accessToken}
-		return client.Send(ctx, s.config.BroadcasterID, message)
+		var sendErr error
+		receipt, sendErr = client.SendMessage(ctx, s.config.BroadcasterID, message)
+		if sendErr == nil && s.getAuthorName() == "" {
+			oauth := kick.OAuthClient{HTTP: s.http, APIBaseURL: s.config.APIBaseURL}
+			if _, name, lookupErr := oauth.CurrentUser(ctx, accessToken); lookupErr == nil {
+				s.setAuthorName(name)
+			}
+		}
+		return sendErr
 	})
+	if err != nil {
+		return outbound.SentMessage{}, err
+	}
+	name := s.getAuthorName()
+	if name == "" {
+		name = "you"
+	}
+	return outbound.SentMessage{ID: receipt.MessageID, AuthorID: s.config.BroadcasterID, AuthorDisplayName: name}, nil
 }
 
 func (s *kickOutboundSender) Title(ctx context.Context, title string) (string, error) {
@@ -1269,7 +1325,26 @@ func (s *kickOutboundSender) StreamStatus(ctx context.Context) (terminalui.Strea
 		status, err = client.GetStatus(ctx)
 		return err
 	})
+	if err == nil {
+		s.setAuthorName(status.Slug)
+	}
 	return terminalui.StreamStatus{Title: status.Title, Category: status.Category, ViewerCount: status.ViewerCount, Live: status.Live}, err
+}
+
+func (s *kickOutboundSender) getAuthorName() string {
+	s.authorMu.RLock()
+	defer s.authorMu.RUnlock()
+	return s.authorName
+}
+
+func (s *kickOutboundSender) setAuthorName(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	s.authorMu.Lock()
+	s.authorName = name
+	s.authorMu.Unlock()
 }
 
 func (s *kickOutboundSender) setStatusRefresh(refresh func()) {
@@ -1291,15 +1366,30 @@ type twitchOutboundSender struct {
 	chat       *twitch.ChatSender
 	channel    *twitch.ChannelClient
 	moderation *twitch.ModerationClient
+	userID     string
+	userLogin  string
 	refreshMu  sync.RWMutex
 	refreshNow func()
 }
 
 func (s *twitchOutboundSender) Send(ctx context.Context, message string) error {
+	_, err := s.SendMessage(ctx, message)
+	return err
+}
+
+func (s *twitchOutboundSender) SendMessage(ctx context.Context, message string) (outbound.SentMessage, error) {
 	if s.chat == nil {
-		return twitch.ErrChatAuthentication
+		return outbound.SentMessage{}, twitch.ErrChatAuthentication
 	}
-	return s.chat.Send(ctx, message)
+	messageID, err := s.chat.SendMessage(ctx, message)
+	if err != nil {
+		return outbound.SentMessage{}, err
+	}
+	name := strings.TrimSpace(s.userLogin)
+	if name == "" {
+		name = "you"
+	}
+	return outbound.SentMessage{ID: messageID, AuthorID: s.userID, AuthorDisplayName: name}, nil
 }
 
 func (s *twitchOutboundSender) Title(ctx context.Context, title string) (string, error) {

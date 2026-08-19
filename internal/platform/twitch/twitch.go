@@ -254,29 +254,34 @@ func NewChatSenderWithUserClient(auth *UserClient, broadcasterID, senderID strin
 }
 
 func (s *ChatSender) Send(ctx context.Context, message string) error {
+	_, err := s.SendMessage(ctx, message)
+	return err
+}
+
+func (s *ChatSender) SendMessage(ctx context.Context, message string) (string, error) {
 	if s.Auth == nil {
-		return ErrChatAuthentication
+		return "", ErrChatAuthentication
 	}
 	if err := s.Auth.RequireScopes(WriteChatScope); err != nil {
-		return err
+		return "", err
 	}
 	if strings.TrimSpace(s.BroadcasterID) == "" || strings.TrimSpace(s.SenderID) == "" {
-		return errors.New("Twitch chat target is unavailable; run: streamchat setup twitch")
+		return "", errors.New("Twitch chat target is unavailable; run: streamchat setup twitch")
 	}
 	if strings.TrimSpace(message) == "" {
-		return errors.New("Twitch chat message is empty")
+		return "", errors.New("Twitch chat message is empty")
 	}
 	response, err := s.Auth.Do(ctx, []string{WriteChatScope}, func(accessToken string) (*http.Request, error) {
 		return buildChatRequest(s.Auth.API, accessToken, s.BroadcasterID, s.SenderID, message)
 	})
 	if err != nil {
-		return fmt.Errorf("Twitch chat request failed: %w", err)
+		return "", fmt.Errorf("Twitch chat request failed: %w", err)
 	}
 	defer response.Body.Close()
 	var result chatSendResponse
 	if response.StatusCode/100 == 2 {
 		if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
-			return errors.New("Twitch chat returned an invalid response")
+			return "", errors.New("Twitch chat returned an invalid response")
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
@@ -313,26 +318,26 @@ func buildChatRequest(api *API, accessToken, broadcasterID, senderID, message st
 	return req, nil
 }
 
-func chatSendResult(status int, response chatSendResponse) error {
+func chatSendResult(status int, response chatSendResponse) (string, error) {
 	switch status {
 	case http.StatusOK:
 		if len(response.Data) == 1 && response.Data[0].IsSent && response.Data[0].MessageID != "" {
-			return nil
+			return response.Data[0].MessageID, nil
 		}
 		if len(response.Data) == 1 && response.Data[0].DropReason != nil && response.Data[0].DropReason.Code != "" {
-			return fmt.Errorf("%w (%s)", ErrChatRejected, response.Data[0].DropReason.Code)
+			return "", fmt.Errorf("%w (%s)", ErrChatRejected, response.Data[0].DropReason.Code)
 		}
-		return ErrChatRejected
+		return "", ErrChatRejected
 	case http.StatusUnauthorized:
-		return ErrChatAuthentication
+		return "", ErrChatAuthentication
 	case http.StatusForbidden:
-		return fmt.Errorf("%w: sender is not permitted in this channel", ErrChatRejected)
+		return "", fmt.Errorf("%w: sender is not permitted in this channel", ErrChatRejected)
 	case http.StatusTooManyRequests:
-		return ErrChatRateLimit
+		return "", ErrChatRateLimit
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
-		return fmt.Errorf("%w (HTTP %d)", ErrChatRejected, status)
+		return "", fmt.Errorf("%w (HTTP %d)", ErrChatRejected, status)
 	default:
-		return fmt.Errorf("Twitch chat API failed (HTTP %d)", status)
+		return "", fmt.Errorf("Twitch chat API failed (HTTP %d)", status)
 	}
 }
 

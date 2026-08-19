@@ -18,6 +18,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
+	"github.com/mattn/go-runewidth"
 )
 
 func TestSanitizeAndUnicode(t *testing.T) {
@@ -58,7 +59,7 @@ func TestChatterColorModes(t *testing.T) {
 	cyan := chattercolor.Palette()[0].ANSI
 
 	line := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
-	if !strings.HasPrefix(line.Text, cyan+"[KICK] [M] Alice") || !strings.HasSuffix(line.Text, "hello\x1b[0m") {
+	if !strings.HasPrefix(line.Text, cyan+"[KICK]") || !strings.Contains(line.Text, "[M]") || !strings.Contains(line.Text, "Alice") || !strings.HasSuffix(line.Text, "hello\x1b[0m") {
 		t.Fatalf("line mode=%q", line.Text)
 	}
 	if strings.Contains(strings.TrimPrefix(line.Text, cyan), "\x1b[32m") {
@@ -66,7 +67,7 @@ func TestChatterColorModes(t *testing.T) {
 	}
 
 	username := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeUsername, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
-	if !strings.Contains(username.Text, "\x1b[32m[KICK]\x1b[0m [M] "+cyan+"Alice\x1b[0m") || strings.Contains(username.Text, cyan+"hello") || !strings.HasSuffix(username.Text, "\x1b[0m") {
+	if !strings.Contains(username.Text, "\x1b[32m[KICK]\x1b[0m") || !strings.Contains(username.Text, "[M]") || !strings.Contains(username.Text, cyan+"Alice\x1b[0m") || strings.Contains(username.Text, cyan+"hello") || !strings.HasSuffix(username.Text, "\x1b[0m") {
 		t.Fatalf("username mode=%q", username.Text)
 	}
 
@@ -150,7 +151,7 @@ func TestTwitchRolesChatterIDsCJKAndEmoteFallbackRenderTogether(t *testing.T) {
 		Emotes:            []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}},
 	}
 	first := formatter.Format(message)
-	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[TW]") || !strings.Contains(Sanitize(first.Text), "[B][M][P][V][S] 觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
+	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[Twitch]") || !strings.Contains(Sanitize(first.Text), "[B][M][P][V]") || !strings.Contains(Sanitize(first.Text), "觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
 		t.Fatalf("first=%q", first.Text)
 	}
 	message.AuthorDisplayName = "renamed"
@@ -167,8 +168,8 @@ func TestTwitchRolesChatterIDsCJKAndEmoteFallbackRenderTogether(t *testing.T) {
 func TestTwitchTimestampAndCanonicalLabel(t *testing.T) {
 	timestamp := time.Date(2026, 8, 19, 12, 34, 56, 0, time.UTC)
 	line := New(io.Discard, Options{Timestamps: true}).Format(chat.Message{Platform: chat.PlatformTwitch, Timestamp: timestamp, AuthorDisplayName: "viewer", Text: "hello"})
-	wantPrefix := timestamp.Local().Format("15:04:05") + " [TW]"
-	if !strings.HasPrefix(Sanitize(line.Text), wantPrefix) || strings.Contains(line.Text, "[TWITCH]") {
+	wantPrefix := timestamp.Local().Format("15:04:05") + " [Twitch]"
+	if !strings.HasPrefix(Sanitize(line.Text), wantPrefix) || strings.Contains(line.Text, "[TW]") {
 		t.Fatalf("line=%q want prefix=%q", line.Text, wantPrefix)
 	}
 }
@@ -298,66 +299,66 @@ func TestIdentityRendering(t *testing.T) {
 		author      string
 		roles       chat.RoleSet
 		authorWidth int
-		want        string
+		wantAuthor  string
 	}{
 		{
-			name:   "normal username alignment",
-			author: "SleepyMario",
-			want:   "[KICK] SleepyMario       hello\n",
+			name:       "normal username alignment",
+			author:     "SleepyMario",
+			wantAuthor: "SleepyMario",
 		},
 		{
-			name:   "moderator letter before username",
-			author: "BotRix",
-			roles:  roles(chat.RoleModerator),
-			want:   "[KICK] [M] BotRix        hello\n",
+			name:       "moderator letter before username",
+			author:     "BotRix",
+			roles:      roles(chat.RoleModerator),
+			wantAuthor: "BotRix",
 		},
 		{
-			name:   "broadcaster before username",
-			author: "SleepyMario",
-			roles:  roles(chat.RoleBroadcaster),
-			want:   "[KICK] [B] SleepyMario   hello\n",
+			name:       "broadcaster before username",
+			author:     "SleepyMario",
+			roles:      roles(chat.RoleBroadcaster),
+			wantAuthor: "SleepyMario",
 		},
 		{
-			name:   "moderator subscriber",
-			author: "SomeUser",
-			roles:  roles(chat.RoleSubscriber, chat.RoleModerator),
-			want:   "[KICK] [M][S] SomeUser   hello\n",
+			name:       "moderator subscriber",
+			author:     "SomeUser",
+			roles:      roles(chat.RoleSubscriber, chat.RoleModerator),
+			wantAuthor: "SomeUser",
 		},
 		{
-			name:   "broadcaster moderator",
-			author: "Owner",
-			roles:  roles(chat.RoleModerator, chat.RoleBroadcaster),
-			want:   "[KICK] [B][M] Owner      hello\n",
+			name:       "broadcaster moderator",
+			author:     "Owner",
+			roles:      roles(chat.RoleModerator, chat.RoleBroadcaster),
+			wantAuthor: "Owner",
 		},
 		{
-			name:   "vip og subscriber",
-			author: "Another",
-			roles:  roles(chat.RoleSubscriber, chat.RoleOG, chat.RoleVIP),
-			want:   "[KICK] [V][O][S] Another  hello\n",
+			name:       "vip og subscriber",
+			author:     "Another",
+			roles:      roles(chat.RoleSubscriber, chat.RoleOG, chat.RoleVIP),
+			wantAuthor: "Another",
 		},
 		{
-			name:   "long username exceeding cap",
-			author: "abcdefghijklmnopqrstuvwx",
-			want:   "[KICK] abcdefghijklmnopqrstuvwx  hello\n",
+			name:       "long username exceeding cap",
+			author:     "abcdefghijklmnopqrstuvwx",
+			wantAuthor: "abcdefghijklmno…",
 		},
 		{
 			name:        "long moderator identity exceeding cap",
 			author:      "abcdefghijklmnopq",
 			authorWidth: 40,
 			roles:       roles(chat.RoleModerator),
-			want:        "[KICK] [M] abcdefghijklmnopq   hello\n",
+			wantAuthor:  "abcdefghijklmnopq",
 		},
 		{
-			name:   "raw and verified badges are not roles",
-			author: "user",
-			want:   "[KICK] user              hello\n",
+			name:       "raw and verified badges are not roles",
+			author:     "user",
+			wantAuthor: "user",
 		},
 		{
 			name:        "unicode display width alignment with role",
 			author:      "名",
 			authorWidth: 10,
 			roles:       roles(chat.RoleVIP),
-			want:        "[KICK] [V] 名      hello\n",
+			wantAuthor:  "名",
 		},
 	}
 
@@ -374,17 +375,79 @@ func TestIdentityRendering(t *testing.T) {
 			if err := New(&b, Options{AuthorWidth: tt.authorWidth}).Render(m); err != nil {
 				t.Fatal(err)
 			}
-			if got := b.String(); got != tt.want {
-				t.Fatalf("Render() = %q, want %q", got, tt.want)
+			got := strings.TrimSuffix(b.String(), "\n")
+			plain := Sanitize(got)
+			authorWidth := tt.authorWidth
+			if authorWidth <= 0 {
+				authorWidth = 16
+			}
+			authorWidth = min(authorWidth, maxIdentityWidth)
+			wantPrefix := "[KICK]" + strings.Repeat(" ", providerColumnWidth-len("[KICK]")+columnGapWidth) +
+				RenderRoleBadges(tt.roles) + strings.Repeat(" ", roleColumnWidth-runewidth.StringWidth(RenderRoleBadges(tt.roles))+columnGapWidth) +
+				tt.wantAuthor + strings.Repeat(" ", authorWidth-runewidth.StringWidth(tt.wantAuthor)+columnGapWidth)
+			if plain != wantPrefix+"hello" {
+				t.Fatalf("Render() = %q, want prefix %q", got, wantPrefix)
 			}
 		})
 	}
 }
 
+func TestProviderBadgeAndNicknameColumnsAlignAcrossPlatforms(t *testing.T) {
+	tests := []struct {
+		platform chat.Platform
+		label    string
+		roles    chat.RoleSet
+		author   string
+	}{
+		{chat.PlatformKick, "[KICK]", 0, "A"},
+		{chat.PlatformTwitch, "[Twitch]", roles(chat.RoleBroadcaster), "SleepyMario"},
+		{chat.PlatformYouTube, "[YouTube]", roles(chat.RoleModerator, chat.RoleSubscriber), "abcdefghijklmnopqrstuvwx"},
+		{chat.PlatformKick, "[KICK]", roles(chat.RoleVIP, chat.RoleOG, chat.RoleFollower), "名"},
+		{chat.PlatformTwitch, "[Twitch]", roles(chat.RoleBroadcaster, chat.RoleModerator, chat.RolePartner, chat.RoleSubscriber), "viewer"},
+	}
+	wantBadgeColumn := providerColumnWidth + columnGapWidth
+	wantAuthorColumn := wantBadgeColumn + roleColumnWidth + columnGapWidth
+	wantMessageColumn := wantAuthorColumn + 16 + columnGapWidth
+	for _, test := range tests {
+		line := New(io.Discard, Options{}).Format(chat.Message{Platform: test.platform, AuthorDisplayName: test.author, Roles: test.roles, Text: "MESSAGE"})
+		plain := Sanitize(line.Text)
+		if !strings.HasPrefix(plain, test.label) {
+			t.Fatalf("platform=%s line=%q", test.platform, plain)
+		}
+		if badges := RenderRoleBadges(test.roles); badges != "" && runewidth.StringWidth(plain[:strings.Index(plain, badges)]) != wantBadgeColumn {
+			t.Fatalf("platform=%s badge column line=%q", test.platform, plain)
+		}
+		visibleAuthor := truncateDisplayWidth(test.author, 16)
+		if runewidth.StringWidth(plain[:strings.Index(plain, visibleAuthor)]) != wantAuthorColumn {
+			t.Fatalf("platform=%s author column line=%q", test.platform, plain)
+		}
+		if runewidth.StringWidth(plain[:strings.Index(plain, "MESSAGE")]) != wantMessageColumn {
+			t.Fatalf("platform=%s message column line=%q", test.platform, plain)
+		}
+	}
+}
+
 func TestRenderRoleBadgesFixedOrderAndUnknownOmitted(t *testing.T) {
 	got := RenderRoleBadges(roles(chat.RoleFollower, chat.RoleSubscriber, chat.RoleOG, chat.RoleVIP, chat.RolePartner, chat.RoleModerator, chat.RoleBroadcaster))
-	if got != "[B][M][P][V][O][S][F]" {
+	if got != "[B][M][P][V]" {
 		t.Fatalf("badges=%q", got)
+	}
+	available := []struct {
+		role chat.Role
+		want string
+	}{
+		{chat.RoleBroadcaster, "[B]"},
+		{chat.RoleModerator, "[M]"},
+		{chat.RolePartner, "[P]"},
+		{chat.RoleVIP, "[V]"},
+		{chat.RoleOG, "[O]"},
+		{chat.RoleSubscriber, "[S]"},
+		{chat.RoleFollower, "[F]"},
+	}
+	for _, badge := range available {
+		if got = RenderRoleBadges(roles(badge.role)); got != badge.want {
+			t.Fatalf("role=%v badge=%q want=%q", badge.role, got, badge.want)
+		}
 	}
 	var unknown chat.RoleSet
 	unknown.Add(chat.Role(99))

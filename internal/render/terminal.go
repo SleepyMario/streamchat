@@ -14,7 +14,13 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const maxIdentityWidth = 22
+const (
+	maxIdentityWidth    = 22
+	providerColumnWidth = 9 // display width of "[YouTube]"
+	roleSlotCapacity    = 4
+	roleColumnWidth     = roleSlotCapacity * 3 // display width of four compact "[X]" badges
+	columnGapWidth      = 2
+)
 
 var ansi = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
 
@@ -71,14 +77,58 @@ func RenderRoleBadges(roles chat.RoleSet) string {
 		{chat.RoleFollower, "F"},
 	}
 	var badges strings.Builder
+	rendered := 0
 	for _, value := range ordered {
 		if roles.Has(value.role) {
 			badges.WriteByte('[')
 			badges.WriteString(value.letter)
 			badges.WriteByte(']')
+			rendered++
+			if rendered == roleSlotCapacity {
+				break
+			}
 		}
 	}
 	return badges.String()
+}
+
+func providerLabel(platform chat.Platform) string {
+	switch platform {
+	case chat.PlatformKick:
+		return "[KICK]"
+	case chat.PlatformTwitch:
+		return "[Twitch]"
+	case chat.PlatformYouTube:
+		return "[YouTube]"
+	default:
+		return "[Unknown]"
+	}
+}
+
+func truncateDisplayWidth(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(value) <= width {
+		return value
+	}
+	limit := width - 1
+	var result strings.Builder
+	used := 0
+	for _, r := range value {
+		runeWidth := runewidth.RuneWidth(r)
+		if used+runeWidth > limit {
+			break
+		}
+		result.WriteRune(r)
+		used += runeWidth
+	}
+	result.WriteRune('…')
+	return result.String()
+}
+
+func fieldPadding(value string, width int) string {
+	return strings.Repeat(" ", max(width-runewidth.StringWidth(value), 0))
 }
 
 func (t *Terminal) Render(m chat.Message) error {
@@ -88,12 +138,6 @@ func (t *Terminal) Render(m chat.Message) error {
 }
 
 func (t *Terminal) Format(m chat.Message) emote.Line {
-	label := "YT"
-	if m.Platform == chat.PlatformKick {
-		label = "KICK"
-	} else if m.Platform == chat.PlatformTwitch {
-		label = "TW"
-	}
 	p := ""
 	if t.opt.Timestamps {
 		p = m.Timestamp.Local().Format("15:04:05 ")
@@ -103,6 +147,8 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 	if author == "" {
 		author = "system"
 	}
+	authorWidth := min(t.opt.AuthorWidth, maxIdentityWidth)
+	author = truncateDisplayWidth(author, authorWidth)
 	chatterANSI := ""
 	if actualChatter && t.opt.Color && t.opt.ChatColorMode != chattercolor.ModeOff && t.opt.ChatterColorSource != nil {
 		if assigned, ok := t.opt.ChatterColorSource.Assign(m.Platform, m.AuthorID, m.AuthorDisplayName); ok {
@@ -113,10 +159,7 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 	if chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeUsername {
 		displayAuthor = chatterANSI + author + "\x1b[0m"
 	}
-	identity := displayAuthor
-	if badges := RenderRoleBadges(m.Roles); badges != "" {
-		identity = badges + " " + displayAuthor
-	}
+	badges := RenderRoleBadges(m.Roles)
 	body := emote.FormatText(m.Platform, m.Text, m.Emotes, Sanitize, t.opt.Emotes)
 	textPrefix := ""
 	if m.Reply != nil {
@@ -128,7 +171,8 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 	if m.Membership != nil {
 		textPrefix += "[MEMBER] "
 	}
-	pl := "[" + label + "]"
+	pl := providerLabel(m.Platform)
+	plainProvider := pl
 	if t.opt.Color && !(chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeLine) {
 		c := "\x1b[31m"
 		if m.Platform == chat.PlatformKick {
@@ -138,9 +182,11 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 		}
 		pl = c + pl + "\x1b[0m"
 	}
-	identityWidth := min(t.opt.AuthorWidth, maxIdentityWidth)
-	padding := max(identityWidth-runewidth.StringWidth(Sanitize(identity)), 0)
-	prefix := fmt.Sprintf("%s%-6s %s%s%s", p, pl, identity, strings.Repeat(" ", padding+2), textPrefix)
+	prefix := p +
+		pl + fieldPadding(plainProvider, providerColumnWidth) + strings.Repeat(" ", columnGapWidth) +
+		badges + fieldPadding(badges, roleColumnWidth) + strings.Repeat(" ", columnGapWidth) +
+		displayAuthor + fieldPadding(author, authorWidth) + strings.Repeat(" ", columnGapWidth) +
+		textPrefix
 	line := emote.Line{Text: prefix + body.Text, Images: append([]emote.InlineImage(nil), body.Images...)}
 	if body.GraphicalText != "" {
 		line.GraphicalText = prefix + body.GraphicalText

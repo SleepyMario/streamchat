@@ -87,6 +87,25 @@ func TestTwitchStructuredEmoteRangesUseInclusiveRunePositions(t *testing.T) {
 	}
 }
 
+func TestThirdPartyExtensionNamesRemainReadableEventSubText(t *testing.T) {
+	text := "D: tehPoleCat FeelsSnowMan"
+	_, message, err := ParseEvent(twitchFragmentNotification(text, []map[string]any{twitchTextFragment(text)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(message.Emotes) != 0 {
+		t.Fatalf("third-party text was invented as Twitch emotes: %+v", message.Emotes)
+	}
+	resolverCalled := false
+	line := emote.FormatText(chat.PlatformTwitch, message.Text, message.Emotes, nil, func(chat.Platform, chat.Emote) (string, bool) {
+		resolverCalled = true
+		return "", false
+	})
+	if resolverCalled || line.Text != text || line.GraphicalText != "" || len(line.Images) != 0 {
+		t.Fatalf("line=%+v resolverCalled=%t", line, resolverCalled)
+	}
+}
+
 func TestTwitchEmoteURLUsesDocumentedTemplatePolicy(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -476,8 +495,12 @@ func TestSendChatMessageRequest(t *testing.T) {
 	}))
 	defer s.Close()
 	sender := NewChatSender(&API{HTTP: s.Client(), APIBaseURL: s.URL, ClientID: "client-id", AccessToken: "access-token"}, "broadcaster-id", "sender-id", RequiredChatScopes)
-	if err := sender.Send(context.Background(), "hello 世界"); err != nil {
+	messageID, err := sender.SendMessage(context.Background(), "hello 世界")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if messageID != "message-id" {
+		t.Fatalf("message ID=%q", messageID)
 	}
 	want := map[string]string{"broadcaster_id": "broadcaster-id", "sender_id": "sender-id", "message": "hello 世界"}
 	if !reflect.DeepEqual(body, want) {

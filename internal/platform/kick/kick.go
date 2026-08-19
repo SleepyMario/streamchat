@@ -351,18 +351,27 @@ type ChatClient struct {
 }
 
 func (c ChatClient) Send(ctx context.Context, broadcaster, message string) error {
+	_, err := c.SendMessage(ctx, broadcaster, message)
+	return err
+}
+
+type ChatReceipt struct {
+	MessageID string
+}
+
+func (c ChatClient) SendMessage(ctx context.Context, broadcaster, message string) (ChatReceipt, error) {
 	if c.AccessToken == "" {
-		return fmt.Errorf("%w; run: streamchat setup kick", ErrChatAuthentication)
+		return ChatReceipt{}, fmt.Errorf("%w; run: streamchat setup kick", ErrChatAuthentication)
 	}
 	broadcasterID, err := strconv.ParseInt(broadcaster, 10, 64)
 	if err != nil || broadcasterID <= 0 {
-		return errors.New("Kick broadcaster user ID is missing; run: streamchat setup kick")
+		return ChatReceipt{}, errors.New("Kick broadcaster user ID is missing; run: streamchat setup kick")
 	}
 	if strings.TrimSpace(message) == "" {
-		return errors.New("Kick chat message cannot be empty")
+		return ChatReceipt{}, errors.New("Kick chat message cannot be empty")
 	}
 	if utf8.RuneCountInString(message) > 500 {
-		return errors.New("Kick chat messages are limited to 500 characters")
+		return ChatReceipt{}, errors.New("Kick chat messages are limited to 500 characters")
 	}
 	body, err := json.Marshal(struct {
 		BroadcasterUserID int64  `json:"broadcaster_user_id"`
@@ -370,11 +379,11 @@ func (c ChatClient) Send(ctx context.Context, broadcaster, message string) error
 		Type              string `json:"type"`
 	}{BroadcasterUserID: broadcasterID, Content: message, Type: "user"})
 	if err != nil {
-		return err
+		return ChatReceipt{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/chat", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return ChatReceipt{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
 	req.Header.Set("Accept", "application/json")
@@ -385,21 +394,33 @@ func (c ChatClient) Send(ctx context.Context, broadcaster, message string) error
 	}
 	r, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("Kick chat request failed: %w", err)
+		return ChatReceipt{}, fmt.Errorf("Kick chat request failed: %w", err)
 	}
 	defer r.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
 	switch r.StatusCode {
 	case http.StatusOK:
-		return nil
+		var response struct {
+			Data struct {
+				IsSent    bool   `json:"is_sent"`
+				MessageID string `json:"message_id"`
+			} `json:"data"`
+		}
+		if err = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&response); err != nil || !response.Data.IsSent || strings.TrimSpace(response.Data.MessageID) == "" {
+			return ChatReceipt{}, errors.New("Kick chat returned an invalid send receipt")
+		}
+		return ChatReceipt{MessageID: response.Data.MessageID}, nil
 	case http.StatusUnauthorized:
-		return fmt.Errorf("%w (HTTP 401); run: streamchat setup kick", ErrChatAuthentication)
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+		return ChatReceipt{}, fmt.Errorf("%w (HTTP 401); run: streamchat setup kick", ErrChatAuthentication)
 	case http.StatusForbidden:
-		return fmt.Errorf("%w (HTTP 403); run: streamchat setup kick", ErrChatWritePermission)
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+		return ChatReceipt{}, fmt.Errorf("%w (HTTP 403); run: streamchat setup kick", ErrChatWritePermission)
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%w (HTTP 429)", ErrChatRateLimit)
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+		return ChatReceipt{}, fmt.Errorf("%w (HTTP 429)", ErrChatRateLimit)
 	default:
-		return fmt.Errorf("Kick chat API failed (HTTP %d)", r.StatusCode)
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+		return ChatReceipt{}, fmt.Errorf("Kick chat API failed (HTTP %d)", r.StatusCode)
 	}
 }
 

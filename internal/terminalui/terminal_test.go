@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +124,69 @@ func TestChatterAssignmentsSurviveResizeScrollCleanAndEmoteRedraw(t *testing.T) 
 	}
 }
 
+func TestProviderReceiptEchoIsColoredAndReplacedByAuthoritativeInboundMessage(t *testing.T) {
+	screen := newScreen(io.Discard, func() int { return 60 }, func() int { return 10 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	allocator := chattercolor.NewAllocator()
+	formatter := render.New(io.Discard, render.Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: allocator})
+	appendMessage := func(message chat.Message, provisional bool) {
+		t.Helper()
+		copyOfMessage := message
+		if err := screen.AppendMessage(DisplayMessage{ID: message.ID, Platform: string(message.Platform), Author: message.AuthorDisplayName, Provisional: provisional, Render: func() emote.Line {
+			return formatter.Format(copyOfMessage)
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local := chat.Message{ID: "provider-message-id", Platform: chat.PlatformKick, AuthorID: "100", AuthorDisplayName: "you", Text: "sent from Streamchat", EventType: chat.EventMessage}
+	appendMessage(local, true)
+	screen.mu.Lock()
+	localLine := screen.messages[0].rendered().Text
+	screen.mu.Unlock()
+	if !strings.HasPrefix(localLine, chattercolor.Palette()[0].ANSI) || !strings.Contains(render.Sanitize(localLine), "sent from Streamchat") {
+		t.Fatalf("local echo=%q", localLine)
+	}
+	confirmed := local
+	confirmed.AuthorDisplayName = "Streamer"
+	appendMessage(confirmed, false)
+	screen.mu.Lock()
+	if len(screen.messages) != 1 || screen.messages[0].Provisional {
+		t.Fatalf("messages=%+v", screen.messages)
+	}
+	confirmedLine := screen.messages[0].rendered().Text
+	screen.mu.Unlock()
+	if !strings.HasPrefix(confirmedLine, chattercolor.Palette()[0].ANSI) || !strings.Contains(render.Sanitize(confirmedLine), "Streamer") {
+		t.Fatalf("confirmed=%q", confirmedLine)
+	}
+	twitch := chat.Message{ID: "twitch-message", Platform: chat.PlatformTwitch, AuthorID: "200", AuthorDisplayName: "TwitchUser", Text: "hello", EventType: chat.EventMessage}
+	appendMessage(twitch, false)
+	screen.mu.Lock()
+	twitchLine := screen.messages[1].rendered().Text
+	screen.mu.Unlock()
+	if !strings.HasPrefix(twitchLine, chattercolor.Palette()[1].ANSI) {
+		t.Fatalf("provider-neutral second assignment=%q", twitchLine)
+	}
+}
+
+func TestAuthoritativeInboundMessageWinsIfItArrivesBeforeLocalReceipt(t *testing.T) {
+	screen := newScreen(io.Discard, func() int { return 40 }, func() int { return 10 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := DisplayMessage{ID: "same", Platform: "kick", Author: "Streamer", Line: "authoritative"}
+	if err := screen.AppendMessage(confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if err := screen.AppendMessage(DisplayMessage{ID: "same", Platform: "kick", Author: "you", Line: "local", Provisional: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(screen.messages) != 1 || screen.messages[0].Line != "authoritative" || screen.messages[0].Provisional {
+		t.Fatalf("messages=%+v", screen.messages)
+	}
+}
+
 func TestRestoredCanonicalTargetIsShownOnInitialDrawAndSurvivesRedraws(t *testing.T) {
 	var output bytes.Buffer
 	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })
@@ -216,7 +280,7 @@ func TestScreenUsesCanonicalTwitchTargetPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen.SetTarget("twitch")
-	if got := plainTerminalOutput(output.String()); !strings.Contains(got, "[TW] > ") || strings.Contains(got, "[TWITCH] > ") {
+	if got := plainTerminalOutput(output.String()); !strings.Contains(got, "[Twitch] > ") || strings.Contains(got, "[TW] > ") {
 		t.Fatalf("prompt=%q", got)
 	}
 }
@@ -627,7 +691,7 @@ func TestScreenCleanAllPreservesPartialUnicodeInput(t *testing.T) {
 	cursorBefore := screen.editor.Cursor()
 	for _, message := range []DisplayMessage{
 		{Platform: "kick", Author: "Alice", Line: "[KICK] Alice  one\n"},
-		{Platform: "youtube", Author: "Bob", Line: "[YT] Bob  two\n"},
+		{Platform: "youtube", Author: "Bob", Line: "[YouTube] Bob  two\n"},
 	} {
 		if err := screen.AppendMessage(message); err != nil {
 			t.Fatal(err)
@@ -1152,8 +1216,8 @@ func TestTwitchCachedEmoteKeepsNameUntilPlacementAndRestoresItAfterFailure(t *te
 	}
 	message := DisplayMessage{ID: "twitch-emote", Platform: "twitch", Render: func() emote.Line {
 		return emote.Line{
-			Text:          "[TW] viewer  Kappa",
-			GraphicalText: "[TW] viewer     ",
+			Text:          "[Twitch] viewer  Kappa",
+			GraphicalText: "[Twitch] viewer     ",
 			Images:        []emote.InlineImage{{Path: "/cache/twitch/25.img", Column: 13, Width: 3}},
 		}
 	}}
@@ -1167,14 +1231,14 @@ func TestTwitchCachedEmoteKeepsNameUntilPlacementAndRestoresItAfterFailure(t *te
 	screen.mu.Lock()
 	before := screen.renderedForDisplayLocked(screen.messages[0]).Text
 	screen.mu.Unlock()
-	if before != "[TW] viewer  Kappa" {
+	if before != "[Twitch] viewer  Kappa" {
 		t.Fatalf("fallback before confirmation=%q", before)
 	}
 	backend.setConfirmed(placements[0].Identifier, true)
 	screen.mu.Lock()
 	confirmed := screen.renderedForDisplayLocked(screen.messages[0]).Text
 	screen.mu.Unlock()
-	if confirmed != "[TW] viewer     " {
+	if confirmed != "[Twitch] viewer     " {
 		t.Fatalf("confirmed backing=%q", confirmed)
 	}
 	backend.setConfirmed(placements[0].Identifier, false)
@@ -1311,6 +1375,233 @@ func TestImagePlacementsRemainDistinctWithoutProviderMessageIDs(t *testing.T) {
 	}
 }
 
+func TestResolvedImageInsertionDoesNotReassignExistingPlacement(t *testing.T) {
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	available := map[string]bool{"305954156": true}
+	message := DisplayMessage{ID: "async-emotes", Platform: "twitch", Render: func() emote.Line {
+		return emote.FormatText(chat.PlatformTwitch, "KappaPogChamp", []chat.Emote{
+			{ID: "25", Name: "Kappa", URL: "https://example.invalid/25", Start: 0, End: 4},
+			{ID: "305954156", Name: "PogChamp", URL: "https://example.invalid/305954156", Start: 5, End: 12},
+		}, nil, func(_ chat.Platform, item chat.Emote) (string, bool) {
+			return "/cache/twitch/" + item.ID + ".img", available[item.ID]
+		})
+	}}
+	if err := screen.AppendMessage(message); err != nil {
+		t.Fatal(err)
+	}
+	partial := backend.latest()
+	if len(partial) != 1 || partial[0].Path != "/cache/twitch/305954156.img" {
+		t.Fatalf("partial placements=%+v", partial)
+	}
+	pogIdentifier := partial[0].Identifier
+	available["25"] = true
+	screen.Redraw()
+	complete := backend.latest()
+	if len(complete) != 2 {
+		t.Fatalf("complete placements=%+v", complete)
+	}
+	identifiers := make(map[string]string, len(complete))
+	for _, placement := range complete {
+		identifiers[placement.Path] = placement.Identifier
+	}
+	if identifiers["/cache/twitch/305954156.img"] != pogIdentifier || identifiers["/cache/twitch/25.img"] == pogIdentifier {
+		t.Fatalf("placement identity migrated between emotes: partial=%+v complete=%+v", partial, complete)
+	}
+}
+
+func TestMixedProviderImageFrameScrollResizeAndCleanup(t *testing.T) {
+	width := 60
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return width }, func() int { return 15 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	graphical := func(platform, id string, columns ...int) DisplayMessage {
+		return DisplayMessage{ID: id, Platform: platform, Render: func() emote.Line {
+			images := make([]emote.InlineImage, 0, len(columns))
+			for index, column := range columns {
+				images = append(images, emote.InlineImage{
+					Path:         fmt.Sprintf("/cache/%s/%s-%d.img", platform, id, index),
+					PlacementKey: fmt.Sprintf("%s-%d", id, index),
+					Column:       column,
+					Width:        3,
+				})
+			}
+			return emote.Line{Text: strings.Repeat("x", 50), GraphicalText: strings.Repeat(" ", 50), Images: images}
+		}}
+	}
+	history := []DisplayMessage{
+		graphical("kick", "kick-1", 10),
+		graphical("twitch", "twitch-1", 14),
+		graphical("kick", "kick-2", 18),
+		graphical("twitch", "twitch-2", 22),
+		{ID: "text", Platform: "kick", Line: "ordinary text"},
+		graphical("twitch", "twitch-multi", 10, 25, 40),
+		graphical("kick", "kick-multi", 12, 44),
+	}
+	for _, message := range history {
+		if err := screen.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initial := backend.latest()
+	if len(initial) != 9 {
+		t.Fatalf("initial placements=%+v", initial)
+	}
+	initialIDs := make(map[string]string, len(initial))
+	for _, placement := range initial {
+		if previous, exists := initialIDs[placement.Identifier]; exists {
+			t.Fatalf("identifier collision for %q and %q: %+v", previous, placement.Path, initial)
+		}
+		initialIDs[placement.Identifier] = placement.Path
+		if placement.Y < 6 || placement.Y > 12 {
+			t.Fatalf("initial placement outside chat history: %+v", placement)
+		}
+	}
+	beforeTargetSwitch := backend.latest()
+	screen.SetTarget("twitch")
+	screen.SetTarget("kick")
+	if got := backend.latest(); !reflect.DeepEqual(got, beforeTargetSwitch) {
+		t.Fatalf("target switch changed image frame: before=%+v after=%+v", beforeTargetSwitch, got)
+	}
+	for index := range 3 {
+		if err := screen.AppendMessage(DisplayMessage{ID: fmt.Sprintf("tail-%d", index), Platform: "kick", Line: "tail"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	afterScroll := backend.latest()
+	if len(afterScroll) != 8 {
+		t.Fatalf("scrolled placements=%+v", afterScroll)
+	}
+	for _, placement := range afterScroll {
+		if placement.Path == "/cache/kick/kick-1-0.img" {
+			t.Fatalf("scrolled-out placement survived: %+v", afterScroll)
+		}
+		if initialIDs[placement.Identifier] != placement.Path {
+			t.Fatalf("scroll reassigned placement identifier: %+v", placement)
+		}
+	}
+	width = 30
+	screen.Redraw()
+	afterResize := backend.latest()
+	if len(afterResize) != 5 {
+		t.Fatalf("resized placements=%+v", afterResize)
+	}
+	wantGeometry := map[string]struct{ x, y int }{
+		"/cache/twitch/twitch-multi-0.img": {10, 6},
+		"/cache/twitch/twitch-multi-1.img": {25, 6},
+		"/cache/twitch/twitch-multi-2.img": {10, 7},
+		"/cache/kick/kick-multi-0.img":     {12, 8},
+		"/cache/kick/kick-multi-1.img":     {14, 9},
+	}
+	for _, placement := range afterResize {
+		want, exists := wantGeometry[placement.Path]
+		if !exists || placement.X != want.x || placement.Y != want.y || initialIDs[placement.Identifier] != placement.Path {
+			t.Fatalf("unexpected resized placement=%+v want=%v", placement, wantGeometry)
+		}
+	}
+	removed, err := screen.CleanPlatform("twitch")
+	if err != nil || removed != 3 {
+		t.Fatalf("clean twitch removed=%d err=%v", removed, err)
+	}
+	remaining := backend.latest()
+	if len(remaining) == 0 {
+		t.Fatal("clean twitch removed Kick placements")
+	}
+	for _, placement := range remaining {
+		if strings.Contains(placement.Path, "/twitch/") || initialIDs[placement.Identifier] != placement.Path {
+			t.Fatalf("cross-provider cleanup corrupted frame: %+v", remaining)
+		}
+	}
+}
+
+func TestTextOnlyMixedProviderHistoryNeverCreatesGraphicalState(t *testing.T) {
+	width := 60
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return width }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	formatter := render.New(io.Discard, render.Options{})
+	history := []chat.Message{
+		{
+			ID: "kick-one", Platform: chat.PlatformKick, AuthorDisplayName: "kick-user", Text: "[emote:7:WAVE]",
+			Emotes: []chat.Emote{{ID: "7", Name: "WAVE", URL: "https://files.kick.com/emotes/7/fullsize", Start: 0, End: 13}},
+		},
+		{
+			ID: "twitch-one", Platform: chat.PlatformTwitch, AuthorDisplayName: "twitch-user", Text: "Kappa",
+			Emotes: []chat.Emote{{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 0, End: 4}},
+		},
+		{
+			ID: "twitch-mixed", Platform: chat.PlatformTwitch, AuthorDisplayName: "twitch-user", Text: "hello KappaKappa",
+			Emotes: []chat.Emote{
+				{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 6, End: 10},
+				{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 11, End: 15},
+			},
+		},
+		{
+			ID: "kick-mixed", Platform: chat.PlatformKick, AuthorDisplayName: "kick-user", Text: "text [emote:8:CLAP][emote:8:CLAP]",
+			Emotes: []chat.Emote{
+				{ID: "8", Name: "CLAP", URL: "https://files.kick.com/emotes/8/fullsize", Start: 5, End: 18},
+				{ID: "8", Name: "CLAP", URL: "https://files.kick.com/emotes/8/fullsize", Start: 19, End: 32},
+			},
+		},
+	}
+	for _, message := range history {
+		message := message
+		if err := screen.AppendMessage(DisplayMessage{ID: message.ID, Platform: string(message.Platform), Author: message.AuthorDisplayName, Render: func() emote.Line {
+			return formatter.Format(message)
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if placements := backend.latest(); len(placements) != 0 {
+			t.Fatalf("%s produced placements: %+v", message.ID, placements)
+		}
+	}
+
+	screen.mu.Lock()
+	rendered := make([]string, len(screen.messages))
+	for index := range screen.messages {
+		line := screen.messages[index].rendered()
+		rendered[index] = render.Sanitize(line.Text)
+		if line.GraphicalText != "" || len(line.Images) != 0 {
+			t.Fatalf("message %d retained graphical state: %+v", index, line)
+		}
+	}
+	screen.mu.Unlock()
+	for _, want := range []string{":WAVE:", "Kappa", "hello KappaKappa", "text :CLAP::CLAP:"} {
+		if !slices.ContainsFunc(rendered, func(line string) bool { return strings.Contains(line, want) }) {
+			t.Fatalf("missing readable %q in %v", want, rendered)
+		}
+	}
+
+	// Exercise the viewport lifecycle used by scrolling, resize, target
+	// switching, and local provider cleaning. Text-only rows must never create
+	// image state, even if a test backend is deliberately attached.
+	for index := range 8 {
+		if err := screen.AppendMessage(DisplayMessage{ID: fmt.Sprintf("tail-%d", index), Platform: "kick", Line: "ordinary text"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	width = 30
+	screen.Redraw()
+	screen.SetTarget("twitch")
+	screen.SetTarget("kick")
+	if _, err := screen.CleanPlatform("twitch"); err != nil {
+		t.Fatal(err)
+	}
+	if placements := backend.latest(); len(placements) != 0 {
+		t.Fatalf("text-only lifecycle produced placements: %+v", placements)
+	}
+	if err := screen.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImageCleanupOnCleanResizeAndAlternateScreenExit(t *testing.T) {
 	var output bytes.Buffer
 	width := 40
@@ -1353,7 +1644,7 @@ func TestCleanTwitchRemovesOnlyLocalTwitchMessageAndOverlay(t *testing.T) {
 	}
 	for _, message := range []DisplayMessage{
 		{ID: "twitch-emote", Platform: "twitch", Author: "viewer", Render: func() emote.Line {
-			return emote.Line{Text: "[TW] viewer Kappa", GraphicalText: "[TW] viewer    ", Images: []emote.InlineImage{{Path: "/cache/twitch/25.img", Column: 12, Width: 3}}}
+			return emote.Line{Text: "[Twitch] viewer Kappa", GraphicalText: "[Twitch] viewer    ", Images: []emote.InlineImage{{Path: "/cache/twitch/25.img", Column: 16, Width: 3}}}
 		}},
 		{ID: "kick-emote", Platform: "kick", Author: "viewer", Render: func() emote.Line {
 			return emote.Line{Text: "[KICK] viewer :wave:", GraphicalText: "[KICK] viewer    ", Images: []emote.InlineImage{{Path: "/cache/kick/7.img", Column: 14, Width: 3}}}

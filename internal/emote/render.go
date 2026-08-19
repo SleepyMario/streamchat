@@ -3,6 +3,7 @@ package emote
 import (
 	"cmp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
@@ -14,9 +15,12 @@ const inlineWidth = 3
 type Resolver func(chat.Platform, chat.Emote) (string, bool)
 
 type InlineImage struct {
-	Path   string
-	Column int
-	Width  int
+	Path string
+	// PlacementKey identifies the structured emote occurrence before cache
+	// resolution, so asynchronously appearing siblings cannot renumber it.
+	PlacementKey string
+	Column       int
+	Width        int
 }
 
 type Line struct {
@@ -47,13 +51,14 @@ func FormatText(platform chat.Platform, text string, structured []chat.Emote, sa
 		readable.WriteString(value)
 		graphical.WriteString(value)
 	}
-	for _, item := range emotes {
+	for itemIndex, item := range emotes {
 		if item.Start < cursor || item.Start < 0 || item.End < item.Start || item.End >= len(runes) {
 			continue
 		}
 		appendText(string(runes[cursor:item.Start]))
 		if path, ok := resolveImage(resolve, platform, item); ok {
-			result.Images = append(result.Images, InlineImage{Path: path, Column: runewidth.StringWidth(graphical.String()), Width: inlineWidth})
+			placementKey := item.ID + "\x00" + strconv.Itoa(item.Start) + "\x00" + strconv.Itoa(item.End) + "\x00" + strconv.Itoa(itemIndex)
+			result.Images = append(result.Images, InlineImage{Path: path, PlacementKey: placementKey, Column: runewidth.StringWidth(graphical.String()), Width: inlineWidth})
 			readable.WriteString(fallback(platform, item, sanitize))
 			graphical.WriteString(strings.Repeat(" ", inlineWidth))
 		} else {

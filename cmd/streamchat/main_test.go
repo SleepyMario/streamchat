@@ -22,8 +22,60 @@ import (
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/outbound"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
+	"github.com/SleepyMario/streamchat/internal/render"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
+
+func TestInteractiveEmotePresentationIsTextOnlyForBeta(t *testing.T) {
+	backend, resolver := interactiveEmotePresentation()
+	if backend != nil || resolver != nil {
+		t.Fatalf("interactive presentation backend=%T resolver=%v", backend, resolver != nil)
+	}
+
+	formatter := render.New(io.Discard, render.Options{Emotes: resolver})
+	tests := []struct {
+		name    string
+		message chat.Message
+		want    string
+	}{
+		{
+			name: "kick repeated adjacent and text",
+			message: chat.Message{
+				Platform: chat.PlatformKick,
+				Text:     "hi [emote:7:WAVE][emote:7:WAVE] there",
+				Emotes: []chat.Emote{
+					{ID: "7", Name: "WAVE", URL: "https://files.kick.com/emotes/7/fullsize", Start: 3, End: 16},
+					{ID: "7", Name: "WAVE", URL: "https://files.kick.com/emotes/7/fullsize", Start: 17, End: 30},
+				},
+			},
+			want: ":WAVE::WAVE: there",
+		},
+		{
+			name: "twitch repeated adjacent and text",
+			message: chat.Message{
+				Platform: chat.PlatformTwitch,
+				Text:     "hi KappaKappa there",
+				Emotes: []chat.Emote{
+					{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 3, End: 7},
+					{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 8, End: 12},
+				},
+			},
+			want: "KappaKappa there",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metadata := append([]chat.Emote(nil), test.message.Emotes...)
+			line := formatter.Format(test.message)
+			if !strings.Contains(render.Sanitize(line.Text), test.want) || line.GraphicalText != "" || len(line.Images) != 0 {
+				t.Fatalf("formatted line=%+v", line)
+			}
+			if !reflect.DeepEqual(test.message.Emotes, metadata) {
+				t.Fatalf("emote metadata changed: got=%+v want=%+v", test.message.Emotes, metadata)
+			}
+		})
+	}
+}
 
 func TestDemoOfflineAndHelp(t *testing.T) {
 	var out, err bytes.Buffer
@@ -31,7 +83,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 		t.Fatalf("%d %s", c, err.String())
 	}
 	s := out.String()
-	if strings.Count(s, "duplicate") != 0 || !strings.Contains(s, "[YT]") || !strings.Contains(s, "[KICK]") || !strings.Contains(s, "↪") || !strings.Contains(s, "[PAID") {
+	if strings.Count(s, "duplicate") != 0 || !strings.Contains(s, "[YouTube]") || !strings.Contains(s, "[KICK]") || !strings.Contains(s, "↪") || !strings.Contains(s, "[PAID") {
 		t.Fatal(s)
 	}
 	out.Reset()
@@ -92,7 +144,7 @@ func TestTwitchTargetStateRestoresOnlyWhenAvailable(t *testing.T) {
 	restoredSender := &recordingOutboundSender{}
 	restored := outbound.NewTargets(outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: restoredSender})
 	configureOutboundState(restored, state)
-	if restored.Selected() != "twitch" || terminalui.TargetLabel(restored.Selected()) != "TW" {
+	if restored.Selected() != "twitch" || terminalui.TargetLabel(restored.Selected()) != "Twitch" {
 		t.Fatalf("selected=%q label=%q", restored.Selected(), terminalui.TargetLabel(restored.Selected()))
 	}
 	if _, err := restored.Process(context.Background(), "after restart"); err != nil || !reflect.DeepEqual(restoredSender.messages, []string{"after restart"}) {
@@ -264,7 +316,7 @@ func TestRunMultipleAdapters(t *testing.T) {
 	if err := runAdapters(context.Background(), adapters, c, nil, nil, nil, &out, &errw); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "[YT]") || !strings.Contains(out.String(), "[TW]") {
+	if !strings.Contains(out.String(), "[YouTube]") || !strings.Contains(out.String(), "[Twitch]") {
 		t.Fatalf("%s / %s", out.String(), errw.String())
 	}
 }
@@ -598,6 +650,46 @@ func TestSuccessfulTitleAndCategoryTriggerImmediateStatusRefresh(t *testing.T) {
 	}
 	if len(refreshes) != 2 {
 		t.Fatalf("immediate refresh signals=%d", len(refreshes))
+	}
+}
+
+func TestKickOutboundReceiptCarriesProviderIDAndStableChatterIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/chat":
+			_, _ = io.WriteString(w, `{"data":{"is_sent":true,"message_id":"kick-message-id"}}`)
+		case "/users":
+			_, _ = io.WriteString(w, `{"data":[{"user_id":100,"name":"Streamer"}]}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.String())
+		}
+	}))
+	defer server.Close()
+	sender := &kickOutboundSender{config: config.Kick{AccessToken: "token", BroadcasterID: "100", APIBaseURL: server.URL}, http: server.Client()}
+	receipt, err := sender.SendMessage(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := outbound.SentMessage{ID: "kick-message-id", AuthorID: "100", AuthorDisplayName: "Streamer"}
+	if receipt != want {
+		t.Fatalf("receipt=%+v want=%+v", receipt, want)
+	}
+}
+
+func TestTwitchOutboundReceiptUsesConfiguredAuthenticatedIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"message_id":"twitch-message-id","is_sent":true}]}`)
+	}))
+	defer server.Close()
+	auth := twitch.NewUserClient(&twitch.API{HTTP: server.Client(), APIBaseURL: server.URL, ClientID: "client", AccessToken: "token"}, twitch.RequiredChatScopes)
+	sender := &twitchOutboundSender{chat: twitch.NewChatSenderWithUserClient(auth, "channel", "200"), userID: "200", userLogin: "TwitchUser"}
+	receipt, err := sender.SendMessage(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := outbound.SentMessage{ID: "twitch-message-id", AuthorID: "200", AuthorDisplayName: "TwitchUser"}
+	if receipt != want {
+		t.Fatalf("receipt=%+v want=%+v", receipt, want)
 	}
 }
 

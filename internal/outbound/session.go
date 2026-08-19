@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 )
 
 var (
@@ -21,6 +22,21 @@ const NoTargetInstruction = "No outbound target selected. Use /kick or /twitch f
 // Sender is the minimal contract shared by outbound chat providers.
 type Sender interface {
 	Send(context.Context, string) error
+}
+
+// SentMessage is the provider-confirmed identity needed to present a
+// successful outbound chat message before its asynchronous inbound event
+// arrives. The provider message ID lets the inbound event replace the local
+// presentation without producing a duplicate.
+type SentMessage struct {
+	ID, Target, AuthorID, AuthorDisplayName, Text string
+}
+
+// ReceiptSender extends Sender for providers whose send API returns the
+// provider message ID. Session uses this only for local presentation; the
+// provider's inbound event remains authoritative for archival metadata.
+type ReceiptSender interface {
+	SendMessage(context.Context, string) (SentMessage, error)
 }
 
 // Control handles a slash command that is independent of chat target state.
@@ -57,6 +73,8 @@ type Session struct {
 	targetControls   map[string]map[string]Control
 	selected         string
 	selectionChanged []func(string)
+	sentMu           sync.RWMutex
+	sent             func(SentMessage)
 }
 
 func New(targets map[string]Sender) *Session {
@@ -111,8 +129,9 @@ func (s *Session) Handle(ctx context.Context, line string) error {
 	return err
 }
 
-// Process returns local output from a control command. Chat sends return no
-// output because their normal inbound event supplies the visible echo.
+// Process returns textual local output from a control command. Receipt-capable
+// chat sends notify the presentation observer separately so they use the
+// normal chat renderer rather than being printed as control output.
 func (s *Session) Process(ctx context.Context, line string) (string, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -153,13 +172,33 @@ func (s *Session) Process(ctx context.Context, line string) (string, error) {
 			if message == "" {
 				return "", nil
 			}
-			return "", target.sender.Send(ctx, message)
+			return "", s.send(ctx, target, message)
 		}
 	}
 	if s.selected == "" {
 		return "", ErrNoTarget
 	}
-	return "", s.canonical[s.selected].sender.Send(ctx, line)
+	return "", s.send(ctx, s.canonical[s.selected], line)
+}
+
+func (s *Session) send(ctx context.Context, target registeredTarget, message string) error {
+	receiptSender, ok := target.sender.(ReceiptSender)
+	if !ok {
+		return target.sender.Send(ctx, message)
+	}
+	receipt, err := receiptSender.SendMessage(ctx, message)
+	if err != nil {
+		return err
+	}
+	receipt.Target = target.name
+	receipt.Text = message
+	s.sentMu.RLock()
+	observer := s.sent
+	s.sentMu.RUnlock()
+	if receipt.ID != "" && observer != nil {
+		observer(receipt)
+	}
+	return nil
 }
 
 func (s *Session) Selected() string { return s.selected }
@@ -187,6 +226,12 @@ func (s *Session) AddSelectionChanged(callback func(string)) {
 	if callback != nil {
 		s.selectionChanged = append(s.selectionChanged, callback)
 	}
+}
+
+func (s *Session) SetSentObserver(callback func(SentMessage)) {
+	s.sentMu.Lock()
+	defer s.sentMu.Unlock()
+	s.sent = callback
 }
 
 func (s *Session) selectTarget(name string) {

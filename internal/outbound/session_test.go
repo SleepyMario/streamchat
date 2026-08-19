@@ -15,6 +15,16 @@ func (s *recordingSender) Send(_ context.Context, message string) error {
 	return nil
 }
 
+type receiptSender struct {
+	recordingSender
+	nextID string
+}
+
+func (s *receiptSender) SendMessage(_ context.Context, message string) (SentMessage, error) {
+	s.messages = append(s.messages, message)
+	return SentMessage{ID: s.nextID, AuthorID: "author-id", AuthorDisplayName: "Streamer"}, nil
+}
+
 type recordingControl struct {
 	arguments []string
 	result    string
@@ -59,6 +69,38 @@ func TestTwitchSelectionSendingAndTargetSwitching(t *testing.T) {
 	}
 	if s.Selected() != "twitch" || !reflect.DeepEqual(twitch.messages, []string{"hello", "second", "final"}) || !reflect.DeepEqual(kick.messages, []string{"kick-message"}) {
 		t.Fatalf("selected=%q twitch=%v kick=%v", s.Selected(), twitch.messages, kick.messages)
+	}
+}
+
+func TestSuccessfulReceiptSendNotifiesLocalPresentationWithCanonicalTarget(t *testing.T) {
+	kick := &receiptSender{nextID: "kick-message-id"}
+	s := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: kick})
+	var sent []SentMessage
+	s.SetSentObserver(func(message SentMessage) { sent = append(sent, message) })
+	for _, line := range []string{"/kick first", "second"} {
+		if err := s.Handle(context.Background(), line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []SentMessage{
+		{ID: "kick-message-id", Target: "kick", AuthorID: "author-id", AuthorDisplayName: "Streamer", Text: "first"},
+		{ID: "kick-message-id", Target: "kick", AuthorID: "author-id", AuthorDisplayName: "Streamer", Text: "second"},
+	}
+	if !reflect.DeepEqual(sent, want) || !reflect.DeepEqual(kick.messages, []string{"first", "second"}) {
+		t.Fatalf("sent=%+v provider=%v", sent, kick.messages)
+	}
+}
+
+func TestReceiptlessSendDoesNotCreateLocalPresentation(t *testing.T) {
+	plain := &recordingSender{}
+	s := NewTargets(Target{Name: "kick", Aliases: []string{"kick"}, Sender: plain})
+	called := false
+	s.SetSentObserver(func(SentMessage) { called = true })
+	if err := s.Handle(context.Background(), "/kick hello"); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("sender without a provider receipt produced local presentation")
 	}
 }
 

@@ -82,20 +82,24 @@ func TestKickAndTwitchShareArchiveAndRelayPipeline(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- server.forward(ctx, messages) }()
 	kickMessage := testMessage("kick-concurrent")
-	_, parsedTwitch, err := twitch.ParseEvent([]byte(`{"metadata":{"message_id":"delivery","message_type":"notification","message_timestamp":"2026-08-19T00:00:00Z","subscription_type":"channel.chat.message","subscription_version":"1"},"payload":{"event":{"broadcaster_user_id":"channel","broadcaster_user_name":"Channel","broadcaster_user_login":"channel","chatter_user_id":"viewer-id","chatter_user_name":"viewer","chatter_user_login":"viewer","message_id":"twitch-concurrent","badges":[],"message":{"text":"hello from Twitch","fragments":[{"type":"text","text":"hello from Twitch"}]}}}}`))
+	_, parsedTwitch, err := twitch.ParseEvent([]byte(`{"metadata":{"message_id":"delivery","message_type":"notification","message_timestamp":"2026-08-19T00:00:00Z","subscription_type":"channel.chat.message","subscription_version":"1"},"payload":{"event":{"broadcaster_user_id":"channel","broadcaster_user_name":"Channel","broadcaster_user_login":"channel","chatter_user_id":"viewer-id","chatter_user_name":"viewer","chatter_user_login":"viewer","message_id":"twitch-concurrent","badges":[],"message":{"text":"hello KappaKappa","fragments":[{"type":"text","text":"hello "},{"type":"emote","text":"Kappa","emote":{"id":"25","emote_set_id":"0","owner_id":"0","format":["static"]}},{"type":"emote","text":"Kappa","emote":{"id":"25","emote_set_id":"0","owner_id":"0","format":["static"]}}]}}}}`))
 	if err != nil || parsedTwitch == nil {
 		t.Fatalf("parse Twitch event=%+v err=%v", parsedTwitch, err)
 	}
 	twitchMessage := *parsedTwitch
 	go func() { messages <- kickMessage }()
 	go func() { messages <- twitchMessage }()
-	seen := map[string]chat.Platform{}
+	seen := map[string]chat.Message{}
 	for range 2 {
 		message := readMessage(t, conn)
-		seen[message.ID] = message.Platform
+		seen[message.ID] = message
 	}
-	if seen[kickMessage.ID] != chat.PlatformKick || seen[twitchMessage.ID] != chat.PlatformTwitch {
+	if seen[kickMessage.ID].Platform != chat.PlatformKick || seen[twitchMessage.ID].Platform != chat.PlatformTwitch {
 		t.Fatalf("relayed=%v", seen)
+	}
+	relayedTwitch := seen[twitchMessage.ID]
+	if len(relayedTwitch.Emotes) != 2 || relayedTwitch.Emotes[0] != twitchMessage.Emotes[0] || relayedTwitch.Emotes[1] != twitchMessage.Emotes[1] || relayedTwitch.Emotes[0].URL != "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0" {
+		t.Fatalf("Twitch emote metadata changed across archive/relay: got=%+v want=%+v", relayedTwitch.Emotes, twitchMessage.Emotes)
 	}
 	stats, err := store.Stats(context.Background())
 	if err != nil || stats.Total != 2 || len(stats.Platforms) != 2 {

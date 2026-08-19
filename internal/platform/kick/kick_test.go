@@ -275,8 +275,23 @@ func TestChatSendUsesOfficialRequestBody(t *testing.T) {
 	}))
 	defer server.Close()
 	client := ChatClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
-	if err := client.Send(context.Background(), "123", "hello world"); err != nil {
+	receipt, err := client.SendMessage(context.Background(), "123", "hello world")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if receipt.MessageID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+}
+
+func TestChatSendRejectsSuccessWithoutProviderReceipt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"is_sent":true}}`)
+	}))
+	defer server.Close()
+	client := ChatClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
+	if _, err := client.SendMessage(context.Background(), "123", "hello"); err == nil || !strings.Contains(err.Error(), "invalid send receipt") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

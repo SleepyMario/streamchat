@@ -56,6 +56,32 @@ func TestTwitchAdjacentGraphicalEmotesUseUnicodeDisplayColumns(t *testing.T) {
 	}
 }
 
+func TestGraphicalPlacementKeysStayWithEmoteOccurrencesAsCacheHitsChange(t *testing.T) {
+	text := "KappaPogChampKappa"
+	items := []chat.Emote{
+		{ID: "25", Name: "Kappa", URL: "https://example.invalid/25", Start: 0, End: 4},
+		{ID: "305954156", Name: "PogChamp", URL: "https://example.invalid/305954156", Start: 5, End: 12},
+		{ID: "25", Name: "Kappa", URL: "https://example.invalid/25", Start: 13, End: 17},
+	}
+	available := map[string]bool{"305954156": true}
+	resolve := func(_ chat.Platform, item chat.Emote) (string, bool) {
+		return "/cache/twitch/" + item.ID + ".img", available[item.ID]
+	}
+	partial := FormatText(chat.PlatformTwitch, text, items, nil, resolve)
+	if len(partial.Images) != 1 || partial.Images[0].PlacementKey == "" {
+		t.Fatalf("partial=%+v", partial)
+	}
+	pogKey := partial.Images[0].PlacementKey
+	available["25"] = true
+	complete := FormatText(chat.PlatformTwitch, text, items, nil, resolve)
+	if len(complete.Images) != 3 || complete.Images[1].PlacementKey != pogKey {
+		t.Fatalf("complete=%+v pogKey=%q", complete, pogKey)
+	}
+	if complete.Images[0].PlacementKey == complete.Images[2].PlacementKey {
+		t.Fatalf("repeated emote occurrences share placement key: %+v", complete.Images)
+	}
+}
+
 func TestControllerWithoutImageBackendFallsBack(t *testing.T) {
 	controller := NewController(ControllerOptions{Mode: "auto"})
 	if controller.Available() {

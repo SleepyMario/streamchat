@@ -39,6 +39,7 @@ type DisplayMessage struct {
 	Author      string
 	Line        string
 	Render      func() emote.Line
+	Provisional bool
 	leadingRows int
 	imageKey    uint64
 }
@@ -212,6 +213,24 @@ func (s *Screen) Text() string {
 func (s *Screen) AppendMessage(message DisplayMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if message.ID != "" && message.Platform != "" {
+		for index := range s.messages {
+			existing := s.messages[index]
+			if existing.ID != message.ID || !strings.EqualFold(existing.Platform, message.Platform) || (!existing.Provisional && !message.Provisional) {
+				continue
+			}
+			if message.Provisional && !existing.Provisional {
+				return nil
+			}
+			message.leadingRows = existing.leadingRows
+			message.imageKey = existing.imageKey
+			s.messages[index] = message
+			if !s.visible {
+				return nil
+			}
+			return s.redrawChatLocked()
+		}
+	}
 	s.nextImageKey++
 	message.imageKey = s.nextImageKey
 	message.leadingRows = s.transientRows
@@ -372,7 +391,7 @@ func (s *Screen) renderedForDisplayLocked(message DisplayMessage) emote.Line {
 		return line
 	}
 	for imageIndex := range line.Images {
-		if !confirmations.Confirmed(imageIdentifier(message, imageIndex)) {
+		if !confirmations.Confirmed(imageIdentifier(message, line.Images[imageIndex], imageIndex)) {
 			return line
 		}
 	}
@@ -633,15 +652,19 @@ func (s *Screen) refreshImagesLocked(width, height int) {
 				continue
 			}
 			y := layout.chatTop + bottomPadding + globalRow - visibleStart
-			placements = append(placements, emote.Placement{Identifier: imageIdentifier(item.message, imageIndex), Path: image.Path, X: x, Y: y - 1, Width: max(image.Width, 1), Height: 1})
+			placements = append(placements, emote.Placement{Identifier: imageIdentifier(item.message, image, imageIndex), Path: image.Path, X: x, Y: y - 1, Width: max(image.Width, 1), Height: 1})
 		}
 	}
 	s.images.Update(placements)
 }
 
-func imageIdentifier(message DisplayMessage, imageIndex int) string {
-	digest := sha256.Sum256([]byte(message.Platform + "\x00" + message.ID + "\x00" + strconv.FormatUint(message.imageKey, 10)))
-	return fmt.Sprintf("streamchat-%x-%d", digest[:8], imageIndex)
+func imageIdentifier(message DisplayMessage, image emote.InlineImage, imageIndex int) string {
+	placementKey := image.PlacementKey
+	if placementKey == "" {
+		placementKey = image.Path + "\x00" + strconv.Itoa(image.Column) + "\x00" + strconv.Itoa(imageIndex)
+	}
+	digest := sha256.Sum256([]byte(message.Platform + "\x00" + message.ID + "\x00" + strconv.FormatUint(message.imageKey, 10) + "\x00" + placementKey))
+	return fmt.Sprintf("streamchat-%x", digest[:16])
 }
 
 func wrappedRows(value string, width int) int {
