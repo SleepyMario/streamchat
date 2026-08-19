@@ -105,7 +105,7 @@ func TestTwitchArchivePreservesProviderFieldsWithoutChangingHistoricalRows(t *te
 	twitchMessage.Text = "你好 Kappa"
 	twitchMessage.Badges = []chat.Badge{{Type: "moderator", Text: "1"}}
 	twitchMessage.Roles = chat.NewRoleSet(chat.RoleModerator)
-	twitchMessage.Emotes = []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}}
+	twitchMessage.Emotes = []chat.Emote{{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 3, End: 7}}
 	twitchMessage.SafePlatformMetadata = map[string]string{"twitch_login": "viewer"}
 	if inserted, storeErr := a.Store(context.Background(), twitchMessage); storeErr != nil || !inserted {
 		t.Fatalf("Twitch insert=%t err=%v", inserted, storeErr)
@@ -118,7 +118,7 @@ func TestTwitchArchivePreservesProviderFieldsWithoutChangingHistoricalRows(t *te
 	if err = json.Unmarshal([]byte(normalized), &archived); err != nil {
 		t.Fatal(err)
 	}
-	if platform != "twitch" || channelID != "channel-id" || userID != "chatter-id" || displayName != "Viewer" || text != "你好 Kappa" || len(archived.Emotes) != 1 || !archived.Roles.Has(chat.RoleModerator) {
+	if platform != "twitch" || channelID != "channel-id" || userID != "chatter-id" || displayName != "Viewer" || text != "你好 Kappa" || len(archived.Emotes) != 1 || archived.Emotes[0] != twitchMessage.Emotes[0] || !archived.Roles.Has(chat.RoleModerator) {
 		t.Fatalf("row=%q %q %q %q %q message=%+v", platform, channelID, userID, displayName, text, archived)
 	}
 	var historicalCount int

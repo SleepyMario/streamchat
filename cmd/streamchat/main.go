@@ -67,6 +67,7 @@ Interactive commands:
   /timeout twitch USER 30s         Temporarily timeout a Twitch user
   /clean streamchat                Clear the current local chat view
   /clean kick                      Hide displayed Kick messages locally
+  /clean twitch                    Hide displayed Twitch messages locally
   /clean USER                      Hide a user's displayed messages locally
   /clear kick                      Delete archived Kick messages from last 24h
   /clear twitch                    Clear the current Twitch chat
@@ -905,7 +906,7 @@ type cleanController struct {
 func (c cleanController) Clean(_ context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) != 1 {
-		return "Usage: /clean streamchat|kick|USER", nil
+		return "Usage: /clean streamchat|kick|twitch|USER", nil
 	}
 	if c.display == nil {
 		return "Local display cleaning requires an interactive terminal.", nil
@@ -916,9 +917,9 @@ func (c cleanController) Clean(_ context.Context, argument string) (string, erro
 	switch strings.ToLower(target) {
 	case "streamchat":
 		removed, err = c.display.CleanAll()
-	case "kick":
-		removed, err = c.display.CleanPlatform("kick")
-	case "youtube", "twitch":
+	case "kick", "twitch":
+		removed, err = c.display.CleanPlatform(strings.ToLower(target))
+	case "youtube":
 		return "Display cleaning is not implemented for: " + target, nil
 	default:
 		removed, err = c.display.CleanAuthor(target)

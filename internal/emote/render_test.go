@@ -39,6 +39,23 @@ func TestFormatTextMissingImageFallsBackToReadableName(t *testing.T) {
 	}
 }
 
+func TestTwitchAdjacentGraphicalEmotesUseUnicodeDisplayColumns(t *testing.T) {
+	text := "你好KappaPogChamp!"
+	items := []chat.Emote{
+		{ID: "25", Name: "Kappa", URL: "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0", Start: 2, End: 6},
+		{ID: "305954156", Name: "PogChamp", URL: "https://static-cdn.jtvnw.net/emoticons/v2/305954156/static/dark/3.0", Start: 7, End: 14},
+	}
+	line := FormatText(chat.PlatformTwitch, text, items, nil, func(_ chat.Platform, item chat.Emote) (string, bool) {
+		return "/cache/twitch/" + item.ID + ".img", true
+	})
+	if line.Text != text || line.GraphicalText != "你好      !" || len(line.Images) != 2 {
+		t.Fatalf("line=%+v", line)
+	}
+	if line.Images[0].Column != 4 || line.Images[1].Column != 7 || line.Images[0].Width != 3 || line.Images[1].Width != 3 {
+		t.Fatalf("images=%+v", line.Images)
+	}
+}
+
 func TestControllerWithoutImageBackendFallsBack(t *testing.T) {
 	controller := NewController(ControllerOptions{Mode: "auto"})
 	if controller.Available() {

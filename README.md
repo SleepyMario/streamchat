@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat `v0.1.0-beta.1` is the first public beta, focused on Kick. Kick remains the beta-complete path, and post-beta main development now includes Twitch chat ingestion, archive/relay, outbound sending, target persistence, status, and title/category controls. YouTube remains preliminary. Streamchat uses only documented official platform APIs.
+Streamchat `v0.1.0-beta.1` is the first public beta, focused on Kick. Kick remains the beta-complete path, and post-beta main development now includes Twitch chat ingestion, archive/relay, outbound sending, target persistence, status, channel controls, moderation, and graphical emotes. YouTube remains preliminary. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
@@ -79,10 +79,11 @@ Local display cleaning is available in the interactive terminal:
 ```text
 /clean streamchat
 /clean kick
+/clean twitch
 /clean USER
 ```
 
-`/clean streamchat` removes all messages from the current local view, `/clean kick` removes displayed Kick messages, and `/clean USER` removes displayed messages from a case-insensitive author match. The words `streamchat`, `kick`, `youtube`, and `twitch` are reserved clean targets rather than usernames; YouTube and Twitch display cleaning are not implemented yet. `/clean` affects only the current Streamchat display. It never changes platform chat and never deletes archived messages. The interactive view keeps only the latest 500 rendered messages for local redraws; it does not retrieve history from SQLite.
+`/clean streamchat` removes all messages from the current local view, `/clean kick` and `/clean twitch` remove displayed messages and graphical overlays for that provider, and `/clean USER` removes displayed messages from a case-insensitive author match. The words `streamchat`, `kick`, `youtube`, and `twitch` are reserved clean targets rather than usernames; YouTube display cleaning is not implemented yet. `/clean` affects only the current Streamchat display. It never changes platform chat and never deletes archived messages. The interactive view keeps only the latest 500 rendered messages for local redraws; it does not retrieve history from SQLite.
 
 Remote visible-chat cleanup is a separate, explicit command:
 
@@ -144,7 +145,7 @@ Slash commands have prefix-based, hierarchical completion in the interactive ter
 
 Every exit path restores raw mode and the original shell screen. Piped/non-TTY input retains the line-oriented behavior without status fetching, alternate-screen, completion UI, or redraw sequences.
 
-Kick emotes use their structured webhook metadata. In an interactive Linux terminal, `emotes.mode: "auto"` optionally starts one [Überzug++](https://github.com/jstkdng/ueberzugpp) helper and places cached images in terminal cells; Wayland/Sway uses Überzug++'s Wayland output. If the `ueberzug` executable or a suitable local graphical terminal is unavailable, an image is still downloading, or a download fails, Streamchat displays readable text such as `:ppJedi:`. SSH and non-TTY sessions always use that dependency-free fallback. `text` always uses text, while `off` disables graphical handling but retains readable emote text.
+Kick emotes use their structured webhook metadata, and Twitch emotes use the ordered fragments in `channel.chat.message`. In an interactive Linux terminal, `emotes.mode: "auto"` optionally starts one [Überzug++](https://github.com/jstkdng/ueberzugpp) helper and places cached images in terminal cells; Wayland/Sway uses Überzug++'s Wayland output. If the `ueberzug` executable or a suitable local graphical terminal is unavailable, an image is still downloading, metadata is unsafe, or a download fails, Streamchat displays the provider-supplied readable name such as `:ppJedi:` or `Kappa`. SSH and non-TTY sessions always use that dependency-free fallback. `text` always uses text, while `off` disables graphical handling but retains readable emote text.
 
 ```json
 {
@@ -155,9 +156,9 @@ Kick emotes use their structured webhook metadata. In an interactive Linux termi
 }
 ```
 
-Images are fetched asynchronously from Kick's provider-derived official asset URL, limited to 2 MiB, deduplicated while downloading, and persisted under `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/kick/` using numeric emote IDs rather than names. Animated GIF assets use a cached first-frame PNG preview in the terminal so repeated viewport repositioning stays lightweight and stable. Streamchat disables Überzug++'s separate resized-image cache so stale low-resolution derivatives cannot override the current terminal-cell size. Image overlays are recomputed from the bounded visible-message model during chat scroll, resize, and `/clean`, and are removed before alternate-screen exit. A readable `:emoteName:` backing remains until the image placement has been submitted successfully. Emote presentation never rewrites or deletes archived message data.
+Images are fetched asynchronously, limited to 2 MiB, deduplicated while downloading, and cached by provider and emote ID under `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/{kick,twitch}/`. Kick's existing official asset URLs are unchanged. Twitch uses only the documented CDN template `https://static-cdn.jtvnw.net/emoticons/v2/{id}/{format}/dark/3.0`: `animated` is selected only when EventSub advertises it, otherwise `static`; unsafe IDs or unknown formats remain textual. The 3.0 source is downscaled by the existing terminal preview path. Animated GIF assets use a cached first-frame PNG preview so repeated viewport repositioning stays lightweight and stable. Streamchat disables Überzug++'s separate resized-image cache so stale low-resolution derivatives cannot override the current terminal-cell size. Image overlays are recomputed from the bounded visible-message model during chat scroll, resize, and `/clean`, and are removed before alternate-screen exit. Readable backing text remains until image placement has been submitted successfully and returns after backend failure. Emote presentation never rewrites or deletes archived message data.
 
-Twitch EventSub fragments retain documented emote IDs, names, and rune ranges. This task deliberately leaves Twitch emotes textual: the fallback is the original Twitch emote name, and Streamchat does not synthesize an image URL without an Emote API CDN template. Kick graphical emote behavior is unchanged.
+Twitch fragment positions are converted to Streamchat's inclusive rune ranges, so CJK and emoji surrounding an emote do not shift its location. No per-message Helix lookup or scraped image URL is used. Kick graphical emote behavior and cache layout are unchanged.
 
 For troubleshooting, set `emotes.debug` to `true` or `STREAMCHAT_EMOTES_DEBUG=true`. Sanitized backend/cache events are written privately to `${XDG_CACHE_HOME:-$HOME/.cache}/streamchat/emotes/debug.log`; normal chat output is unchanged. Debug mode captures Überzug++ startup, PID, sanitized placement commands, socket/process failures, and helper stderr. Normal mode keeps the helper silent. The log never includes OAuth or relay credentials.
 

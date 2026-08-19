@@ -1144,6 +1144,49 @@ func TestCachedEmoteKeepsReadableBackingUntilPlacementAndAfterBackendFailure(t *
 	}
 }
 
+func TestTwitchCachedEmoteKeepsNameUntilPlacementAndRestoresItAfterFailure(t *testing.T) {
+	backend := &confirmingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	message := DisplayMessage{ID: "twitch-emote", Platform: "twitch", Render: func() emote.Line {
+		return emote.Line{
+			Text:          "[TW] viewer  Kappa",
+			GraphicalText: "[TW] viewer     ",
+			Images:        []emote.InlineImage{{Path: "/cache/twitch/25.img", Column: 13, Width: 3}},
+		}
+	}}
+	if err := screen.AppendMessage(message); err != nil {
+		t.Fatal(err)
+	}
+	placements := backend.latest()
+	if len(placements) != 1 {
+		t.Fatalf("placements=%+v", placements)
+	}
+	screen.mu.Lock()
+	before := screen.renderedForDisplayLocked(screen.messages[0]).Text
+	screen.mu.Unlock()
+	if before != "[TW] viewer  Kappa" {
+		t.Fatalf("fallback before confirmation=%q", before)
+	}
+	backend.setConfirmed(placements[0].Identifier, true)
+	screen.mu.Lock()
+	confirmed := screen.renderedForDisplayLocked(screen.messages[0]).Text
+	screen.mu.Unlock()
+	if confirmed != "[TW] viewer     " {
+		t.Fatalf("confirmed backing=%q", confirmed)
+	}
+	backend.setConfirmed(placements[0].Identifier, false)
+	screen.Redraw()
+	screen.mu.Lock()
+	after := screen.renderedForDisplayLocked(screen.messages[0]).Text
+	screen.mu.Unlock()
+	if after != before {
+		t.Fatalf("fallback after backend failure=%q", after)
+	}
+}
+
 func TestImagePlacementTracksVisibleChatRowsAndNeverUsesFixedUI(t *testing.T) {
 	var output bytes.Buffer
 	backend := &recordingImageBackend{}
@@ -1299,6 +1342,84 @@ func TestImageCleanupOnCleanResizeAndAlternateScreenExit(t *testing.T) {
 	}
 	if placement = backend.latest(); len(placement) != 0 {
 		t.Fatalf("alternate-screen exit left overlays: %+v", placement)
+	}
+}
+
+func TestCleanTwitchRemovesOnlyLocalTwitchMessageAndOverlay(t *testing.T) {
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return 40 }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []DisplayMessage{
+		{ID: "twitch-emote", Platform: "twitch", Author: "viewer", Render: func() emote.Line {
+			return emote.Line{Text: "[TW] viewer Kappa", GraphicalText: "[TW] viewer    ", Images: []emote.InlineImage{{Path: "/cache/twitch/25.img", Column: 12, Width: 3}}}
+		}},
+		{ID: "kick-emote", Platform: "kick", Author: "viewer", Render: func() emote.Line {
+			return emote.Line{Text: "[KICK] viewer :wave:", GraphicalText: "[KICK] viewer    ", Images: []emote.InlineImage{{Path: "/cache/kick/7.img", Column: 14, Width: 3}}}
+		}},
+	} {
+		if err := screen.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if placements := backend.latest(); len(placements) != 2 {
+		t.Fatalf("initial placements=%+v", placements)
+	}
+	removed, err := screen.CleanPlatform("TWITCH")
+	if err != nil || removed != 1 || len(screen.messages) != 1 || screen.messages[0].Platform != "kick" {
+		t.Fatalf("removed=%d messages=%+v err=%v", removed, screen.messages, err)
+	}
+	placements := backend.latest()
+	if len(placements) != 1 || placements[0].Path != "/cache/kick/7.img" {
+		t.Fatalf("remaining placements=%+v", placements)
+	}
+}
+
+func TestTwitchOverlayRepositionsScrollsOutAndCleansUpOnShutdown(t *testing.T) {
+	width := 40
+	backend := &recordingImageBackend{}
+	screen := newScreenWithBackend(io.Discard, func() int { return width }, func() int { return 10 }, backend)
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	twitchImage := func(id string) DisplayMessage {
+		return DisplayMessage{ID: id, Platform: "twitch", Render: func() emote.Line {
+			return emote.Line{Text: strings.Repeat("x", 35), Images: []emote.InlineImage{{Path: "/cache/twitch/" + id + ".img", Column: 30, Width: 3}}}
+		}}
+	}
+	if err := screen.AppendMessage(twitchImage("first")); err != nil {
+		t.Fatal(err)
+	}
+	before := backend.latest()
+	if len(before) != 1 || before[0].X != 30 {
+		t.Fatalf("initial placement=%+v", before)
+	}
+	width = 20
+	screen.Redraw()
+	afterResize := backend.latest()
+	if len(afterResize) != 1 || afterResize[0].X != 10 || afterResize[0].Y < 4 || afterResize[0].Y > 7 {
+		t.Fatalf("resized placement=%+v", afterResize)
+	}
+	for index := range 4 {
+		if err := screen.AppendMessage(DisplayMessage{ID: fmt.Sprintf("text-%d", index), Platform: "twitch", Line: "one row"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if placements := backend.latest(); len(placements) != 0 {
+		t.Fatalf("scrolled-out Twitch overlay remained=%+v", placements)
+	}
+	if err := screen.AppendMessage(twitchImage("second")); err != nil {
+		t.Fatal(err)
+	}
+	if placements := backend.latest(); len(placements) != 1 {
+		t.Fatalf("redrawn Twitch overlay=%+v", placements)
+	}
+	if err := screen.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if placements := backend.latest(); len(placements) != 0 {
+		t.Fatalf("shutdown left Twitch overlay=%+v", placements)
 	}
 }
 

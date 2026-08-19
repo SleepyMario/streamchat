@@ -12,7 +12,10 @@ import (
 
 func TestStaticAssetConvertsAnimatedGIFOnce(t *testing.T) {
 	directory := t.TempDir()
-	path := filepath.Join(directory, "1730756.img")
+	path := filepath.Join(directory, "twitch", "emotesv2_4c3b4ed516de493bbcd2df2f5d450f49.img")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/chattercolor"
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
+	"github.com/SleepyMario/streamchat/internal/platform/twitch"
 )
 
 func TestSanitizeAndUnicode(t *testing.T) {
@@ -163,6 +164,34 @@ func TestTwitchRolesChatterIDsCJKAndEmoteFallbackRenderTogether(t *testing.T) {
 	}
 }
 
+func TestTwitchTimestampAndCanonicalLabel(t *testing.T) {
+	timestamp := time.Date(2026, 8, 19, 12, 34, 56, 0, time.UTC)
+	line := New(io.Discard, Options{Timestamps: true}).Format(chat.Message{Platform: chat.PlatformTwitch, Timestamp: timestamp, AuthorDisplayName: "viewer", Text: "hello"})
+	wantPrefix := timestamp.Local().Format("15:04:05") + " [TW]"
+	if !strings.HasPrefix(Sanitize(line.Text), wantPrefix) || strings.Contains(line.Text, "[TWITCH]") {
+		t.Fatalf("line=%q want prefix=%q", line.Text, wantPrefix)
+	}
+}
+
+func TestTwitchANSIAndCJKDoNotChangeGraphicalEmoteColumn(t *testing.T) {
+	resolve := func(chat.Platform, chat.Emote) (string, bool) { return "/tmp/twitch-emote.img", true }
+	message := chat.Message{
+		Platform:          chat.PlatformTwitch,
+		AuthorID:          "twitch-user",
+		AuthorDisplayName: "聊天室",
+		Text:              "你好 Kappa 🙂",
+		Emotes:            []chat.Emote{{ID: "25", Name: "Kappa", URL: twitch.TwitchEmoteURL("25", []string{"static"}), Start: 3, End: 7}},
+	}
+	base := New(io.Discard, Options{Emotes: resolve}).Format(message)
+	colored := New(io.Discard, Options{Color: true, Emotes: resolve, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
+	if len(base.Images) != 1 || len(colored.Images) != 1 || base.Images[0].Column != colored.Images[0].Column || base.Images[0].Column <= 0 {
+		t.Fatalf("base=%+v colored=%+v", base.Images, colored.Images)
+	}
+	if Sanitize(colored.Text) != base.Text || Sanitize(colored.GraphicalText) != base.GraphicalText || !strings.Contains(base.Text, "你好 Kappa 🙂") {
+		t.Fatalf("ANSI changed Twitch presentation: base=%q colored=%q", base.Text, colored.Text)
+	}
+}
+
 type availableImageBackend struct{}
 
 func (availableImageBackend) Available() bool          { return true }
@@ -212,6 +241,54 @@ func TestOlderKickRelayEmoteReachesCacheAndBecomesImage(t *testing.T) {
 	}
 	if _, err = os.Stat(filepath.Join(directory, "kick", "1730755.img")); err != nil {
 		t.Fatalf("cache file missing: %v", err)
+	}
+}
+
+func TestTwitchAnimatedEmoteReachesProviderCacheAndStaticPreview(t *testing.T) {
+	directory := t.TempDir()
+	requests := 0
+	emoteID := "emotesv2_4c3b4ed516de493bbcd2df2f5d450f49"
+	emoteName := "twitchdevHyperPitchfork"
+	wantURL := twitch.TwitchEmoteURL(emoteID, []string{"static", "animated"})
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.String() != wantURL {
+			t.Fatalf("URL=%s want=%s", request.URL, wantURL)
+		}
+		var asset bytes.Buffer
+		picture := image.NewPaletted(image.Rect(0, 0, 2, 2), color.Palette{color.Transparent, color.White})
+		if err := gif.Encode(&asset, picture, nil); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/gif"}}, Body: io.NopCloser(bytes.NewReader(asset.Bytes()))}, nil
+	})}
+	cache, err := emote.NewCache(emote.CacheOptions{Directory: directory, HTTP: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := emote.NewController(emote.ControllerOptions{Mode: "auto", Cache: cache, Backend: availableImageBackend{}})
+	redrawn := make(chan struct{}, 1)
+	controller.SetRedraw(func() { redrawn <- struct{}{} })
+	message := chat.Message{Platform: chat.PlatformTwitch, AuthorDisplayName: "viewer", Text: "你好 " + emoteName, Emotes: []chat.Emote{{ID: emoteID, Name: emoteName, URL: wantURL, Start: 3, End: 3 + len([]rune(emoteName)) - 1}}}
+	formatter := New(io.Discard, Options{Emotes: controller.Resolve})
+	first := formatter.Format(message)
+	if !strings.Contains(first.Text, "你好 "+emoteName) || len(first.Images) != 0 {
+		t.Fatalf("first render=%+v", first)
+	}
+	select {
+	case <-redrawn:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Twitch emote download did not trigger redraw")
+	}
+	second := formatter.Format(message)
+	if len(second.Images) != 1 || !strings.Contains(second.Text, emoteName) || second.GraphicalText == "" || requests != 1 {
+		t.Fatalf("second=%+v requests=%d", second, requests)
+	}
+	if !strings.HasSuffix(second.Images[0].Path, filepath.Join("twitch", emoteID+".static.png")) {
+		t.Fatalf("preview path=%q", second.Images[0].Path)
+	}
+	if _, err = os.Stat(filepath.Join(directory, "twitch", emoteID+".img")); err != nil {
+		t.Fatalf("cached source missing: %v", err)
 	}
 }
 

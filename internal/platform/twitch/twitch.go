@@ -416,10 +416,13 @@ type channelEvent struct {
 	Message struct {
 		Text      string `json:"text"`
 		Fragments []struct {
-			Type, Text string
-			Emote      *struct {
-				ID, OwnerID string
-				Format      []string `json:"format"`
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Emote *struct {
+				ID         string   `json:"id"`
+				EmoteSetID string   `json:"emote_set_id"`
+				OwnerID    string   `json:"owner_id"`
+				Format     []string `json:"format"`
 			} `json:"emote"`
 		} `json:"fragments"`
 	} `json:"message"`
@@ -468,10 +471,10 @@ func ParseEvent(b []byte) (envelope, *chat.Message, error) {
 	m := chat.Message{ID: e.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: e.ChatterID, AuthorDisplayName: e.ChatterName, AuthorColor: e.Color, Text: e.Message.Text, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"twitch_login": e.ChatterLogin, "twitch_broadcaster_login": e.BroadcasterLogin}}
 	pos := 0
 	for _, f := range e.Message.Fragments {
-		if f.Emote != nil {
+		if f.Type == "emote" && f.Emote != nil {
 			length := len([]rune(f.Text))
 			if length > 0 {
-				m.Emotes = append(m.Emotes, chat.Emote{ID: f.Emote.ID, Name: f.Text, Start: pos, End: pos + length - 1})
+				m.Emotes = append(m.Emotes, chat.Emote{ID: f.Emote.ID, Name: f.Text, URL: TwitchEmoteURL(f.Emote.ID, f.Emote.Format), Start: pos, End: pos + length - 1})
 			}
 		}
 		pos += len([]rune(f.Text))
@@ -495,6 +498,37 @@ func ParseEvent(b []byte) (envelope, *chat.Message, error) {
 		return v, nil, err
 	}
 	return v, &m, nil
+}
+
+const twitchEmoteCDNBase = "https://static-cdn.jtvnw.net/emoticons/v2"
+
+// TwitchEmoteURL applies Twitch's documented Emote API CDN template to
+// EventSub fragment metadata. The terminal backend renders a stable first
+// frame, so animated is preferred only when Twitch explicitly advertises it.
+func TwitchEmoteURL(id string, formats []string) string {
+	id = strings.TrimSpace(id)
+	if len(id) == 0 || len(id) > 128 {
+		return ""
+	}
+	for _, r := range id {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+			return ""
+		}
+	}
+	format := ""
+	for _, available := range formats {
+		if strings.EqualFold(strings.TrimSpace(available), "animated") {
+			format = "animated"
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(available), "static") {
+			format = "static"
+		}
+	}
+	if format == "" {
+		return ""
+	}
+	return twitchEmoteCDNBase + "/" + url.PathEscape(id) + "/" + format + "/dark/3.0"
 }
 
 func (c *Client) duplicate(id string) bool {

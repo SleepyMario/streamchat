@@ -21,11 +21,115 @@ func TestParseEventNormalizesMessageBadgesAndEmotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.Metadata.MessageID != "delivery-1" || m == nil || m.ID != "message-1" || m.AuthorDisplayName != "Viewer" || len(m.Badges) != 1 || m.Badges[0].Text != "1" || len(m.Emotes) != 1 || m.Emotes[0].ID != "25" || m.Emotes[0].Start != 3 || m.Emotes[0].End != 7 {
+	if v.Metadata.MessageID != "delivery-1" || m == nil || m.ID != "message-1" || m.AuthorDisplayName != "Viewer" || len(m.Badges) != 1 || m.Badges[0].Text != "1" || len(m.Emotes) != 1 || m.Emotes[0].ID != "25" || m.Emotes[0].Start != 3 || m.Emotes[0].End != 7 || m.Emotes[0].URL != "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0" {
 		t.Fatalf("%+v %+v", v, m)
 	}
 	if m.ChannelID != "100" || m.ChannelDisplayName != "Channel" || m.AuthorID != "200" || m.Text != "Hi Kappa" || m.SafePlatformMetadata["twitch_broadcaster_login"] != "channel" {
 		t.Fatalf("message fields=%+v", m)
+	}
+}
+
+func twitchFragmentNotification(text string, fragments []map[string]any) []byte {
+	payload := map[string]any{
+		"metadata": map[string]any{"message_id": "delivery-emotes", "message_type": "notification", "message_timestamp": "2026-01-01T00:00:00Z", "subscription_type": EventType, "subscription_version": "1"},
+		"payload": map[string]any{"subscription": map[string]any{"status": "enabled"}, "event": map[string]any{
+			"broadcaster_user_id": "100", "broadcaster_user_name": "Channel", "broadcaster_user_login": "channel",
+			"chatter_user_id": "200", "chatter_user_name": "Viewer", "chatter_user_login": "viewer", "message_id": "message-emotes",
+			"message": map[string]any{"text": text, "fragments": fragments},
+		}},
+	}
+	encoded, _ := json.Marshal(payload)
+	return encoded
+}
+
+func twitchTextFragment(text string) map[string]any {
+	return map[string]any{"type": "text", "text": text}
+}
+
+func twitchEmoteFragment(name, id string, formats ...string) map[string]any {
+	return map[string]any{"type": "emote", "text": name, "emote": map[string]any{"id": id, "emote_set_id": "0", "owner_id": "0", "format": formats}}
+}
+
+func TestTwitchStructuredEmoteRangesUseInclusiveRunePositions(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		fragments []map[string]any
+		want      []chat.Emote
+	}{
+		{"single", "Kappa", []map[string]any{twitchEmoteFragment("Kappa", "25", "static")}, []chat.Emote{{ID: "25", Name: "Kappa", Start: 0, End: 4}}},
+		{"multiple", "hello Kappa world PogChamp !", []map[string]any{twitchTextFragment("hello "), twitchEmoteFragment("Kappa", "25", "static"), twitchTextFragment(" world "), twitchEmoteFragment("PogChamp", "305954156", "static"), twitchTextFragment(" !")}, []chat.Emote{{ID: "25", Name: "Kappa", Start: 6, End: 10}, {ID: "305954156", Name: "PogChamp", Start: 18, End: 25}}},
+		{"adjacent", "KappaPogChamp", []map[string]any{twitchEmoteFragment("Kappa", "25", "static"), twitchEmoteFragment("PogChamp", "305954156", "static")}, []chat.Emote{{ID: "25", Name: "Kappa", Start: 0, End: 4}, {ID: "305954156", Name: "PogChamp", Start: 5, End: 12}}},
+		{"repeated", "Kappa Kappa", []map[string]any{twitchEmoteFragment("Kappa", "25", "static"), twitchTextFragment(" "), twitchEmoteFragment("Kappa", "25", "static")}, []chat.Emote{{ID: "25", Name: "Kappa", Start: 0, End: 4}, {ID: "25", Name: "Kappa", Start: 6, End: 10}}},
+		{"CJK", "你好 Kappa 世界", []map[string]any{twitchTextFragment("你好 "), twitchEmoteFragment("Kappa", "25", "static"), twitchTextFragment(" 世界")}, []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}}},
+		{"emoji", "🙂 Kappa 🚀", []map[string]any{twitchTextFragment("🙂 "), twitchEmoteFragment("Kappa", "25", "static"), twitchTextFragment(" 🚀")}, []chat.Emote{{ID: "25", Name: "Kappa", Start: 2, End: 6}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, message, err := ParseEvent(twitchFragmentNotification(test.text, test.fragments))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(message.Emotes) != len(test.want) {
+				t.Fatalf("emotes=%+v want=%+v", message.Emotes, test.want)
+			}
+			for index, want := range test.want {
+				got := message.Emotes[index]
+				if got.ID != want.ID || got.Name != want.Name || got.Start != want.Start || got.End != want.End || got.End-got.Start+1 != len([]rune(got.Name)) || got.URL == "" {
+					t.Fatalf("emote[%d]=%+v want=%+v", index, got, want)
+				}
+			}
+			line := emote.FormatText(chat.PlatformTwitch, message.Text, message.Emotes, nil, nil)
+			if line.Text != test.text || line.GraphicalText != "" || len(line.Images) != 0 {
+				t.Fatalf("fallback=%+v", line)
+			}
+		})
+	}
+}
+
+func TestTwitchEmoteURLUsesDocumentedTemplatePolicy(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		id      string
+		formats []string
+		want    string
+	}{
+		{"numeric static", "25", []string{"static"}, "https://static-cdn.jtvnw.net/emoticons/v2/25/static/dark/3.0"},
+		{"string static", "emotesv2_4c3b4ed516de493bbcd2df2f5d450f49", []string{"static"}, "https://static-cdn.jtvnw.net/emoticons/v2/emotesv2_4c3b4ed516de493bbcd2df2f5d450f49/static/dark/3.0"},
+		{"animated preferred", "emotesv2_4c3b4ed516de493bbcd2df2f5d450f49", []string{"static", "animated"}, "https://static-cdn.jtvnw.net/emoticons/v2/emotesv2_4c3b4ed516de493bbcd2df2f5d450f49/animated/dark/3.0"},
+		{"animated only", "emotesv2_4c3b4ed516de493bbcd2df2f5d450f49", []string{"animated"}, "https://static-cdn.jtvnw.net/emoticons/v2/emotesv2_4c3b4ed516de493bbcd2df2f5d450f49/animated/dark/3.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := TwitchEmoteURL(test.id, test.formats); got != test.want {
+				t.Fatalf("URL=%q want=%q", got, test.want)
+			}
+		})
+	}
+	for _, invalid := range []struct {
+		id      string
+		formats []string
+	}{{"", []string{"static"}}, {"../25", []string{"static"}}, {"25/other", []string{"static"}}, {"25%2fother", []string{"static"}}, {"表情", []string{"static"}}, {strings.Repeat("a", 129), []string{"static"}}, {"25", nil}, {"25", []string{"webp"}}} {
+		if got := TwitchEmoteURL(invalid.id, invalid.formats); got != "" {
+			t.Fatalf("unsafe metadata produced URL %q", got)
+		}
+	}
+}
+
+func TestInvalidTwitchEmoteMetadataKeepsReadableProviderName(t *testing.T) {
+	fragments := []map[string]any{twitchTextFragment("hello "), twitchEmoteFragment("Kappa", "../unsafe", "static")}
+	_, message, err := ParseEvent(twitchFragmentNotification("hello Kappa", fragments))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(message.Emotes) != 1 || message.Emotes[0].Name != "Kappa" || message.Emotes[0].URL != "" {
+		t.Fatalf("emotes=%+v", message.Emotes)
+	}
+	line := emote.FormatText(chat.PlatformTwitch, message.Text, message.Emotes, nil, func(chat.Platform, chat.Emote) (string, bool) {
+		t.Fatal("invalid Twitch metadata reached graphical resolver")
+		return "", false
+	})
+	if line.Text != "hello Kappa" || line.GraphicalText != "" || len(line.Images) != 0 {
+		t.Fatalf("fallback=%+v", line)
 	}
 }
 
