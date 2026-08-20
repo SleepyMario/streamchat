@@ -321,6 +321,29 @@ func TestRunMultipleAdapters(t *testing.T) {
 	}
 }
 
+func TestRunAdaptersDisplaysKickHumanAndBotMessages(t *testing.T) {
+	now := time.Now()
+	var botRoles chat.RoleSet
+	botRoles.Add(chat.RoleModerator)
+	adapters := []chat.Adapter{
+		fakeAdapter{"kick-human", chat.Message{ID: "kick-human", Platform: chat.PlatformKick, Timestamp: now, AuthorID: "2", AuthorDisplayName: "Viewer", Text: "human message", EventType: chat.EventMessage}},
+		fakeAdapter{"kick-bot", chat.Message{ID: "kick-bot", Platform: chat.PlatformKick, Timestamp: now.Add(time.Millisecond), AuthorID: "22", AuthorDisplayName: "BotRix", Badges: []chat.Badge{{Type: "bot", Text: "Bot"}, {Type: "moderator", Text: "Moderator"}}, Roles: botRoles, Text: "bot message", EventType: chat.EventMessage}},
+	}
+	c := config.Defaults()
+	c.NoColor = true
+	var out, errw bytes.Buffer
+	if err := runAdapters(context.Background(), adapters, c, nil, nil, nil, &out, &errw); err != nil {
+		t.Fatal(err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "Viewer") || !strings.Contains(rendered, "human message") {
+		t.Fatalf("ordinary Kick message missing: %q / %q", rendered, errw.String())
+	}
+	if !strings.Contains(rendered, "[M]") || !strings.Contains(rendered, "BotRix") || !strings.Contains(rendered, "bot message") {
+		t.Fatalf("Kick bot message missing or metadata changed: %q / %q", rendered, errw.String())
+	}
+}
+
 type blockingSender struct {
 	started chan struct{}
 	release chan struct{}

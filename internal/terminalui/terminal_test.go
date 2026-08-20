@@ -187,6 +187,32 @@ func TestAuthoritativeInboundMessageWinsIfItArrivesBeforeLocalReceipt(t *testing
 	}
 }
 
+func TestKickBotAuthoritativeMessageReplacesOnlyMatchingProvisionalEcho(t *testing.T) {
+	screen := newScreen(io.Discard, func() int { return 60 }, func() int { return 10 })
+	if err := screen.Start(); err != nil {
+		t.Fatal(err)
+	}
+	provisional := DisplayMessage{ID: "overlapping-provider-id", Platform: "kick", Author: "you", Line: "outbound", Provisional: true}
+	if err := screen.AppendMessage(provisional); err != nil {
+		t.Fatal(err)
+	}
+	bot := DisplayMessage{ID: "overlapping-provider-id", Platform: "kick", Author: "BotRix", Line: "[KICK] [M] BotRix bot response"}
+	if err := screen.AppendMessage(bot); err != nil {
+		t.Fatal(err)
+	}
+	if len(screen.messages) != 1 || screen.messages[0].Provisional || screen.messages[0].Author != "BotRix" || screen.messages[0].Line != bot.Line {
+		t.Fatalf("bot was hidden or duplicated during reconciliation: %+v", screen.messages)
+	}
+
+	otherBot := DisplayMessage{ID: "independent-bot-id", Platform: "kick", Author: "KickBot", Line: "[KICK] KickBot another response"}
+	if err := screen.AppendMessage(otherBot); err != nil {
+		t.Fatal(err)
+	}
+	if len(screen.messages) != 2 || screen.messages[1].Author != "KickBot" {
+		t.Fatalf("unrelated bot was mistaken for a self echo: %+v", screen.messages)
+	}
+}
+
 func TestRestoredCanonicalTargetIsShownOnInitialDrawAndSurvivesRedraws(t *testing.T) {
 	var output bytes.Buffer
 	screen := newScreen(&output, func() int { return 40 }, func() int { return 10 })

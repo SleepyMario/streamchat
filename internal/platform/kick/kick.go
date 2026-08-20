@@ -288,28 +288,30 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
+	m, e := Parse(body, id)
+	if e != nil {
+		http.Error(w, "invalid webhook", 400)
+		return
+	}
 	s.mu.Lock()
 	if _, ok := s.seen[id]; ok {
 		s.mu.Unlock()
 		w.WriteHeader(204)
 		return
 	}
-	s.seen[id] = s.Now()
-	for k, t := range s.seen {
-		if s.Now().Sub(t) > s.MaxAge*2 {
-			delete(s.seen, k)
-		}
-	}
-	s.mu.Unlock()
-	m, e := Parse(body, id)
-	if e != nil {
-		http.Error(w, "invalid webhook", 400)
-		return
-	}
 	select {
 	case s.Out <- m:
+		now := s.Now()
+		s.seen[id] = now
+		for k, t := range s.seen {
+			if now.Sub(t) > s.MaxAge*2 {
+				delete(s.seen, k)
+			}
+		}
+		s.mu.Unlock()
 		w.WriteHeader(204)
 	default:
+		s.mu.Unlock()
 		http.Error(w, "busy", 503)
 	}
 }

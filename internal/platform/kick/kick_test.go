@@ -43,6 +43,8 @@ func sign(t *testing.T, p *rsa.PrivateKey, id, stamp string, b []byte) string {
 
 const body = `{"message_id":"m1","replies_to":{"message_id":"old","content":"parent","sender":{"user_id":8,"username":"parent"}},"broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":2,"username":"viewer","identity":{"username_color":"#fff","badges":[{"text":"Moderator","type":"moderator","count":1}]}},"content":"hi [emote:7:WAVE]","emotes":[{"emote_id":"7","positions":[{"s":3,"e":16}]}],"created_at":"2026-01-01T00:00:00Z"}`
 
+const botBody = `{"message_id":"bot-message","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":22,"username":"BotRix","identity":{"username_color":"#53fc18","badges":[{"text":"Bot","type":"bot","count":1},{"text":"Moderator","type":"moderator","count":1}]}},"content":"Automated hello","created_at":"2026-01-01T00:00:00Z"}`
+
 func request(t *testing.T, s *Server, p *rsa.PrivateKey, b []byte, stamp string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/webhooks/kick", bytes.NewReader(b))
@@ -80,6 +82,59 @@ func TestSignatureParsingReplyBadgeEmoteAndDedup(t *testing.T) {
 	select {
 	case <-out:
 		t.Fatal("duplicate emitted")
+	default:
+	}
+}
+
+func TestParseKickBotPreservesAuthorBadgesAndRoles(t *testing.T) {
+	m, err := Parse([]byte(botBody), "bot-event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.AuthorID != "22" || m.AuthorDisplayName != "BotRix" || m.AuthorColor != "#53fc18" || m.Text != "Automated hello" {
+		t.Fatalf("bot identity changed: %+v", m)
+	}
+	if len(m.Badges) != 2 || m.Badges[0].Type != "bot" || m.Badges[1].Type != "moderator" {
+		t.Fatalf("bot badges changed: %+v", m.Badges)
+	}
+	if !m.Roles.Has(chat.RoleModerator) {
+		t.Fatalf("bot moderator role missing: %v", m.Roles)
+	}
+	if m.SafePlatformMetadata["kick_event_id"] != "bot-event" {
+		t.Fatalf("event metadata changed: %+v", m.SafePlatformMetadata)
+	}
+}
+
+func TestBusyWebhookRetryIsAcceptedOnce(t *testing.T) {
+	p, k := fixture(t)
+	out := make(chan chat.Message, 1)
+	out <- chat.Message{ID: "queue-blocker"}
+	now := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	s := NewServer("127.0.0.1:0", k, out)
+	s.Now = func() time.Time { return now }
+	stamp := now.Format(time.RFC3339)
+
+	if w := request(t, s, p, []byte(botBody), stamp); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("busy webhook status=%d", w.Code)
+	}
+	<-out
+	if w := request(t, s, p, []byte(botBody), stamp); w.Code != http.StatusNoContent {
+		t.Fatalf("retry status=%d", w.Code)
+	}
+	select {
+	case got := <-out:
+		if got.ID != "bot-message" || got.AuthorDisplayName != "BotRix" {
+			t.Fatalf("retry emitted %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry was acknowledged without emitting the bot message")
+	}
+	if w := request(t, s, p, []byte(botBody), stamp); w.Code != http.StatusNoContent {
+		t.Fatalf("duplicate status=%d", w.Code)
+	}
+	select {
+	case duplicate := <-out:
+		t.Fatalf("duplicate emitted: %+v", duplicate)
 	default:
 	}
 }

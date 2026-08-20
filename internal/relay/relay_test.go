@@ -255,38 +255,52 @@ func TestVerifiedKickWebhookRelaysNormalizedMessage(t *testing.T) {
 	defer conn.Close()
 	waitFor(t, func() bool { return relay.hub.count() == 1 })
 
-	body := []byte(`{"message_id":"kick-message","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":2,"username":"viewer"},"content":"relayed","created_at":"2026-01-01T00:00:00Z"}`)
-	eventID := "event-id"
 	stamp := now.Format(time.RFC3339)
-	digest := sha256.Sum256([]byte(eventID + "." + stamp + "." + string(body)))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
-	if err != nil {
-		t.Fatal(err)
+	sendWebhook := func(eventID string, body []byte) {
+		t.Helper()
+		digest := sha256.Sum256([]byte(eventID + "." + stamp + "." + string(body)))
+		signature, signErr := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		request, requestErr := http.NewRequest(http.MethodPost, httpServer.URL+"/webhooks/kick", bytes.NewReader(body))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		request.Header.Set("Kick-Event-Message-Id", eventID)
+		request.Header.Set("Kick-Event-Subscription-Id", "subscription-id")
+		request.Header.Set("Kick-Event-Signature", base64.StdEncoding.EncodeToString(signature))
+		request.Header.Set("Kick-Event-Message-Timestamp", stamp)
+		request.Header.Set("Kick-Event-Type", "chat.message.sent")
+		request.Header.Set("Kick-Event-Version", "1")
+		response, requestErr := http.DefaultClient.Do(request)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("webhook status %d", response.StatusCode)
+		}
 	}
-	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/webhooks/kick", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+
+	humanBody := []byte(`{"message_id":"kick-message","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":2,"username":"viewer"},"content":"relayed","created_at":"2026-01-01T00:00:00Z"}`)
+	sendWebhook("human-event-id", humanBody)
+	human := readMessage(t, conn)
+	if human.ID != "kick-message" || human.Platform != chat.PlatformKick || human.AuthorDisplayName != "viewer" || human.Text != "relayed" {
+		t.Fatalf("unexpected relayed human message: %+v", human)
 	}
-	request.Header.Set("Kick-Event-Message-Id", eventID)
-	request.Header.Set("Kick-Event-Subscription-Id", "subscription-id")
-	request.Header.Set("Kick-Event-Signature", base64.StdEncoding.EncodeToString(signature))
-	request.Header.Set("Kick-Event-Message-Timestamp", stamp)
-	request.Header.Set("Kick-Event-Type", "chat.message.sent")
-	request.Header.Set("Kick-Event-Version", "1")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
+
+	botBody := []byte(`{"message_id":"kick-bot-message","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":22,"username":"BotRix","identity":{"username_color":"#53fc18","badges":[{"text":"Bot","type":"bot","count":1},{"text":"Moderator","type":"moderator","count":1}]}},"content":"Automated relay","created_at":"2026-01-01T00:00:00Z"}`)
+	sendWebhook("bot-event-id", botBody)
+	bot := readMessage(t, conn)
+	if bot.ID != "kick-bot-message" || bot.Platform != chat.PlatformKick || bot.AuthorDisplayName != "BotRix" || bot.Text != "Automated relay" {
+		t.Fatalf("unexpected relayed bot message: %+v", bot)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("webhook status %d", response.StatusCode)
-	}
-	got := readMessage(t, conn)
-	if got.ID != "kick-message" || got.Platform != chat.PlatformKick || got.Text != "relayed" {
-		t.Fatalf("unexpected relayed message: %+v", got)
+	if len(bot.Badges) != 2 || bot.Badges[0].Type != "bot" || !bot.Roles.Has(chat.RoleModerator) {
+		t.Fatalf("bot metadata did not survive archive/relay: %+v", bot)
 	}
 	stats, err := store.Stats(context.Background())
-	if err != nil || stats.Total != 1 || len(stats.Platforms) != 1 || stats.Platforms[0].Platform != "kick" {
+	if err != nil || stats.Total != 2 || len(stats.Platforms) != 1 || stats.Platforms[0].Platform != "kick" || stats.Platforms[0].Count != 2 {
 		t.Fatalf("Kick was not persisted: %+v, %v", stats, err)
 	}
 }
