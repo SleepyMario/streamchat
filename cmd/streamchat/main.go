@@ -619,7 +619,7 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 	if inFile != nil {
 		if outFile, outputOK := out.(*os.File); outputOK && terminalui.IsInteractive(inFile, outFile) {
 			var err error
-			imageBackend, resolver := interactiveEmotePresentation()
+			imageBackend, resolver := interactiveEmotePresentation(c, outFile)
 			initialTarget := ""
 			if targets != nil {
 				initialTarget = targets.Selected()
@@ -629,6 +629,9 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 				return fmt.Errorf("initialize interactive terminal: %w", err)
 			}
 			emoteResolver = resolver
+			if controller, ok := imageBackend.(*emote.Controller); ok {
+				controller.SetRedraw(terminal.Redraw)
+			}
 			safeOut = terminal.Writer(out)
 			safeErr = terminal.Writer(errw)
 			defer func() {
@@ -805,11 +808,15 @@ func runAdapters(ctx context.Context, adapters []chat.Adapter, c config.Config, 
 }
 
 // interactiveEmotePresentation is the release boundary for graphical terminal
-// presentation. v0.1.1-beta deliberately keeps provider emotes text-only while
-// retaining the parsers, metadata, cache, resolver, and image backend for a
-// future scrolling/reflow renderer overhaul.
-func interactiveEmotePresentation() (emote.Backend, emote.Resolver) {
-	return nil, nil
+// presentation. Kitty receives native cell-bound images; other terminals keep
+// provider emotes readable as text without starting an image backend.
+func interactiveEmotePresentation(c config.Config, output io.Writer) (emote.Backend, emote.Resolver) {
+	controller := emote.NewDefaultControllerWithOptions(emote.DefaultControllerOptions{Mode: c.Emotes.Mode, TerminalOutput: output, Debug: c.Emotes.Debug})
+	if !controller.Available() {
+		_ = controller.Close()
+		return nil, nil
+	}
+	return controller, controller.Resolve
 }
 
 type lockedWriter struct {

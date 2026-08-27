@@ -26,8 +26,10 @@ import (
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
-func TestInteractiveEmotePresentationIsTextOnlyForBeta(t *testing.T) {
-	backend, resolver := interactiveEmotePresentation()
+func TestInteractiveEmotePresentationKeepsReadableFallbackWithoutBackend(t *testing.T) {
+	c := config.Defaults()
+	c.Emotes.Mode = "text"
+	backend, resolver := interactiveEmotePresentation(c, io.Discard)
 	if backend != nil || resolver != nil {
 		t.Fatalf("interactive presentation backend=%T resolver=%v", backend, resolver != nil)
 	}

@@ -12,8 +12,8 @@ import (
 const maxStaticImagePixels = 16 * 1024 * 1024
 
 // staticAsset converts animated GIF input to a persistent first-frame PNG.
-// Überzug++ 2.9 repeatedly rebuilds animated libvips pipelines when an image
-// is repositioned; terminal emotes only require a stable one-row preview.
+// Kitty's graphics protocol accepts PNG data directly, and terminal emotes use
+// a stable one-row preview rather than starting an independent animation.
 func staticAsset(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

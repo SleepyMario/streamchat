@@ -312,6 +312,7 @@ func (s *Screen) cleanMessages(matches func(DisplayMessage) bool) (int, error) {
 
 func (s *Screen) redrawViewLocked() error {
 	width, height := s.terminalWidth(), s.terminalHeight()
+	s.resetImagesLocked()
 	s.transientRows = 0
 	for index := range s.messages {
 		s.messages[index].leadingRows = 0
@@ -345,6 +346,7 @@ func (s *Screen) redrawViewLocked() error {
 
 func (s *Screen) redrawChatLocked() error {
 	width, height := s.terminalWidth(), s.terminalHeight()
+	s.resetImagesLocked()
 	s.transientRows = 0
 	for index := range s.messages {
 		s.messages[index].leadingRows = 0
@@ -372,6 +374,17 @@ func (s *Screen) redrawChatLocked() error {
 	}
 	s.refreshImagesLocked(width, height)
 	return nil
+}
+
+func (s *Screen) resetImagesLocked() {
+	if s.images == nil {
+		return
+	}
+	if backend, ok := s.images.(interface{ Reset() }); ok {
+		backend.Reset()
+		return
+	}
+	s.images.Update(nil)
 }
 
 func (m DisplayMessage) rendered() emote.Line {

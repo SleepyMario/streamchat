@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 
 	"github.com/SleepyMario/streamchat/internal/chat"
@@ -31,6 +30,10 @@ type invalidationBackend interface {
 
 type diagnosticBackend interface {
 	SetDiagnostic(func(error))
+}
+
+type resetBackend interface {
+	Reset()
 }
 
 type ControllerOptions struct {
@@ -89,6 +92,11 @@ func NewDefaultControllerWithOptions(options DefaultControllerOptions) *Controll
 	if mode != "auto" {
 		return NewController(ControllerOptions{Mode: mode})
 	}
+	// Avoid creating cache or diagnostic state when this terminal cannot use
+	// the native backend; readable provider names need no graphical resources.
+	if !DetectKitty() {
+		return NewController(ControllerOptions{Mode: mode})
+	}
 	cache, err := NewCache(CacheOptions{})
 	if err != nil {
 		return NewController(ControllerOptions{Mode: mode})
@@ -99,10 +107,10 @@ func NewDefaultControllerWithOptions(options DefaultControllerOptions) *Controll
 	}
 	trace := func(message string) {
 		if diagnostic != nil {
-			diagnostic.write("ueberzug: " + message)
+			diagnostic.write("kitty: " + message)
 		}
 	}
-	backend, err := newUeberzugBackend(UeberzugBackendOptions{TerminalOutput: options.TerminalOutput, Debug: options.Debug, Trace: trace})
+	backend, err := newKittyBackend(KittyBackendOptions{TerminalOutput: options.TerminalOutput, Trace: trace})
 	if err != nil {
 		controller := NewController(ControllerOptions{Mode: mode, Cache: cache})
 		controller.diagnostic = diagnostic
@@ -114,9 +122,9 @@ func NewDefaultControllerWithOptions(options DefaultControllerOptions) *Controll
 	controller.debugSeen = make(map[string]struct{})
 	backend.SetDiagnostic(func(err error) { controller.debug("backend failure: " + err.Error()) })
 	if backend.Available() {
-		controller.debug(fmt.Sprintf("backend ready: ueberzug pid=%d output=%s", backend.PID(), ueberzugOutput(os.Getenv)))
+		controller.debug("backend ready: Kitty graphics protocol")
 	} else {
-		controller.debug("backend unavailable: Überzug++ helper exited during startup")
+		controller.debug("backend unavailable: Kitty graphics protocol")
 	}
 	return controller
 }
@@ -179,6 +187,17 @@ func (c *Controller) Update(placements []Placement) {
 	if c != nil && c.backend != nil && c.backend.Available() {
 		c.backend.Update(placements)
 	}
+}
+
+func (c *Controller) Reset() {
+	if c == nil {
+		return
+	}
+	if backend, ok := c.backend.(resetBackend); ok {
+		backend.Reset()
+		return
+	}
+	c.Update(nil)
 }
 
 func (c *Controller) Close() error {
