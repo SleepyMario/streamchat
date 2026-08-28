@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Streamchat
+Comment=Unified native chat controls for Kick, Twitch, and YouTube
+Exec=streamchat-gui
+Icon=com.sleepymario.streamchat
+Terminal=false
+Categories=Network;Chat;
+StartupNotify=true
+StartupWMClass=com.sleepymario.streamchat

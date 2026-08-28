@@ -21,6 +21,7 @@ import (
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/chattercolor"
+	"github.com/SleepyMario/streamchat/internal/clientruntime"
 	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/emote"
@@ -42,8 +43,8 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat is a public beta focused on Kick.
-Kick is beta-complete. Core Twitch chat support is available; YouTube remains preliminary.
+const usage = `Streamchat 2.0 combines Kick, Twitch, and YouTube chat.
+Kick and Twitch support reading and channel controls; YouTube is currently read-only.
 
 Start here:
   streamchat setup                 Configure one or more services interactively
@@ -119,8 +120,7 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 			config.ApplyEnv(&c, os.Getenv)
 		}
 		if e == nil && !c.HasUsablePlatform() {
-			w := setup.New(in, out, "")
-			e = w.Run(ctx, nil)
+			e = clientruntime.RunSetup(ctx, in, out, "", nil)
 			return finish(e, errw)
 		}
 		fmt.Fprint(out, usage)
@@ -140,7 +140,7 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 		var setupPath string
 		selected, setupPath, e = setupArguments(args[1:])
 		if e == nil {
-			e = setup.New(in, out, setupPath).Run(ctx, selected)
+			e = clientruntime.RunSetup(ctx, in, out, setupPath, selected)
 		}
 	case "demo":
 		e = demo(ctx, args[1:], out)
@@ -347,10 +347,9 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 			}
 		}
 	}
-	var twitchSession *twitchRuntime
 	var twitchPrepareErr error
 	if mode == "run" && c.Twitch.ClientID != "" && (c.Twitch.AccessToken != "" || c.Twitch.RefreshToken != "") && c.Twitch.Channel != "" {
-		if twitchSession, twitchPrepareErr = prepareTwitch(ctx, &c, o.config); twitchPrepareErr != nil {
+		if _, twitchPrepareErr = prepareTwitch(ctx, &c, o.config); twitchPrepareErr != nil {
 			fmt.Fprintf(errw, "Twitch unavailable; continuing with other configured inputs: %s\n", safeError(twitchPrepareErr))
 		}
 	}
@@ -384,56 +383,22 @@ func runPlatforms(ctx context.Context, mode string, args []string, in io.Reader,
 		if inputFile, ok := in.(*os.File); ok {
 			input = &terminalInput{Reader: reader, file: inputFile}
 		}
-		kickClient := &kickOutboundSender{config: c.Kick, configPath: c.Path, http: &http.Client{Timeout: 20 * time.Second}}
-		twitchAPI := newTwitchAPI(&c, o.config)
-		twitchBroadcasterID := ""
-		var twitchScopes []string
-		if twitchSession != nil {
-			twitchBroadcasterID = twitchSession.Channel.ID
-			twitchScopes = twitchSession.Identity.Scopes
+		sharedRuntime, runtimeErr := clientruntime.New(ctx, c)
+		if runtimeErr != nil {
+			return runtimeErr
 		}
-		twitchAuth := twitch.NewUserClient(twitchAPI, twitchScopes)
-		twitchClient := &twitchOutboundSender{
-			chat:       twitch.NewChatSenderWithUserClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
-			channel:    twitch.NewChannelClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
-			moderation: twitch.NewModerationClient(twitchAuth, twitchBroadcasterID, c.Twitch.UserID),
-			userID:     c.Twitch.UserID,
-			userLogin:  c.Twitch.UserLogin,
-		}
-		targets = outbound.NewTargets(
-			outbound.Target{
-				Name:        "kick",
-				Aliases:     []string{"kick"},
-				Sender:      kickClient,
-				Unavailable: c.Kick.BroadcasterID == "" || (c.Kick.AccessToken == "" && c.Kick.RefreshToken == ""),
-			},
-			outbound.Target{
-				Name:        "twitch",
-				Aliases:     []string{"twitch"},
-				Sender:      twitchClient,
-				Unavailable: twitchSession == nil,
-			},
-		)
-		registerRetiredTargetCommands(targets)
-		if state, stateErr := clientstate.Default(); stateErr == nil {
-			configureOutboundState(targets, state)
-		}
-		targets.RegisterTargetControl("title", "kick", outbound.ControlFunc(kickClient.Title))
-		targets.RegisterTargetControl("title", "twitch", outbound.ControlFunc(twitchClient.Title))
-		targets.RegisterTargetControl("category", "kick", outbound.ControlFunc(kickClient.Category))
-		targets.RegisterTargetControl("category", "twitch", outbound.ControlFunc(twitchClient.Category))
-		statusRouter := newTargetStatusRouter(map[string]statusProvider{"kick": kickClient, "twitch": twitchClient}, targets.Selected())
-		targets.AddSelectionChanged(statusRouter.Select)
-		kickClient.setStatusRefresh(statusRouter.RequestRefresh)
-		twitchClient.setStatusRefresh(statusRouter.RequestRefresh)
-		status = statusRouter
-		moderation := newModerationControls(kickClient, twitchClient)
-		targets.RegisterControl("ban", outbound.ControlFunc(moderation.Ban))
-		targets.RegisterControl("timeout", outbound.ControlFunc(moderation.Timeout))
-		remoteClear := newRemoteClearController(kickClient, twitchClient, archiveMessageIDFile{path: c.Storage.SQLitePath})
-		targets.RegisterControl("clear", remoteClear)
-		opener := openController{config: c, kick: kickClient, launcher: launcher.New()}
-		targets.RegisterControl("open", outbound.ControlFunc(opener.Open))
+		targets = sharedRuntime.Session()
+		status = sharedRuntime
+		targets.RegisterControl("open", outbound.ControlFunc(func(ctx context.Context, platform string) (string, error) {
+			publicURL, err := sharedRuntime.OpenURL(ctx, platform)
+			if err != nil {
+				return "", err
+			}
+			if err = launcher.New().Open(publicURL); err != nil {
+				return "", err
+			}
+			return "Opened " + platform + " externally.", nil
+		}))
 		registerShutdownControls(targets)
 	}
 	return runAdapters(ctx, adapters, c, input, targets, status, out, errw)
@@ -496,6 +461,9 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 
 	serverCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if os.Getenv("STREAMCHAT_LOCAL_SERVER") == "1" {
+		server.LocalShutdown = cancel
+	}
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.Run(serverCtx, messages) }()
 
@@ -584,12 +552,7 @@ func archiveStats(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return fmt.Errorf("inspect SQLite archive %s: %w", c.Storage.SQLitePath, err)
 	}
-	store, err := archivepkg.Open(c.Storage.SQLitePath)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	stats, err := store.Stats(ctx)
+	stats, err := clientruntime.ReadArchiveStats(ctx, c)
 	if err != nil {
 		return err
 	}
@@ -1704,7 +1667,7 @@ func showConfig(args []string, out io.Writer) error {
 	if e != nil {
 		return e
 	}
-	b, e := config.RedactedJSON(c)
+	b, e := clientruntime.RedactedConfigJSON(c)
 	if e != nil {
 		return e
 	}
@@ -1713,15 +1676,13 @@ func showConfig(args []string, out io.Writer) error {
 }
 
 func check(args []string, out io.Writer) error {
-	o, c, e := flags("config check", args)
+	_, c, e := flags("config check", args)
 	if e != nil {
 		return e
 	}
-	if e = c.Validate("check"); e != nil {
-		return e
-	}
-	if e = config.CheckFileMode(o.config); e != nil {
-		return e
+	health := clientruntime.InspectConfig(c)
+	if !health.Valid || !health.FileModeOK {
+		return errors.New(strings.Join(health.Problems, "; "))
 	}
 	fmt.Fprintln(out, "configuration valid (file and structural settings)")
 	for _, d := range platformreg.Default().Definitions() {

@@ -5,7 +5,6 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 )
 
 var ErrUnavailable = errors.New("neither mpv nor xdg-open is available")
@@ -54,6 +53,6 @@ func detachedCommand(path string, args ...string) *exec.Cmd {
 	command.Stdin = nil
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detach(command)
 	return command
 }

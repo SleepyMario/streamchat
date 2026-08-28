@@ -1,15 +1,29 @@
 # Streamchat
 
-Streamchat `v0.1.0-beta.1` is the first public beta, focused on Kick. Kick remains the beta-complete path, and post-beta main development now includes Twitch chat ingestion, archive/relay, outbound sending, target persistence, status, channel controls, moderation, and structured emote metadata with readable text presentation. YouTube remains preliminary. Streamchat uses only documented official platform APIs.
+Streamchat 2.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. Kick and Twitch support reading, sending, channel controls, and moderation. YouTube currently supports read-only chat ingestion. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
 ```sh
 make build
+make gui
 ./bin/streamchat version
 ./bin/streamchat setup
 ./bin/streamchat run
 ```
+
+`make gui` builds `streamchat-gui`, its private frontend runtime, and the core server executable used by local mode. The native application starts the private components automatically; ordinary desktop users do not need to invoke the CLI.
+
+## Native desktop application
+
+The native `streamchat-gui` frontend exposes the same shared sending, target selection, channel-control, moderation, setup, health, archive, and shutdown operations used by the terminal client. Enter sends a message and Shift+Enter inserts a new line. All visible controls, chat text, and the composer scale together from 70% through 200% using the toolbar, Ctrl+Plus, Ctrl+Minus, or Ctrl+0.
+
+Two connection modes are available from the control desk:
+
+- **Local server** starts a private loopback-only server beside the GUI. It creates an ephemeral relay token, keeps the configuration file private, stores the archive in the user's Streamchat configuration directory, and shuts down with the application. It does not require a Windows Firewall exception.
+- **Remote server** connects to an existing `ws://` or `wss://` Streamchat relay. This is intended for a continuously running server or VM.
+
+The Windows installer contains the native GUI and both private runtime executables. It creates Start-menu and desktop shortcuts but does not expose a terminal-client shortcut. Uninstalling removes the application while deliberately preserving user settings, OAuth material, and the chat archive.
 
 On a first run with no usable configuration, `streamchat` offers the setup wizard automatically. The wizard lets you select any combination of the three supported platforms, explains every credential before asking for it, opens browser authorization when appropriate, and stores the result privately.
 
@@ -214,7 +228,7 @@ Start it with:
 streamchat serve --config /etc/streamchat/config.json
 ```
 
-The default listen address is `127.0.0.1:8788`. An explicit loopback or private IP is accepted; wildcard and public-IP binds are rejected. Streamchat serves plain HTTP/WebSocket only. The VPS must terminate public TLS and forward only `/webhooks/kick` to the utility VM. Do not expose `/relay` through that public proxy. A private encrypted network such as ZeroTier can carry `ws://` relay traffic directly.
+The default listen address is `127.0.0.1:8788`. An explicit loopback or private IP is accepted; wildcard and public-IP binds are rejected. Streamchat serves plain HTTP/WebSocket only. The VPS must terminate public TLS and forward only `/webhooks/kick` to the utility VM. Do not expose `/relay` through that public proxy. A private encrypted network such as WireGuard can carry `ws://` relay traffic directly.
 
 In the Kick developer portal, configure the application webhook as `https://streamchat.sleepymario.com/webhooks/kick` (or the equivalent public URL for another deployment), and keep `kick.webhook_url` set to that same value. The local JSON field is only a validated operator reference: Streamchat does not transmit it when creating an event subscription, so changing the JSON alone does not change Kick's destination. After changing the webhook URL in the developer portal, run:
 
@@ -344,6 +358,8 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/platform/youtube`: official Data/Live Streaming API adapter
 - `internal/platform/kick`: OAuth, chat sending, channel controls, subscriptions, verified webhook receiver
 - `internal/outbound`: canonical outbound target selection and command aliases
+- `internal/clientruntime`: frontend-neutral sending, control, setup, health, and archive operations
+- `internal/gui`: private loopback HTTP/SSE bridge shared by browser development and the native frontend
 - `internal/clientstate`: atomic, non-secret interactive client preferences
 - `internal/platform/twitch`: OAuth/API support and EventSub WebSocket adapter
 - `internal/relay`: authenticated in-memory WebSocket broadcast server/client
@@ -356,6 +372,8 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/terminalui`: raw-mode key editing and synchronized persistent input bar
 - `internal/logging`: opt-in private JSONL writer
 - `cmd/streamchat`: human CLI, lifecycle, and signal handling
+- `cmd/streamchat-gui`: private native-frontend runtime and optional built-in local server
+- `desktop`: native Qt 6 frontend
 
 JSONL logging is disabled by default and files are mode `0600`. Chat logs can contain personal data. Terminal output strips control sequences from untrusted platform content.
 
@@ -372,18 +390,18 @@ Tests use fake adapters, `httptest` servers, invented fixtures, and fake WebSock
 Build the client and headless-server packages with the locally installed Go toolchain and `dpkg-deb`:
 
 ```sh
-VERSION=0.1.0-beta.1 make deb
-sudo apt install ./dist/streamchat_0.1.0~beta.1_amd64.deb
+VERSION=2.0 make deb
+sudo apt install ./dist/streamchat_2.0_amd64.deb
 ```
 
-The upstream prerelease `0.1.0-beta.1` maps to Debian `0.1.0~beta.1`, ensuring it sorts before the eventual `0.1.0` final release. Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream form into the binary, so `streamchat version` reports `streamchat 0.1.0-beta.1` for this release.
+Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream version into the binary, so this release reports `streamchat 2.0`.
 
 `streamchat` owns the statically linked `/usr/bin/streamchat`, user-facing documentation, and no systemd service. `streamchat-server` depends on the exact same version of `streamchat`, avoiding a duplicate executable, and owns `streamchat-server.service` plus the server configuration example. Install a server with both local artifacts:
 
 ```sh
 sudo apt install \
-  ./dist/streamchat_0.1.0~beta.1_amd64.deb \
-  ./dist/streamchat-server_0.1.0~beta.1_amd64.deb
+  ./dist/streamchat_2.0_amd64.deb \
+  ./dist/streamchat-server_2.0_amd64.deb
 ```
 
 The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:

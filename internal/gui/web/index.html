@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Streamchat</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/overrides.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">S</span><div><strong>Streamchat</strong><small>2.0</small></div></div>
+      <div class="live-state"><span id="relay-dot" class="dot"></span><span id="relay-state">Connecting to relay</span></div>
+      <div class="header-actions"><button class="ghost" data-panel="tools">Tools</button><button class="danger-quiet" id="shutdown">Shut down</button></div>
+    </header>
+    <section class="status-strip">
+      <div id="kick-status" class="platform-status"><span class="platform kick">Kick</span><strong>Checking…</strong><small></small></div>
+      <div id="twitch-status" class="platform-status"><span class="platform twitch">Twitch</span><strong>Checking…</strong><small></small></div>
+      <div id="youtube-status" class="platform-status"><span class="platform youtube">YouTube</span><strong>Relay input</strong><small>Incoming chat</small></div>
+      <button id="refresh-status" class="icon-button" title="Refresh status">↻</button>
+    </section>
+    <section class="workspace">
+      <div class="chat-column">
+        <nav class="filters" aria-label="Platform filters"><div><button class="active" data-filter="all">All</button><button data-filter="kick">Kick</button><button data-filter="twitch">Twitch</button><button data-filter="youtube">YouTube</button></div><button id="clear-local" class="ghost">Clear view</button></nav>
+        <section id="empty" class="empty"><strong>Waiting for chat</strong><span>Messages from the configured Streamchat relay will appear here.</span></section>
+        <section id="messages" class="messages" aria-live="polite"></section>
+      </div>
+      <aside id="tools" class="tools">
+        <div class="panel-heading"><div><span class="eyebrow">CONTROL DESK</span><h2>Stream controls</h2></div><button class="mobile-close" data-close-panel>×</button></div>
+        <section class="tool-section"><label>Outgoing target</label><div class="segment"><button id="target-kick" data-target="kick">Kick</button><button id="target-twitch" data-target="twitch">Twitch</button></div></section>
+        <section class="tool-section two-fields"><label>Stream title<input id="title-input" placeholder="New stream title"></label><button data-action="title">Update</button><label>Category<input id="category-input" placeholder="Name or category ID"></label><button data-action="category">Update</button></section>
+        <section class="tool-section"><label>Moderation</label><div class="row"><select id="mod-platform"><option value="kick">Kick</option><option value="twitch">Twitch</option></select><input id="mod-user" placeholder="Username"></div><div class="row"><button data-action="ban" class="danger-quiet">Ban</button><input id="timeout-duration" value="10m" aria-label="Timeout duration"><button data-action="timeout">Timeout</button></div></section>
+        <section class="tool-section"><label>Remote chat</label><div class="row"><select id="clear-platform"><option value="kick">Kick recent messages</option><option value="twitch">Twitch entire chat</option></select><input id="clear-days" type="number" min="1" max="30" value="1" title="Kick archive window in days"><button data-action="remote-clear" class="danger-quiet">Clear</button></div></section>
+        <section class="tool-section"><label>Open active stream</label><div class="row"><button data-open="kick">Kick</button><button data-open="twitch">Twitch</button><button data-open="youtube">YouTube</button></div></section>
+        <section class="tool-section diagnostics"><div class="row"><button data-dialog="config">Configuration</button><button data-dialog="setup">Setup & OAuth</button><button data-dialog="archive">Archive</button></div></section>
+      </aside>
+    </section>
+    <form id="composer" class="composer"><div class="composer-target"><span>Sending to</span><strong id="composer-target">Choose target</strong></div><textarea id="message-input" rows="1" maxlength="500" placeholder="Write a message…" aria-label="Message"></textarea><button type="submit" class="send">Send</button></form>
+  </main>
+  <dialog id="dialog"><div class="dialog-heading"><h2 id="dialog-title"></h2><button id="dialog-close">×</button></div><div id="dialog-body" class="dialog-body"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

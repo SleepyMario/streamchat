@@ -1,0 +1,3 @@
+[hidden] { display: none !important; }
+.health-good:empty::after { content: "Configuration healthy"; }
+.health-bad:empty::after { content: "Attention required"; }

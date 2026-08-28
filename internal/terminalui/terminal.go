@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -831,7 +830,7 @@ func OpenWithBackendAndTarget(in, out *os.File, reader io.Reader, images emote.B
 	}
 	clock := time.NewTicker(clockRefreshInterval)
 	t := &Terminal{reader: bufio.NewReader(reader), screen: screen, restore: restore, stop: make(chan struct{}), done: make(chan struct{}), resize: make(chan os.Signal, 1), clock: clock.C, stopClock: clock.Stop}
-	signal.Notify(t.resize, syscall.SIGWINCH)
+	notifyResize(t.resize)
 	go t.watchScreen()
 	return t, nil
 }

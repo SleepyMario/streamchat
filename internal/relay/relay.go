@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -79,6 +80,9 @@ func (h *hub) count() int {
 type Server struct {
 	Listen, Path, Token string
 	Webhook             http.Handler
+	// LocalShutdown is intentionally nil for normal servers. The desktop bundle
+	// enables it only for its private loopback child server.
+	LocalShutdown func()
 	// Accept runs before broadcast. Returning false suppresses a duplicate;
 	// returning an error stops the server so archival failures are visible.
 	Accept func(context.Context, chat.Message) (bool, error)
@@ -138,10 +142,32 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.Path, s.websocket)
+	if s.LocalShutdown != nil {
+		mux.HandleFunc("/_streamchat/local-shutdown", s.localShutdown)
+	}
 	if s.Webhook != nil {
 		mux.Handle("/", s.Webhook)
 	}
 	return mux
+}
+
+func (s *Server) localShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !authorized(r.Header.Get("Authorization"), s.Token) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	go s.LocalShutdown()
 }
 
 func (s *Server) Broadcast(m chat.Message) error {
@@ -228,6 +254,7 @@ type Client struct {
 	URL, Token string
 	Dial       DialFunc
 	RetryDelay time.Duration
+	OnState    func(string)
 }
 
 func NewClient(url, token string) *Client {
@@ -235,6 +262,12 @@ func NewClient(url, token string) *Client {
 }
 
 func (c *Client) Name() string { return "server" }
+
+func (c *Client) state(value string) {
+	if c.OnState != nil {
+		c.OnState(value)
+	}
+}
 
 func (c *Client) read(ctx context.Context, out chan<- chat.Message) error {
 	header := make(http.Header)
@@ -249,6 +282,7 @@ func (c *Client) read(ctx context.Context, out chan<- chat.Message) error {
 		}
 		return &chat.AdapterError{Kind: chat.Recoverable, Op: "Streamchat relay", Err: errors.New("connection failed")}
 	}
+	c.state("connected")
 	defer conn.Close()
 	conn.SetReadLimit(maxMessageBytes)
 	done := make(chan struct{})
@@ -282,17 +316,22 @@ func (c *Client) read(ctx context.Context, out chan<- chat.Message) error {
 
 func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 	if c.Token == "" {
+		c.state("authentication failed")
 		return &chat.AdapterError{Kind: chat.Authentication, Op: "Streamchat relay", Err: errors.New("authentication token is required")}
 	}
+	c.state("connecting")
 	for {
 		err := c.read(ctx, out)
 		if ctx.Err() != nil {
+			c.state("stopped")
 			return nil
 		}
 		var adapterErr *chat.AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Kind == chat.Authentication {
+			c.state("authentication failed")
 			return err
 		}
+		c.state("reconnecting")
 		timer := time.NewTimer(c.RetryDelay)
 		select {
 		case <-ctx.Done():

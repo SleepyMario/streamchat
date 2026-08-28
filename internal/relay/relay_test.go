@@ -201,6 +201,79 @@ func TestAuthorizedConnectionAndUnauthorizedRejection(t *testing.T) {
 	}
 }
 
+func TestLocalShutdownRequiresLoopbackPostAndToken(t *testing.T) {
+	shutdown := make(chan struct{}, 1)
+	server := NewServer("", "/relay", testToken, nil)
+	server.LocalShutdown = func() { shutdown <- struct{}{} }
+	handler := server.Handler()
+
+	tests := []struct {
+		name       string
+		method     string
+		remoteAddr string
+		token      string
+		want       int
+	}{
+		{name: "method", method: http.MethodGet, remoteAddr: "127.0.0.1:1234", token: testToken, want: http.StatusMethodNotAllowed},
+		{name: "remote", method: http.MethodPost, remoteAddr: "192.0.2.1:1234", token: testToken, want: http.StatusForbidden},
+		{name: "token", method: http.MethodPost, remoteAddr: "127.0.0.1:1234", token: "wrong", want: http.StatusUnauthorized},
+		{name: "accepted", method: http.MethodPost, remoteAddr: "[::1]:1234", token: testToken, want: http.StatusAccepted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "http://localhost/_streamchat/local-shutdown", nil)
+			request.RemoteAddr = test.remoteAddr
+			request.Header.Set("Authorization", "Bearer "+test.token)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status=%d want=%d", response.Code, test.want)
+			}
+		})
+	}
+	select {
+	case <-shutdown:
+	case <-time.After(time.Second):
+		t.Fatal("accepted request did not trigger shutdown")
+	}
+}
+
+func TestClientReportsConnectedAndStoppedStates(t *testing.T) {
+	serverRelay := NewServer("", "/relay", testToken, nil)
+	httpServer := httptest.NewServer(serverRelay.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	states := make(chan string, 8)
+	messages := make(chan chat.Message, 1)
+	client := NewClient(websocketURL(httpServer.URL), testToken)
+	client.OnState = func(state string) { states <- state }
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx, messages) }()
+	connected := false
+	deadline := time.After(2 * time.Second)
+	for !connected {
+		select {
+		case state := <-states:
+			connected = state == "connected"
+		case <-deadline:
+			t.Fatal("client did not report connected")
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	for !stopped {
+		select {
+		case state := <-states:
+			stopped = state == "stopped"
+		default:
+			t.Fatal("client did not report stopped")
+		}
+	}
+}
+
 func TestBroadcastReachesMultipleClients(t *testing.T) {
 	relay := NewServer("", "/relay", testToken, nil)
 	httpServer := httptest.NewServer(relay.Handler())
