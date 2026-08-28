@@ -14,12 +14,10 @@ RUN test -n "$VERSION" && \
       -o /out/streamchat \
       ./cmd/streamchat
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS runtime
 
 ARG VERSION
-LABEL org.opencontainers.image.title="Streamchat" \
-      org.opencontainers.image.description="Multi-platform streaming chat client, archive, and relay" \
-      org.opencontainers.image.source="https://github.com/SleepyMario/streamchat" \
+LABEL org.opencontainers.image.source="https://github.com/SleepyMario/streamchat" \
       org.opencontainers.image.version="$VERSION"
 
 RUN apt-get update && \
@@ -36,4 +34,18 @@ WORKDIR /var/lib/streamchat
 VOLUME ["/var/lib/streamchat"]
 
 ENTRYPOINT ["/usr/local/bin/streamchat"]
-CMD ["version"]
+
+FROM runtime AS cli
+
+LABEL org.opencontainers.image.title="Streamchat CLI" \
+      org.opencontainers.image.description="Interactive multi-platform streaming chat client"
+
+CMD ["run"]
+
+FROM runtime AS server
+
+LABEL org.opencontainers.image.title="Streamchat Server" \
+      org.opencontainers.image.description="Headless multi-platform chat ingestion, archive, and relay server"
+
+VOLUME ["/etc/streamchat"]
+CMD ["serve", "--config", "/etc/streamchat/config.json"]
