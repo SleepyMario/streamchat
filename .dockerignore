@@ -1,0 +1,11 @@
+.git
+.github
+bin
+build
+coverage
+dist
+*.db
+*.db-shm
+*.db-wal
+*.log
+config.json
