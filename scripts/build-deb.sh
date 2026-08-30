@@ -97,7 +97,7 @@ install -m 0755 packaging/debian/streamchat-server.postinst "${server_root}/DEBI
 install -m 0755 packaging/debian/streamchat-server.prerm "${server_root}/DEBIAN/prerm"
 install -m 0755 packaging/debian/streamchat-server.postrm "${server_root}/DEBIAN/postrm"
 
-gui_shlibs=$(dpkg-shlibdeps -O -e"${gui_root}/usr/libexec/streamchat/streamchat-gui" 2>/dev/null |
+gui_shlibs=$(dpkg-shlibdeps -O -e"${gui_root}/usr/libexec/streamchat/streamchat-gui" |
 	sed -n 's/^shlibs:Depends=//p')
 if [ -z "${gui_shlibs}" ]; then
 	echo "error: unable to determine Streamchat GUI shared-library dependencies" >&2
