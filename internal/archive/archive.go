@@ -56,6 +56,10 @@ type MessageReference struct {
 	Timestamp time.Time
 }
 
+type AuthorReference struct {
+	ID, DisplayName string
+}
+
 type Stats struct {
 	SchemaVersion int
 	Total         int64
@@ -210,6 +214,26 @@ func (a *Archive) MessageReferencesSince(ctx context.Context, platform chat.Plat
 		return nil, fmt.Errorf("read archived message IDs: %w", err)
 	}
 	return references, nil
+}
+
+// LatestAuthor resolves a displayed chat name to the provider identity most
+// recently observed by the authoritative archive.
+func (a *Archive) LatestAuthor(ctx context.Context, platform chat.Platform, displayName string) (AuthorReference, error) {
+	displayName = strings.TrimSpace(displayName)
+	if platform == "" || displayName == "" {
+		return AuthorReference{}, errors.New("archive platform and display name are required")
+	}
+	var result AuthorReference
+	err := a.db.QueryRowContext(ctx, `SELECT user_id, display_name FROM messages
+        WHERE platform = ? AND LOWER(TRIM(display_name)) = LOWER(?) AND TRIM(user_id) <> ''
+        ORDER BY event_timestamp DESC LIMIT 1`, platform, displayName).Scan(&result.ID, &result.DisplayName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuthorReference{}, fmt.Errorf("%s user %q was not found in the Streamchat archive", platform, displayName)
+	}
+	if err != nil {
+		return AuthorReference{}, fmt.Errorf("resolve archived author: %w", err)
+	}
+	return result, nil
 }
 
 func moderationState(m chat.Message) string {

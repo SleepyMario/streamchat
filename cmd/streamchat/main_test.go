@@ -95,7 +95,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "Streamchat 2.0") || !strings.Contains(out.String(), "YouTube is currently read-only") {
+	if !strings.Contains(out.String(), "Streamchat 3.0") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
 		t.Fatalf("help does not describe stable platform support accurately: %s", out.String())
 	}
 }
@@ -971,16 +971,16 @@ func TestCleanNoMatchReservedTargetsAndUsage(t *testing.T) {
 	runOutboundInput(context.Background(), strings.NewReader("/clean\n/clean MissingUser\n/clean youtube\n/clean twitch\n"), targets, &out, &errw, func() {})
 	got := out.String()
 	for _, want := range []string{
-		"Usage: /clean streamchat|kick|twitch|USER",
+		"Usage: /clean streamchat|kick|twitch|youtube|USER",
 		"No displayed messages matched: MissingUser",
-		"Display cleaning is not implemented for: youtube",
+		"No displayed messages matched: youtube",
 		"No displayed messages matched: twitch",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
 	}
-	if !reflect.DeepEqual(display.authors, []string{"MissingUser"}) || !reflect.DeepEqual(display.platforms, []string{"twitch"}) || errw.Len() != 0 {
+	if !reflect.DeepEqual(display.authors, []string{"MissingUser"}) || !reflect.DeepEqual(display.platforms, []string{"youtube", "twitch"}) || errw.Len() != 0 {
 		t.Fatalf("display=%+v err=%q", display, errw.String())
 	}
 }

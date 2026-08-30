@@ -182,3 +182,61 @@ func TestAPIKeyUsesHeaderNotURL(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWriteStatusAndChannelControls(t *testing.T) {
+	var sent, deleted, banned, updated bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/liveBroadcasts":
+			_, _ = w.Write([]byte(`{"items":[{"id":"video-1","snippet":{"title":"Live","liveChatId":"chat-1"}}]}`))
+		case "/liveChat/messages":
+			if r.Method == http.MethodPost {
+				sent = true
+				_, _ = w.Write([]byte(`{"id":"message-1"}`))
+			} else if r.Method == http.MethodDelete && r.URL.Query().Get("id") == "message-1" {
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		case "/liveChat/bans":
+			banned = r.Method == http.MethodPost
+			_, _ = w.Write([]byte(`{"id":"ban-1"}`))
+		case "/videoCategories":
+			_, _ = w.Write([]byte(`{"items":[{"id":"20","snippet":{"title":"Gaming"}}]}`))
+		case "/videos":
+			if r.Method == http.MethodPut {
+				updated = true
+				_, _ = w.Write([]byte(`{"id":"video-1"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[{"id":"video-1","snippet":{"title":"Old title","description":"keep","categoryId":"20"},"liveStreamingDetails":{"concurrentViewers":"17","activeLiveChatId":"chat-1"}}]}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	c := New(server.Client(), server.URL, "", "token", "")
+	id, err := c.SendMessage(context.Background(), "hello")
+	if err != nil || id != "message-1" {
+		t.Fatalf("send=%q err=%v", id, err)
+	}
+	if err = c.DeleteMessage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Ban(context.Background(), "UC12345678901234567890", 60); err != nil {
+		t.Fatal(err)
+	}
+	status, err := c.Status(context.Background())
+	if err != nil || status.Title != "Old title" || status.Category != "Gaming" || status.ViewerCount != 17 || !status.Live {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	if err = c.UpdateTitle(context.Background(), "New title"); err != nil {
+		t.Fatal(err)
+	}
+	name, err := c.UpdateCategory(context.Background(), "Gaming")
+	if err != nil || name != "Gaming" {
+		t.Fatalf("category=%q err=%v", name, err)
+	}
+	if !sent || !deleted || !banned || !updated {
+		t.Fatalf("sent=%v deleted=%v banned=%v updated=%v", sent, deleted, banned, updated)
+	}
+}

@@ -10,14 +10,14 @@
 <body>
   <main class="app-shell">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark">S</span><div><strong>Streamchat</strong><small>2.0</small></div></div>
+      <div class="brand"><span class="brand-mark">S</span><div><strong>Streamchat</strong><small>3.0</small></div></div>
       <div class="live-state"><span id="relay-dot" class="dot"></span><span id="relay-state">Connecting to relay</span></div>
       <div class="header-actions"><button class="ghost" data-panel="tools">Tools</button><button class="danger-quiet" id="shutdown">Shut down</button></div>
     </header>
     <section class="status-strip">
       <div id="kick-status" class="platform-status"><span class="platform kick">Kick</span><strong>Checking…</strong><small></small></div>
       <div id="twitch-status" class="platform-status"><span class="platform twitch">Twitch</span><strong>Checking…</strong><small></small></div>
-      <div id="youtube-status" class="platform-status"><span class="platform youtube">YouTube</span><strong>Relay input</strong><small>Incoming chat</small></div>
+      <div id="youtube-status" class="platform-status"><span class="platform youtube">YouTube</span><strong>Checking…</strong><small></small></div>
       <button id="refresh-status" class="icon-button" title="Refresh status">↻</button>
     </section>
     <section class="workspace">
@@ -28,10 +28,10 @@
       </div>
       <aside id="tools" class="tools">
         <div class="panel-heading"><div><span class="eyebrow">CONTROL DESK</span><h2>Stream controls</h2></div><button class="mobile-close" data-close-panel>×</button></div>
-        <section class="tool-section"><label>Outgoing target</label><div class="segment"><button id="target-kick" data-target="kick">Kick</button><button id="target-twitch" data-target="twitch">Twitch</button></div></section>
+        <section class="tool-section"><label>Outgoing target</label><div class="segment"><button id="target-kick" data-target="kick">Kick</button><button id="target-twitch" data-target="twitch">Twitch</button><button id="target-youtube" data-target="youtube">YouTube</button></div></section>
         <section class="tool-section two-fields"><label>Stream title<input id="title-input" placeholder="New stream title"></label><button data-action="title">Update</button><label>Category<input id="category-input" placeholder="Name or category ID"></label><button data-action="category">Update</button></section>
-        <section class="tool-section"><label>Moderation</label><div class="row"><select id="mod-platform"><option value="kick">Kick</option><option value="twitch">Twitch</option></select><input id="mod-user" placeholder="Username"></div><div class="row"><button data-action="ban" class="danger-quiet">Ban</button><input id="timeout-duration" value="10m" aria-label="Timeout duration"><button data-action="timeout">Timeout</button></div></section>
-        <section class="tool-section"><label>Remote chat</label><div class="row"><select id="clear-platform"><option value="kick">Kick recent messages</option><option value="twitch">Twitch entire chat</option></select><input id="clear-days" type="number" min="1" max="30" value="1" title="Kick archive window in days"><button data-action="remote-clear" class="danger-quiet">Clear</button></div></section>
+        <section class="tool-section"><label>Moderation</label><div class="row"><select id="mod-platform"><option value="kick">Kick</option><option value="twitch">Twitch</option><option value="youtube">YouTube</option></select><input id="mod-user" placeholder="Username"></div><div class="row"><button data-action="ban" class="danger-quiet">Ban</button><input id="timeout-duration" value="10m" aria-label="Timeout duration"><button data-action="timeout">Timeout</button></div></section>
+        <section class="tool-section"><label>Remote chat</label><div class="row"><select id="clear-platform"><option value="kick">Kick recent messages</option><option value="twitch">Twitch entire chat</option><option value="youtube">YouTube recent messages</option></select><input id="clear-days" type="number" min="1" max="30" value="1" title="Archive window in days"><button data-action="remote-clear" class="danger-quiet">Clear</button></div></section>
         <section class="tool-section"><label>Open active stream</label><div class="row"><button data-open="kick">Kick</button><button data-open="twitch">Twitch</button><button data-open="youtube">YouTube</button></div></section>
         <section class="tool-section diagnostics"><div class="row"><button data-dialog="config">Configuration</button><button data-dialog="setup">Setup & OAuth</button><button data-dialog="archive">Archive</button></div></section>
       </aside>

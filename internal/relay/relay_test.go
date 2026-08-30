@@ -30,6 +30,28 @@ func testMessage(id string) chat.Message {
 	return chat.Message{ID: id, Platform: chat.PlatformKick, Timestamp: time.Now().UTC(), AuthorDisplayName: "viewer", Text: "hello", EventType: chat.EventMessage}
 }
 
+func TestAuthenticatedTypedControl(t *testing.T) {
+	server := NewServer("", "/relay", "secret", nil)
+	server.Control = func(_ context.Context, request ControlRequest) (ControlResponse, error) {
+		if request.Action != "send" || request.Platform != "youtube" || request.Text != "hello" {
+			t.Fatalf("request=%+v", request)
+		}
+		return ControlResponse{Result: "sent", MessageID: "yt-1"}, nil
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := NewControlClient(httpServer.URL+"/relay", "secret")
+	client.HTTP = httpServer.Client()
+	result, err := client.Do(context.Background(), ControlRequest{Action: "send", Platform: "youtube", Text: "hello"})
+	if err != nil || result.MessageID != "yt-1" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	client.Token = "wrong"
+	if _, err = client.Do(context.Background(), ControlRequest{Action: "send"}); err == nil {
+		t.Fatal("expected authentication failure")
+	}
+}
+
 func TestCoreStatusEndpointIsAuthenticatedAndVersionNeutral(t *testing.T) {
 	server := NewServer("", "/relay", testToken, nil)
 	server.Status = func() any {

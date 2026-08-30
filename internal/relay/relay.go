@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,8 +94,12 @@ type Server struct {
 	Observe func(chat.Message)
 	// Status returns sanitized shared server state for authenticated clients.
 	Status func() any
-	hub    *hub
-	server *http.Server
+	// Control exposes authenticated provider operations owned by the server.
+	// It deliberately accepts a small typed vocabulary rather than arbitrary
+	// commands so relay credentials cannot become remote shell access.
+	Control func(context.Context, ControlRequest) (ControlResponse, error)
+	hub     *hub
+	server  *http.Server
 }
 
 func NewServer(listen, path, token string, webhook http.Handler) *Server {
@@ -148,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.Path, s.websocket)
 	mux.HandleFunc("/api/status", s.status)
+	mux.HandleFunc("/api/control", s.control)
 	if s.LocalShutdown != nil {
 		mux.HandleFunc("/_streamchat/local-shutdown", s.localShutdown)
 	}
@@ -155,6 +163,56 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", s.Webhook)
 	}
 	return mux
+}
+
+type ControlRequest struct {
+	Action   string `json:"action"`
+	Platform string `json:"platform"`
+	Text     string `json:"text,omitempty"`
+	User     string `json:"user,omitempty"`
+	Duration string `json:"duration,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Category string `json:"category,omitempty"`
+	Days     int    `json:"days,omitempty"`
+}
+
+type ControlResponse struct {
+	Result    string `json:"result,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Status    any    `json:"status,omitempty"`
+}
+
+func (s *Server) control(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r.Header.Get("Authorization"), s.Token) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.Control == nil {
+		http.Error(w, "control unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var request ControlRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	response, err := s.Control(r.Context(), request)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +304,7 @@ func (s *Server) Run(ctx context.Context, messages <-chan chat.Message) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      35 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    32 << 10,
 	}
@@ -287,6 +345,64 @@ type Client struct {
 
 func NewClient(url, token string) *Client {
 	return &Client{URL: url, Token: token, Dial: websocket.DefaultDialer.DialContext, RetryDelay: time.Second}
+}
+
+type ControlClient struct {
+	URL, Token string
+	HTTP       *http.Client
+}
+
+func NewControlClient(relayURL, token string) *ControlClient {
+	return &ControlClient{URL: relayURL, Token: token, HTTP: &http.Client{Timeout: 30 * time.Second}}
+}
+
+func (c *ControlClient) Do(ctx context.Context, request ControlRequest) (ControlResponse, error) {
+	u, err := url.Parse(c.URL)
+	if err != nil {
+		return ControlResponse{}, errors.New("invalid Streamchat server URL")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	case "http", "https":
+	default:
+		return ControlResponse{}, errors.New("unsupported Streamchat server URL")
+	}
+	u.Path = "/api/control"
+	u.RawQuery, u.Fragment = "", ""
+	payload, _ := json.Marshal(request)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(string(payload)))
+	if err != nil {
+		return ControlResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return ControlResponse{}, &chat.AdapterError{Kind: chat.Recoverable, Op: "Streamchat control", Err: errors.New("request failed")}
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&body)
+		if body.Error == "" {
+			body.Error = fmt.Sprintf("request rejected (HTTP %d)", response.StatusCode)
+		}
+		return ControlResponse{}, errors.New(body.Error)
+	}
+	var result ControlResponse
+	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		return ControlResponse{}, errors.New("Streamchat control returned an invalid response")
+	}
+	return result, nil
 }
 
 func (c *Client) Name() string { return "server" }

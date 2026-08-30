@@ -17,7 +17,7 @@ type ControlError struct{ Err error }
 func (e *ControlError) Error() string { return e.Err.Error() }
 func (e *ControlError) Unwrap() error { return e.Err }
 
-const NoTargetInstruction = "No outbound target selected. Use /kick or /twitch first."
+const NoTargetInstruction = "No outbound target selected. Use /kick, /twitch, or /youtube first."
 
 // Sender is the minimal contract shared by outbound chat providers.
 type Sender interface {
@@ -152,7 +152,7 @@ func (s *Session) Process(ctx context.Context, line string) (string, error) {
 		}
 		if controls, ok := s.targetControls[command]; ok {
 			if s.selected == "" {
-				return "", &ControlError{Err: errors.New("select /kick or /twitch before /" + command)}
+				return "", &ControlError{Err: errors.New("select /kick, /twitch, or /youtube before /" + command)}
 			}
 			control, available := controls[s.selected]
 			if !available {

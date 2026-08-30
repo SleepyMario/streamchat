@@ -16,6 +16,26 @@ func message(id string, platform chat.Platform) chat.Message {
 	return chat.Message{ID: id, Platform: platform, ChannelID: "broadcast-1", Timestamp: time.Date(2026, 8, 14, 3, 4, 5, 0, time.UTC), AuthorID: "user-1", AuthorDisplayName: "Alice", Text: "hello", EventType: chat.EventMessage}
 }
 
+func TestLatestAuthorUsesNewestCaseInsensitiveMatch(t *testing.T) {
+	a, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	for _, m := range []chat.Message{
+		{ID: "author-1", Platform: chat.PlatformYouTube, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), AuthorID: "old", AuthorDisplayName: "Ada", Text: "one", EventType: chat.EventMessage},
+		{ID: "author-2", Platform: chat.PlatformYouTube, Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), AuthorID: "new", AuthorDisplayName: "ADA", Text: "two", EventType: chat.EventMessage},
+	} {
+		if _, err = a.Store(context.Background(), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := a.LatestAuthor(context.Background(), chat.PlatformYouTube, "ada")
+	if err != nil || got.ID != "new" || got.DisplayName != "ADA" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
 func TestSchemaInitializationAndMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "streamchat.db")
 	a, err := Open(path)

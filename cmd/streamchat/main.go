@@ -47,8 +47,8 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 2.0 combines Kick, Twitch, and YouTube chat.
-Kick and Twitch support reading and channel controls; YouTube is currently read-only.
+const usage = `Streamchat 3.0 combines Kick, Twitch, and YouTube chat.
+All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:
   streamchat setup                 Configure one or more services interactively
@@ -63,21 +63,27 @@ Interactive commands:
   /kick hello                      Select Kick and send "hello"
   /twitch                          Select Twitch as the outbound target
   /twitch hello                    Select Twitch and send "hello"
+  /youtube                         Select YouTube as the outbound target
+  /youtube hello                   Select YouTube and send "hello"
   hello                            Send to the selected target
   /title New stream title          Update the selected channel title
   /category Just Chatting          Update the selected channel category
   /ban kick USER                   Permanently ban a Kick user
   /ban twitch USER                 Permanently ban a Twitch user
+  /ban youtube USER                Permanently ban a YouTube user
   /timeout kick USER 10m           Temporarily timeout a Kick user
   /timeout twitch USER 30s         Temporarily timeout a Twitch user
+  /timeout youtube USER 30s        Temporarily timeout a YouTube user
   /clean streamchat                Clear the current local chat view
   /clean kick                      Hide displayed Kick messages locally
   /clean twitch                    Hide displayed Twitch messages locally
+  /clean youtube                   Hide displayed YouTube messages locally
   /clean USER                      Hide a user's displayed messages locally
   /clear kick                      Delete archived Kick messages from last 24h
   /clear twitch                    Clear the current Twitch chat
   /clear kick 3d                   Use archived Kick message IDs from last 3 days
   /clear twitch 1d                 Delete eligible archived Twitch message IDs
+  /clear youtube 1d                Delete archived YouTube message IDs
   /open kick                       Open Kick in mpv or the default browser
   /open youtube                    Open the configured YouTube stream
   /open twitch                     Open the configured Twitch channel
@@ -473,6 +479,7 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	statusService := serverstatus.New(mediaProbe, statusRuntime)
 	go statusService.Run(serverCtx)
 	server.Status = func() any { return statusService.Snapshot() }
+	server.Control = statusRuntime.RemoteControl
 	server.Observe = statusService.Observe
 	if os.Getenv("STREAMCHAT_LOCAL_SERVER") == "1" {
 		server.LocalShutdown = cancel
@@ -995,7 +1002,7 @@ type cleanController struct {
 func (c cleanController) Clean(_ context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) != 1 {
-		return "Usage: /clean streamchat|kick|twitch|USER", nil
+		return "Usage: /clean streamchat|kick|twitch|youtube|USER", nil
 	}
 	if c.display == nil {
 		return "Local display cleaning requires an interactive terminal.", nil
@@ -1006,10 +1013,8 @@ func (c cleanController) Clean(_ context.Context, argument string) (string, erro
 	switch strings.ToLower(target) {
 	case "streamchat":
 		removed, err = c.display.CleanAll()
-	case "kick", "twitch":
+	case "kick", "twitch", "youtube":
 		removed, err = c.display.CleanPlatform(strings.ToLower(target))
-	case "youtube":
-		return "Display cleaning is not implemented for: " + target, nil
 	default:
 		removed, err = c.display.CleanAuthor(target)
 	}

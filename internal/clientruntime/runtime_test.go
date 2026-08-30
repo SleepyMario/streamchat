@@ -125,6 +125,82 @@ func TestSharedRuntimeSelectsAndSendsThroughKickProvider(t *testing.T) {
 	}
 }
 
+func TestSharedRuntimeUsesAuthenticatedServerForYouTube(t *testing.T) {
+	var action string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/control" || r.Header.Get("Authorization") != "Bearer relay-token" {
+			t.Fatalf("request=%s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		body, _ := io.ReadAll(r.Body)
+		action = string(body)
+		_, _ = io.WriteString(w, `{"result":"sent","message_id":"yt-1"}`)
+	}))
+	defer server.Close()
+	cfg := config.Defaults()
+	cfg.Path = filepath.Join(t.TempDir(), "config.json")
+	cfg.Client.ServerURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/relay"
+	cfg.RelayAuthToken = "relay-token"
+	runtime, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtime.Select(context.Background(), "youtube"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtime.Execute(context.Background(), "hello YouTube"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(action, `"action":"send"`) || !strings.Contains(action, `"text":"hello YouTube"`) {
+		t.Fatalf("body=%s", action)
+	}
+}
+
+func TestYouTubeClearUsesAuthoritativeArchiveWithoutDeletingHistory(t *testing.T) {
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Path == "/liveChat/messages" {
+			deleted = append(deleted, r.URL.Query().Get("id"))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		t.Fatalf("request=%s %s", r.Method, r.URL.String())
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Path = filepath.Join(dir, "config.json")
+	cfg.Storage.SQLitePath = filepath.Join(dir, "archive.db")
+	cfg.YouTube.BaseURL = server.URL
+	cfg.YouTube.ClientID = "id"
+	cfg.YouTube.ClientSecret = "secret"
+	cfg.YouTube.RefreshToken = "refresh"
+	cfg.YouTube.AccessToken = "access"
+	if err := config.Save(cfg.Path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := archive.Open(cfg.Storage.SQLitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Store(context.Background(), chat.Message{ID: "yt-delete", Platform: chat.PlatformYouTube, Timestamp: time.Now(), AuthorID: "UC1", AuthorDisplayName: "Ada", Text: "x", EventType: chat.EventMessage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+	runtime, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.Execute(context.Background(), "/clear youtube")
+	if err != nil || !strings.Contains(result, "1 deleted") || len(deleted) != 1 || deleted[0] != "yt-delete" {
+		t.Fatalf("result=%q deleted=%v err=%v", result, deleted, err)
+	}
+	stats, err := runtime.ArchiveStats(context.Background())
+	if err != nil || stats.Total != 1 {
+		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+}
+
 func TestBotConfigUsesSeparateAccountsWithoutChangingTargets(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Kick.BroadcasterID = "123"

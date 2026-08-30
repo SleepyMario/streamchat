@@ -9,7 +9,7 @@ ApplicationWindow {
     height: 800
     minimumWidth: 900
     minimumHeight: 600
-    title: "Streamchat 2.0"
+    title: "Streamchat 3.0"
     color: "#080b12"
     font.pixelSize: window.scaled(13)
 

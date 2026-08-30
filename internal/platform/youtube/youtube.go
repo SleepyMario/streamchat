@@ -1,6 +1,7 @@
 package youtube
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -172,14 +173,30 @@ func (c *Client) refresh(ctx context.Context, force bool) error {
 }
 
 func (c *Client) request(ctx context.Context, path string, q url.Values, out any) error {
+	return c.requestJSON(ctx, http.MethodGet, path, q, nil, out)
+}
+
+func (c *Client) requestJSON(ctx context.Context, method, path string, q url.Values, body, out any) error {
 	if err := c.refresh(ctx, false); err != nil {
 		return err
 	}
-	return c.requestAttempt(ctx, path, q, out, true)
+	return c.requestAttempt(ctx, method, path, q, body, out, true)
 }
 
-func (c *Client) requestAttempt(ctx context.Context, path string, q url.Values, out any, retryAuth bool) error {
-	req, e := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path+"?"+q.Encode(), nil)
+func (c *Client) requestAttempt(ctx context.Context, method, path string, q url.Values, body, out any, retryAuth bool) error {
+	var payload io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(encoded)
+	}
+	endpoint := c.BaseURL + path
+	if encoded := q.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	req, e := http.NewRequestWithContext(ctx, method, endpoint, payload)
 	if e != nil {
 		return e
 	}
@@ -188,6 +205,9 @@ func (c *Client) requestAttempt(ctx context.Context, path string, q url.Values, 
 	}
 	if c.APIKey != "" {
 		req.Header.Set("X-Goog-Api-Key", c.APIKey)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	r, e := c.HTTP.Do(req)
 	if e != nil {
@@ -201,7 +221,7 @@ func (c *Client) requestAttempt(ctx context.Context, path string, q url.Values, 
 			if err := c.refresh(ctx, true); err != nil {
 				return err
 			}
-			return c.requestAttempt(ctx, path, q, out, false)
+			return c.requestAttempt(ctx, method, path, q, body, out, false)
 		}
 		if reason == "liveChatEnded" {
 			return ErrChatEnded
@@ -210,13 +230,16 @@ func (c *Client) requestAttempt(ctx context.Context, path string, q url.Values, 
 		if r.StatusCode == 429 || r.StatusCode >= 500 || reason == "rateLimitExceeded" {
 			kind = chat.Recoverable
 		}
-		if r.StatusCode == 401 || r.StatusCode == 403 && reason == "forbidden" {
+		if r.StatusCode == 401 || r.StatusCode == 403 && (reason == "forbidden" || reason == "insufficientPermissions") {
 			kind = chat.Authentication
 		}
 		if kind == chat.Authentication {
-			return &chat.AdapterError{Kind: kind, Op: "YouTube API", Err: fmt.Errorf("credential rejected (HTTP %d, %s); run: streamchat setup youtube", r.StatusCode, reason)}
+			return &chat.AdapterError{Kind: kind, Op: "YouTube API", Err: fmt.Errorf("credential rejected (HTTP %d, %s); run: streamchat setup youtube-server", r.StatusCode, reason)}
 		}
 		return &chat.AdapterError{Kind: kind, Op: "YouTube API", Err: fmt.Errorf("HTTP %d (%s)", r.StatusCode, reason)}
+	}
+	if out == nil || r.StatusCode == http.StatusNoContent {
+		return nil
 	}
 	return json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(out)
 }
@@ -289,6 +312,178 @@ func (c *Client) discoverActive(ctx context.Context) (string, string, error) {
 		}
 	}
 	return "", "", ErrNoActiveBroadcast
+}
+
+type StreamStatus struct {
+	VideoID, LiveChatID, Title, Category, CategoryID string
+	ViewerCount                                      int
+	Live                                             bool
+}
+
+type sendResponse struct {
+	ID string `json:"id"`
+}
+
+func (c *Client) SendMessage(ctx context.Context, message string) (string, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", errors.New("message must not be empty")
+	}
+	chatID, _, err := c.Discover(ctx)
+	if err != nil {
+		return "", err
+	}
+	body := map[string]any{"snippet": map[string]any{"liveChatId": chatID, "type": "textMessageEvent", "textMessageDetails": map[string]string{"messageText": message}}}
+	var result sendResponse
+	err = c.requestJSON(ctx, http.MethodPost, "/liveChat/messages", url.Values{"part": {"snippet"}}, body, &result)
+	return result.ID, err
+}
+
+func (c *Client) DeleteMessage(ctx context.Context, messageID string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return errors.New("YouTube message ID is required")
+	}
+	return c.requestJSON(ctx, http.MethodDelete, "/liveChat/messages", url.Values{"id": {messageID}}, nil, nil)
+}
+
+func (c *Client) Ban(ctx context.Context, channelID string, durationSeconds int) (string, error) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return "", errors.New("YouTube channel ID is required")
+	}
+	chatID, _, err := c.Discover(ctx)
+	if err != nil {
+		return "", err
+	}
+	typeName := "permanent"
+	snippet := map[string]any{"liveChatId": chatID, "type": typeName, "bannedUserDetails": map[string]string{"channelId": channelID}}
+	if durationSeconds > 0 {
+		typeName = "temporary"
+		snippet["type"] = typeName
+		snippet["banDurationSeconds"] = durationSeconds
+	}
+	var result struct {
+		ID string `json:"id"`
+	}
+	err = c.requestJSON(ctx, http.MethodPost, "/liveChat/bans", url.Values{"part": {"snippet"}}, map[string]any{"snippet": snippet}, &result)
+	return result.ID, err
+}
+
+func (c *Client) Status(ctx context.Context) (StreamStatus, error) {
+	chatID, videoID, err := c.Discover(ctx)
+	if err != nil {
+		if errors.Is(err, ErrNoActiveBroadcast) {
+			return StreamStatus{}, nil
+		}
+		return StreamStatus{}, err
+	}
+	var videos struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Snippet struct {
+				Title, CategoryID string
+			} `json:"snippet"`
+			Live struct {
+				ConcurrentViewers string `json:"concurrentViewers"`
+			} `json:"liveStreamingDetails"`
+		} `json:"items"`
+	}
+	if err = c.request(ctx, "/videos", url.Values{"part": {"snippet,liveStreamingDetails"}, "id": {videoID}}, &videos); err != nil {
+		return StreamStatus{}, err
+	}
+	if len(videos.Items) == 0 {
+		return StreamStatus{}, errors.New("YouTube active broadcast was not found")
+	}
+	item := videos.Items[0]
+	viewers, _ := strconv.Atoi(item.Live.ConcurrentViewers)
+	category := item.Snippet.CategoryID
+	if item.Snippet.CategoryID != "" {
+		var categories struct {
+			Items []struct {
+				Snippet struct {
+					Title string `json:"title"`
+				} `json:"snippet"`
+			} `json:"items"`
+		}
+		if e := c.request(ctx, "/videoCategories", url.Values{"part": {"snippet"}, "id": {item.Snippet.CategoryID}}, &categories); e == nil && len(categories.Items) > 0 {
+			category = categories.Items[0].Snippet.Title
+		}
+	}
+	return StreamStatus{VideoID: videoID, LiveChatID: chatID, Title: item.Snippet.Title, Category: category, CategoryID: item.Snippet.CategoryID, ViewerCount: viewers, Live: true}, nil
+}
+
+func (c *Client) UpdateTitle(ctx context.Context, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return errors.New("title must not be empty")
+	}
+	return c.updateSnippet(ctx, func(snippet map[string]any) { snippet["title"] = title })
+}
+
+func (c *Client) UpdateCategory(ctx context.Context, query string) (string, error) {
+	categoryID, name, err := c.ResolveCategory(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	err = c.updateSnippet(ctx, func(snippet map[string]any) { snippet["categoryId"] = categoryID })
+	return name, err
+}
+
+func (c *Client) ResolveCategory(ctx context.Context, query string) (string, string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", "", errors.New("category must not be empty")
+	}
+	var categories struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Snippet struct {
+				Title string `json:"title"`
+			} `json:"snippet"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, "/videoCategories", url.Values{"part": {"snippet"}, "regionCode": {"US"}}, &categories); err != nil {
+		return "", "", err
+	}
+	var partial []struct{ id, name string }
+	for _, item := range categories.Items {
+		if item.ID == query || strings.EqualFold(item.Snippet.Title, query) {
+			return item.ID, item.Snippet.Title, nil
+		}
+		if strings.Contains(strings.ToLower(item.Snippet.Title), strings.ToLower(query)) {
+			partial = append(partial, struct{ id, name string }{item.ID, item.Snippet.Title})
+		}
+	}
+	if len(partial) == 1 {
+		return partial[0].id, partial[0].name, nil
+	}
+	if len(partial) > 1 {
+		return "", "", errors.New("YouTube category is ambiguous; enter the exact category name or ID")
+	}
+	return "", "", errors.New("YouTube category was not found")
+}
+
+func (c *Client) updateSnippet(ctx context.Context, change func(map[string]any)) error {
+	_, videoID, err := c.Discover(ctx)
+	if err != nil {
+		return err
+	}
+	var videos struct {
+		Items []struct {
+			ID      string         `json:"id"`
+			Snippet map[string]any `json:"snippet"`
+		} `json:"items"`
+	}
+	if err = c.request(ctx, "/videos", url.Values{"part": {"snippet"}, "id": {videoID}}, &videos); err != nil {
+		return err
+	}
+	if len(videos.Items) == 0 {
+		return errors.New("YouTube active broadcast was not found")
+	}
+	snippet := videos.Items[0].Snippet
+	change(snippet)
+	return c.requestJSON(ctx, http.MethodPut, "/videos", url.Values{"part": {"snippet"}}, map[string]any{"id": videoID, "snippet": snippet}, &struct{}{})
 }
 
 type listResponse struct {

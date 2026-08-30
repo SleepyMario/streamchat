@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat 2.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. Kick and Twitch support reading, sending, channel controls, and moderation. YouTube chat ingestion is implemented; authorization now also covers chat sending and moderation as those operations are connected to the shared runtime. Streamchat uses only documented official platform APIs.
+Streamchat 3.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, and opening the active stream. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
@@ -48,13 +48,15 @@ streamchat archive stats
 
 `run` activates configured platforms through the internal platform registry. If a configured YouTube or Twitch target is missing, Streamchat asks for the live URL/video ID or channel name rather than asking for a numeric platform ID.
 
-While `streamchat run` is displaying incoming chat, select Kick or Twitch as the outbound target and then type plain messages:
+While `streamchat run` is displaying incoming chat, select Kick, Twitch, or YouTube as the outbound target and then type plain messages:
 
 ```text
 /kick
 hello
 /twitch
 hello from Twitch
+/youtube
+hello from YouTube
 ```
 
 The selection-and-send shorthand is:
@@ -62,11 +64,12 @@ The selection-and-send shorthand is:
 ```text
 /kick hello
 /twitch hello
+/youtube hello
 ```
 
-`/kick` and `/twitch` select the current outbound target. A message on the same command line is sent immediately; subsequent plain lines keep using that target until another target is selected. Streamchat stores the canonical target name (`kick` or `twitch`) in `${XDG_STATE_HOME:-$HOME/.local/state}/streamchat/client.json` and restores it on the next `streamchat run` only when that sender is currently available. Missing, invalid, or unavailable saved targets fall back to `[NONE] >`; before a target is selected, plain text is not sent. The state file contains no credentials. Successful sends rely on the normal incoming provider event for display rather than printing a separate local echo.
+`/kick`, `/twitch`, and `/youtube` select the current outbound target. A message on the same command line is sent immediately; subsequent plain lines keep using that target until another target is selected. Streamchat stores only the canonical target name in `${XDG_STATE_HOME:-$HOME/.local/state}/streamchat/client.json`. In server/client mode, YouTube write operations cross the authenticated private relay control endpoint and the Google OAuth token remains on the server.
 
-Basic channel controls follow the selected Kick or Twitch outbound target:
+Basic channel controls follow the selected outbound target on all three platforms:
 
 ```text
 /title New stream title
@@ -84,9 +87,11 @@ Moderation controls name their platform explicitly and are independent of outbou
 /timeout kick USER 10m
 /ban twitch USER
 /timeout twitch USER 30s
+/ban youtube USER
+/timeout youtube USER 30s
 ```
 
-The platform is always explicit and is not inferred from `/kick` or `/twitch`. Kick keeps its official whole-minute timeout range of 1–10,080 minutes. Twitch accepts `s`, `m`, `h`, and `d` syntax from one second through 14 days, so both `1s` and `30s` are valid for Twitch. Targets are resolved through each provider's official API. These commands never delete Streamchat SQLite archive rows; archived chat remains historical and append-preserving.
+The platform is always explicit. Kick keeps its official whole-minute timeout range of 1–10,080 minutes. Twitch and YouTube accept `s`, `m`, `h`, and `d` durations. YouTube display names are resolved to their channel IDs from the authoritative server archive; a channel ID may also be entered directly. These commands never delete Streamchat SQLite archive rows.
 
 Local display cleaning is available in the interactive terminal:
 
@@ -94,10 +99,11 @@ Local display cleaning is available in the interactive terminal:
 /clean streamchat
 /clean kick
 /clean twitch
+/clean youtube
 /clean USER
 ```
 
-`/clean streamchat` removes all messages from the current local view, `/clean kick` and `/clean twitch` remove displayed messages for that provider, and `/clean USER` removes displayed messages from a case-insensitive author match. The words `streamchat`, `kick`, `youtube`, and `twitch` are reserved clean targets rather than usernames; YouTube display cleaning is not implemented yet. `/clean` affects only the current Streamchat display. It never changes platform chat and never deletes archived messages. The interactive view keeps only the latest 500 rendered messages for local redraws; it does not retrieve history from SQLite.
+`/clean streamchat` removes all messages from the current local view, `/clean kick`, `/clean twitch`, and `/clean youtube` remove displayed messages for that provider, and `/clean USER` removes displayed messages from a case-insensitive author match. The platform words are reserved clean targets rather than usernames. `/clean` affects only the current Streamchat display. It never changes platform chat and never deletes archived messages. The interactive view keeps only the latest 500 rendered messages for local redraws; it does not retrieve history from SQLite.
 
 Remote visible-chat cleanup is a separate, explicit command:
 
@@ -106,11 +112,13 @@ Remote visible-chat cleanup is a separate, explicit command:
 /clear kick 3d
 /clear twitch
 /clear twitch 1d
+/clear youtube
+/clear youtube 3d
 ```
 
 `/clear kick` attempts to delete archived Kick messages from the default recent window of 24 hours. `/clear kick 3d` uses archived Kick messages from the last three days; any positive `Nd` value up to 3650 days is accepted. Streamchat queries only distinct, non-empty Kick provider message IDs and timestamps from the configured SQLite archive, completes that snapshot, then deletes each ID individually with Kick's official API. Messages archived after the snapshot begins are not included in that run, and an already-absent message counts as cleared.
 
-Kick exposes only per-message deletion, so archived provider IDs let Streamchat approximate bulk clearing. Plain `/clear twitch` instead uses Twitch's official clear-current-chat operation in one request and does not read archived IDs. A time-qualified `/clear twitch Nd` uses known archived Twitch IDs but attempts only messages less than six hours old, reporting older platform-limited rows and individual failures. Messages posted before Streamchat observed and archived them cannot be individually cleared this way. The configured `storage.sqlite_path` must be accessible to the interactive client for archive-backed clears. `/clear` does not automatically remove messages from the local display. `/clear youtube` is not implemented. Neither `/clean` nor `/clear` ever deletes Streamchat SQLite archive records.
+Kick and YouTube expose per-message deletion, so archived provider IDs let Streamchat approximate bulk clearing. Plain `/clear twitch` instead uses Twitch's official clear-current-chat operation in one request. A time-qualified `/clear twitch Nd` uses known archived Twitch IDs but attempts only messages less than six hours old. YouTube clearing runs against the server archive and official `liveChatMessages.delete` endpoint. Messages Streamchat never observed cannot be cleared this way. `/clear` does not automatically remove messages from the local display, and neither `/clean` nor `/clear` deletes archive records.
 
 Open a configured stream in an external player or browser with an explicit platform:
 
@@ -399,18 +407,18 @@ Tests use fake adapters, `httptest` servers, invented fixtures, and fake WebSock
 Build the client and headless-server packages with the locally installed Go toolchain and `dpkg-deb`:
 
 ```sh
-VERSION=2.0 make deb
-sudo apt install ./dist/streamchat_2.0_amd64.deb
+VERSION=3.0 make deb
+sudo apt install ./dist/streamchat_3.0_amd64.deb
 ```
 
-Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream version into the binary, so this release reports `streamchat 2.0`.
+Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream version into the binary, so this release reports `streamchat 3.0`.
 
 `streamchat` owns the statically linked `/usr/bin/streamchat`, user-facing documentation, and no systemd service. `streamchat-server` depends on the exact same version of `streamchat`, avoiding a duplicate executable, and owns `streamchat-server.service` plus the server configuration example. Install a server with both local artifacts:
 
 ```sh
 sudo apt install \
-  ./dist/streamchat_2.0_amd64.deb \
-  ./dist/streamchat-server_2.0_amd64.deb
+  ./dist/streamchat_3.0_amd64.deb \
+  ./dist/streamchat-server_3.0_amd64.deb
 ```
 
 The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:

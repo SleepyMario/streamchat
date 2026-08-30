@@ -2,6 +2,7 @@ package clientruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
 	"github.com/SleepyMario/streamchat/internal/platform/youtube"
+	"github.com/SleepyMario/streamchat/internal/relay"
 	"github.com/SleepyMario/streamchat/internal/setup"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
@@ -66,6 +68,7 @@ type Runtime struct {
 	session   *outbound.Session
 	kick      *kickTarget
 	twitch    *twitchTarget
+	youtube   *youtubeTarget
 	twitchErr string
 	mu        sync.RWMutex
 	relay     string
@@ -96,17 +99,25 @@ func newRuntime(ctx context.Context, cfg config.Config, botIdentity bool) (*Runt
 	if twitchErr != nil {
 		r.twitchErr = twitchErr.Error()
 	}
+	youtubeTarget, youtubeErr := newYouTubeTarget(&r.cfg, r.path, r.http)
+	r.youtube = youtubeTarget
 	kickAvailable := cfg.Kick.BroadcasterID != "" && (cfg.Kick.AccessToken != "" || cfg.Kick.RefreshToken != "")
 	twitchAvailable := twitchErr == nil && twitchTarget != nil
+	youtubeAvailable := youtubeErr == nil && youtubeTarget != nil
 	r.session = outbound.NewTargets(
 		outbound.Target{Name: "kick", Aliases: []string{"kick"}, Sender: r.kick, Unavailable: !kickAvailable},
 		outbound.Target{Name: "twitch", Aliases: []string{"twitch"}, Sender: r.twitch, Unavailable: !twitchAvailable},
+		outbound.Target{Name: "youtube", Aliases: []string{"youtube", "yt"}, Sender: r.youtube, Unavailable: !youtubeAvailable},
 	)
 	r.session.RegisterTargetControl("title", "kick", outbound.ControlFunc(r.kick.title))
 	r.session.RegisterTargetControl("category", "kick", outbound.ControlFunc(r.kick.category))
 	if r.twitch != nil {
 		r.session.RegisterTargetControl("title", "twitch", outbound.ControlFunc(r.twitch.title))
 		r.session.RegisterTargetControl("category", "twitch", outbound.ControlFunc(r.twitch.category))
+	}
+	if r.youtube != nil {
+		r.session.RegisterTargetControl("title", "youtube", outbound.ControlFunc(r.youtube.title))
+		r.session.RegisterTargetControl("category", "youtube", outbound.ControlFunc(r.youtube.category))
 	}
 	r.session.RegisterControl("ban", outbound.ControlFunc(r.ban))
 	r.session.RegisterControl("timeout", outbound.ControlFunc(r.timeout))
@@ -219,6 +230,11 @@ func (r *Runtime) SendTo(ctx context.Context, platform, message string) error {
 			return errors.New("Twitch sending is unavailable")
 		}
 		return r.twitch.Send(ctx, message)
+	case string(chat.PlatformYouTube):
+		if r.youtube == nil {
+			return errors.New("YouTube sending is unavailable")
+		}
+		return r.youtube.Send(ctx, message)
 	default:
 		return fmt.Errorf("unsupported outbound platform %q", platform)
 	}
@@ -275,7 +291,7 @@ func (r *Runtime) State() State {
 		Targets: map[string]bool{
 			"kick":    r.cfg.Kick.BroadcasterID != "" && (r.cfg.Kick.AccessToken != "" || r.cfg.Kick.RefreshToken != ""),
 			"twitch":  r.twitch != nil,
-			"youtube": r.cfg.YouTube.APIKey != "" || r.cfg.YouTube.RefreshToken != "" || r.cfg.Client.ServerURL != "",
+			"youtube": r.youtube != nil,
 		},
 		Streams: streams,
 	}
@@ -288,6 +304,9 @@ func (r *Runtime) RefreshStatus(ctx context.Context) State {
 	}
 	if state.Targets["twitch"] {
 		state.Streams["twitch"] = r.twitch.status(ctx)
+	}
+	if state.Targets["youtube"] {
+		state.Streams["youtube"] = r.youtube.status(ctx)
 	}
 	r.mu.Lock()
 	r.streams = state.Streams
@@ -313,8 +332,14 @@ func (r *Runtime) StreamStatus(ctx context.Context) (terminalui.StreamStatus, er
 			return terminalui.StreamStatus{}, errors.New(status.Error)
 		}
 		return terminalui.StreamStatus{Title: status.Title, Category: status.Category, ViewerCount: status.ViewerCount, Live: status.Live}, nil
+	case "youtube":
+		status := r.youtube.status(ctx)
+		if status.Error != "" {
+			return terminalui.StreamStatus{}, errors.New(status.Error)
+		}
+		return terminalui.StreamStatus{Title: status.Title, Category: status.Category, ViewerCount: status.ViewerCount, Live: status.Live}, nil
 	default:
-		return terminalui.StreamStatus{}, errors.New("select Kick or Twitch")
+		return terminalui.StreamStatus{}, errors.New("select Kick, Twitch, or YouTube")
 	}
 }
 
@@ -408,11 +433,10 @@ func (r *Runtime) OpenURL(ctx context.Context, platform string) (string, error) 
 		}
 		return "https://www.twitch.tv/" + url.PathEscape(channel), nil
 	case "youtube":
-		videoID, err := youtube.ParseVideoID(r.cfg.YouTube.VideoID)
-		if err != nil {
+		if r.youtube == nil {
 			return "", errors.New("YouTube stream is unavailable")
 		}
-		return "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID), nil
+		return r.youtube.open(ctx)
 	default:
 		return "", errors.New("unsupported platform")
 	}
@@ -431,6 +455,11 @@ func (r *Runtime) ban(ctx context.Context, argument string) (string, error) {
 			return "", errors.New("Twitch is unavailable")
 		}
 		return r.twitch.ban(ctx, fields[1])
+	case "youtube":
+		if r.youtube == nil {
+			return "", errors.New("YouTube is unavailable")
+		}
+		return r.youtube.ban(ctx, fields[1])
 	default:
 		return "", errors.New("unsupported moderation platform")
 	}
@@ -449,6 +478,11 @@ func (r *Runtime) timeout(ctx context.Context, argument string) (string, error) 
 			return "", errors.New("Twitch is unavailable")
 		}
 		return r.twitch.timeout(ctx, fields[1], fields[2])
+	case "youtube":
+		if r.youtube == nil {
+			return "", errors.New("YouTube is unavailable")
+		}
+		return r.youtube.timeout(ctx, fields[1], fields[2])
 	default:
 		return "", errors.New("unsupported moderation platform")
 	}
@@ -457,7 +491,7 @@ func (r *Runtime) timeout(ctx context.Context, argument string) (string, error) 
 func (r *Runtime) clear(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) == 0 || len(fields) > 2 {
-		return "", errors.New("select kick or twitch for remote clear")
+		return "", errors.New("select kick, twitch, or youtube for remote clear")
 	}
 	platform := strings.ToLower(fields[0])
 	if platform == "twitch" && len(fields) == 1 {
@@ -469,10 +503,7 @@ func (r *Runtime) clear(ctx context.Context, argument string) (string, error) {
 		}
 		return "Twitch chat cleared.", nil
 	}
-	if platform != "kick" {
-		return "", errors.New("unsupported remote-clear platform")
-	}
-	if platform != "kick" && platform != "twitch" {
+	if platform != "kick" && platform != "youtube" {
 		return "", errors.New("unsupported remote-clear platform")
 	}
 	days := 1
@@ -481,6 +512,10 @@ func (r *Runtime) clear(ctx context.Context, argument string) (string, error) {
 		if _, err := fmt.Sscanf(value, "%d", &days); err != nil || days < 1 || days > 3650 {
 			return "", errors.New("clear window must be 1 to 3650 days")
 		}
+	}
+	if platform == "youtube" && r.youtube != nil && r.youtube.remote != nil {
+		result, err := r.youtube.call(ctx, relay.ControlRequest{Action: "clear", Days: days})
+		return result.Result, err
 	}
 	store, err := archive.Open(r.cfg.Storage.SQLitePath)
 	if err != nil {
@@ -512,18 +547,236 @@ func (r *Runtime) clear(ctx context.Context, argument string) (string, error) {
 		}
 		return fmt.Sprintf("Twitch: deleted %d known messages; %d failed; %d older than the 6-hour individual-delete limit.", deleted, failed, skipped), nil
 	}
-	ids, err := store.MessageIDsSince(ctx, chat.PlatformKick, since)
+	archivePlatform := chat.PlatformKick
+	if platform == "youtube" {
+		archivePlatform = chat.PlatformYouTube
+	}
+	ids, err := store.MessageIDsSince(ctx, archivePlatform, since)
 	if err != nil {
 		return "", err
 	}
 	if len(ids) == 0 {
-		return fmt.Sprintf("No archived Kick messages to clear in the last %dd.", days), nil
+		name := strings.ToUpper(platform[:1]) + platform[1:]
+		return fmt.Sprintf("No archived %s messages to clear in the last %dd.", name, days), nil
+	}
+	if platform == "youtube" {
+		deleted, failed, err := r.youtube.clear(ctx, ids)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("YouTube remote clear finished: %d deleted, %d failed.", deleted, failed), nil
 	}
 	deleted, failed, err := r.kick.clear(ctx, ids)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Kick remote clear finished: %d deleted, %d failed.", deleted, failed), nil
+}
+
+type youtubeTarget struct {
+	client  *youtube.Client
+	remote  *relay.ControlClient
+	archive string
+}
+
+func newYouTubeTarget(cfg *config.Config, path string, httpClient *http.Client) (*youtubeTarget, error) {
+	if cfg.Client.ServerURL != "" && cfg.RelayAuthToken != "" {
+		return &youtubeTarget{remote: relay.NewControlClient(cfg.Client.ServerURL, cfg.RelayAuthToken), archive: cfg.Storage.SQLitePath}, nil
+	}
+	if cfg.YouTube.ClientID == "" || cfg.YouTube.ClientSecret == "" || cfg.YouTube.RefreshToken == "" {
+		return nil, errors.New("YouTube write authorization is not configured")
+	}
+	c := youtube.New(httpClient, cfg.YouTube.BaseURL, cfg.YouTube.APIKey, cfg.YouTube.AccessToken, cfg.YouTube.VideoID)
+	c.ClientID, c.ClientSecret, c.RefreshToken = cfg.YouTube.ClientID, cfg.YouTube.ClientSecret, cfg.YouTube.RefreshToken
+	c.TokenExpiry = cfg.YouTube.TokenExpiry
+	c.OnToken = func(token youtube.Token) error {
+		cfg.YouTube.AccessToken = token.AccessToken
+		cfg.YouTube.RefreshToken = token.RefreshToken
+		cfg.YouTube.TokenExpiry = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+		loaded, err := config.Load(path)
+		if err != nil {
+			return err
+		}
+		loaded.YouTube.AccessToken = cfg.YouTube.AccessToken
+		loaded.YouTube.RefreshToken = cfg.YouTube.RefreshToken
+		loaded.YouTube.TokenExpiry = cfg.YouTube.TokenExpiry
+		return config.Save(path, loaded)
+	}
+	return &youtubeTarget{client: c, archive: cfg.Storage.SQLitePath}, nil
+}
+
+func (y *youtubeTarget) call(ctx context.Context, request relay.ControlRequest) (relay.ControlResponse, error) {
+	request.Platform = "youtube"
+	if y.remote != nil {
+		return y.remote.Do(ctx, request)
+	}
+	return relay.ControlResponse{}, errors.New("remote YouTube control is unavailable")
+}
+func (y *youtubeTarget) Send(ctx context.Context, message string) error {
+	_, err := y.SendMessage(ctx, message)
+	return err
+}
+func (y *youtubeTarget) SendMessage(ctx context.Context, message string) (outbound.SentMessage, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "send", Text: message})
+		return outbound.SentMessage{ID: result.MessageID, AuthorDisplayName: "you"}, err
+	}
+	id, err := y.client.SendMessage(ctx, message)
+	return outbound.SentMessage{ID: id, AuthorDisplayName: "you"}, err
+}
+func (y *youtubeTarget) title(ctx context.Context, value string) (string, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "title", Title: value})
+		return result.Result, err
+	}
+	if err := y.client.UpdateTitle(ctx, value); err != nil {
+		return "", err
+	}
+	return "Title updated: " + strings.TrimSpace(value), nil
+}
+func (y *youtubeTarget) category(ctx context.Context, value string) (string, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "category", Category: value})
+		return result.Result, err
+	}
+	name, err := y.client.UpdateCategory(ctx, value)
+	if err != nil {
+		return "", err
+	}
+	return "Category updated: " + name, nil
+}
+func (y *youtubeTarget) status(ctx context.Context) StreamStatus {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "status"})
+		if err != nil {
+			return StreamStatus{Platform: "youtube", Error: err.Error()}
+		}
+		encoded, _ := json.Marshal(result.Status)
+		var status StreamStatus
+		_ = json.Unmarshal(encoded, &status)
+		return status
+	}
+	status, err := y.client.Status(ctx)
+	out := StreamStatus{Platform: "youtube", Title: status.Title, Category: status.Category, ViewerCount: status.ViewerCount, Live: status.Live, Available: err == nil}
+	if err != nil {
+		out.Error = err.Error()
+	}
+	return out
+}
+func (y *youtubeTarget) open(ctx context.Context) (string, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "open"})
+		return result.URL, err
+	}
+	status, err := y.client.Status(ctx)
+	if err != nil || status.VideoID == "" {
+		return "", errors.New("YouTube stream is unavailable")
+	}
+	return "https://www.youtube.com/watch?v=" + url.QueryEscape(status.VideoID), nil
+}
+func (y *youtubeTarget) resolveUser(ctx context.Context, user string) (archive.AuthorReference, error) {
+	if strings.HasPrefix(user, "UC") && len(user) >= 20 {
+		return archive.AuthorReference{ID: user, DisplayName: user}, nil
+	}
+	store, err := archive.Open(y.archive)
+	if err != nil {
+		return archive.AuthorReference{}, err
+	}
+	defer store.Close()
+	return store.LatestAuthor(ctx, chat.PlatformYouTube, user)
+}
+func (y *youtubeTarget) ban(ctx context.Context, user string) (string, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "ban", User: user})
+		return result.Result, err
+	}
+	author, err := y.resolveUser(ctx, user)
+	if err != nil {
+		return "", err
+	}
+	_, err = y.client.Ban(ctx, author.ID, 0)
+	if err != nil {
+		return "", err
+	}
+	return "Banned: " + author.DisplayName, nil
+}
+func (y *youtubeTarget) timeout(ctx context.Context, user, duration string) (string, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "timeout", User: user, Duration: duration})
+		return result.Result, err
+	}
+	seconds, err := twitch.ParseTimeoutDuration(duration)
+	if err != nil {
+		return "", err
+	}
+	author, err := y.resolveUser(ctx, user)
+	if err != nil {
+		return "", err
+	}
+	_, err = y.client.Ban(ctx, author.ID, int(seconds))
+	if err != nil {
+		return "", err
+	}
+	return "Timed out: " + author.DisplayName + " for " + duration, nil
+}
+func (y *youtubeTarget) clear(ctx context.Context, ids []string) (int, int, error) {
+	if y.remote != nil {
+		result, err := y.call(ctx, relay.ControlRequest{Action: "clear", Days: 1})
+		if err != nil {
+			return 0, 0, err
+		}
+		var deleted, failed int
+		_, _ = fmt.Sscanf(result.Result, "YouTube remote clear finished: %d deleted, %d failed.", &deleted, &failed)
+		return deleted, failed, nil
+	}
+	deleted, failed := 0, 0
+	for _, id := range ids {
+		if err := y.client.DeleteMessage(ctx, id); err != nil {
+			failed++
+		} else {
+			deleted++
+		}
+	}
+	return deleted, failed, nil
+}
+
+// RemoteControl is the server-side, authenticated YouTube control boundary.
+func (r *Runtime) RemoteControl(ctx context.Context, request relay.ControlRequest) (relay.ControlResponse, error) {
+	if strings.ToLower(strings.TrimSpace(request.Platform)) != "youtube" || r.youtube == nil || r.youtube.client == nil {
+		return relay.ControlResponse{}, errors.New("YouTube server control is unavailable")
+	}
+	switch strings.ToLower(strings.TrimSpace(request.Action)) {
+	case "send":
+		id, err := r.youtube.client.SendMessage(ctx, request.Text)
+		return relay.ControlResponse{MessageID: id, Result: "Sent to YouTube."}, err
+	case "status":
+		status := r.youtube.status(ctx)
+		return relay.ControlResponse{Status: status}, nil
+	case "title":
+		result, err := r.youtube.title(ctx, request.Title)
+		return relay.ControlResponse{Result: result}, err
+	case "category":
+		result, err := r.youtube.category(ctx, request.Category)
+		return relay.ControlResponse{Result: result}, err
+	case "ban":
+		result, err := r.youtube.ban(ctx, request.User)
+		return relay.ControlResponse{Result: result}, err
+	case "timeout":
+		result, err := r.youtube.timeout(ctx, request.User, request.Duration)
+		return relay.ControlResponse{Result: result}, err
+	case "clear":
+		days := request.Days
+		if days == 0 {
+			days = 1
+		}
+		result, err := r.clear(ctx, fmt.Sprintf("youtube %dd", days))
+		return relay.ControlResponse{Result: result}, err
+	case "open":
+		value, err := r.youtube.open(ctx)
+		return relay.ControlResponse{URL: value}, err
+	default:
+		return relay.ControlResponse{}, errors.New("unsupported YouTube control action")
+	}
 }
 
 type kickTarget struct {

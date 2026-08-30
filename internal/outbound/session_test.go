@@ -224,7 +224,7 @@ func TestTargetControlsDispatchThroughSelectedProvider(t *testing.T) {
 	)
 	s.RegisterTargetControl("title", "kick", kickTitle)
 	s.RegisterTargetControl("title", "twitch", twitchTitle)
-	if _, err := s.Process(context.Background(), "/title no target"); err == nil || !strings.Contains(err.Error(), "select /kick or /twitch") {
+	if _, err := s.Process(context.Background(), "/title no target"); err == nil || !strings.Contains(err.Error(), "select /kick, /twitch, or /youtube") {
 		t.Fatalf("missing-target error=%v", err)
 	}
 	if err := s.Handle(context.Background(), "/twitch"); err != nil {
