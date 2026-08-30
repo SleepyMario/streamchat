@@ -160,7 +160,7 @@ Priority: optional
 Architecture: ${architecture}
 Maintainer: ${maintainer}
 Installed-Size: ${gui_size}
-Depends: streamchat-cli (= ${debian_version}), ${gui_shlibs}, qml6-module-qtqml-workerscript, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-templates
+Depends: streamchat-cli (= ${debian_version}), ${gui_shlibs}, qml6-module-qtqml-workerscript, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-templates, qml6-module-qtquick-window
 Homepage: https://github.com/SleepyMario/streamchat
 Description: Native Qt 6 Streamchat desktop application
  Provides the Streamchat graphical client, private local frontend runtime,
