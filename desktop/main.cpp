@@ -50,7 +50,7 @@ int main(int argc, char *argv[])
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &application, [] { QCoreApplication::exit(1); },
                      Qt::QueuedConnection);
-    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Streamchat/qml/Main.qml")));
+    engine.load(QUrl(QStringLiteral("qrc:/Streamchat/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
 
