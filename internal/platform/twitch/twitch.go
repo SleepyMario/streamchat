@@ -385,7 +385,7 @@ type Client struct {
 }
 
 func New(api *API, wsURL, channel, userID string) *Client {
-	return &Client{API: api, WebSocketURL: wsURL, Channel: channel, UserID: userID, Dial: defaultDial, thirdParty: newThirdPartyEmotes(nil, "", ""), seen: map[string]struct{}{}}
+	return &Client{API: api, WebSocketURL: wsURL, Channel: channel, UserID: userID, Dial: defaultDial, thirdParty: newThirdPartyEmotes(nil, "", "", ""), seen: map[string]struct{}{}}
 }
 func (c *Client) Name() string { return "twitch" }
 

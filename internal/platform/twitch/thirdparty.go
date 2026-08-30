@@ -19,6 +19,7 @@ import (
 
 const (
 	defaultBTTVAPI    = "https://api.betterttv.net/3/cached"
+	defaultFFZAPI     = "https://api.frankerfacez.com/v1"
 	defaultSevenTVAPI = "https://7tv.io/v3"
 	maxCatalogueBytes = int64(8 << 20)
 )
@@ -30,28 +31,31 @@ type thirdPartyEmote struct {
 // thirdPartyEmotes is an immutable-after-load catalogue. Loading is done once
 // before EventSub starts; message enrichment is therefore local and cheap.
 type thirdPartyEmotes struct {
-	http                *http.Client
-	bttvAPI, sevenTVAPI string
-	mu                  sync.RWMutex
-	byName              map[string]thirdPartyEmote
+	http                        *http.Client
+	bttvAPI, ffzAPI, sevenTVAPI string
+	mu                          sync.RWMutex
+	byName                      map[string]thirdPartyEmote
 }
 
-func newThirdPartyEmotes(client *http.Client, bttvAPI, sevenTVAPI string) *thirdPartyEmotes {
+func newThirdPartyEmotes(client *http.Client, bttvAPI, ffzAPI, sevenTVAPI string) *thirdPartyEmotes {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	if bttvAPI == "" {
 		bttvAPI = defaultBTTVAPI
 	}
+	if ffzAPI == "" {
+		ffzAPI = defaultFFZAPI
+	}
 	if sevenTVAPI == "" {
 		sevenTVAPI = defaultSevenTVAPI
 	}
-	return &thirdPartyEmotes{http: client, bttvAPI: strings.TrimRight(bttvAPI, "/"), sevenTVAPI: strings.TrimRight(sevenTVAPI, "/"), byName: map[string]thirdPartyEmote{}}
+	return &thirdPartyEmotes{http: client, bttvAPI: strings.TrimRight(bttvAPI, "/"), ffzAPI: strings.TrimRight(ffzAPI, "/"), sevenTVAPI: strings.TrimRight(sevenTVAPI, "/"), byName: map[string]thirdPartyEmote{}}
 }
 
 // Load fetches the global and channel catalogues concurrently. Later sources
 // win on an exact name collision: channel catalogues over global catalogues,
-// and 7TV over BTTV at each level. Partial success is accepted.
+// and 7TV over FFZ over BTTV at each level. Partial success is accepted.
 func (c *thirdPartyEmotes) Load(ctx context.Context, twitchChannelID string) error {
 	twitchChannelID = strings.TrimSpace(twitchChannelID)
 	if twitchChannelID == "" {
@@ -64,27 +68,35 @@ func (c *thirdPartyEmotes) Load(ctx context.Context, twitchChannelID string) err
 		emotes []thirdPartyEmote
 		err    error
 	}
-	results := make(chan result, 4)
+	results := make(chan result, 6)
 	go func() {
 		emotes, err := c.loadBTTVGlobal(ctx)
 		results <- result{order: 0, emotes: emotes, err: err}
 	}()
 	go func() {
-		emotes, err := c.loadSevenTVGlobal(ctx)
+		emotes, err := c.loadFFZGlobal(ctx)
 		results <- result{order: 1, emotes: emotes, err: err}
 	}()
 	go func() {
-		emotes, err := c.loadBTTVChannel(ctx, twitchChannelID)
+		emotes, err := c.loadSevenTVGlobal(ctx)
 		results <- result{order: 2, emotes: emotes, err: err}
 	}()
 	go func() {
-		emotes, err := c.loadSevenTVChannel(ctx, twitchChannelID)
+		emotes, err := c.loadBTTVChannel(ctx, twitchChannelID)
 		results <- result{order: 3, emotes: emotes, err: err}
 	}()
+	go func() {
+		emotes, err := c.loadFFZChannel(ctx, twitchChannelID)
+		results <- result{order: 4, emotes: emotes, err: err}
+	}()
+	go func() {
+		emotes, err := c.loadSevenTVChannel(ctx, twitchChannelID)
+		results <- result{order: 5, emotes: emotes, err: err}
+	}()
 
-	loaded := make([]result, 0, 4)
+	loaded := make([]result, 0, 6)
 	var failures []error
-	for range 4 {
+	for range 6 {
 		item := <-results
 		if item.err != nil {
 			failures = append(failures, item.err)
@@ -138,6 +150,68 @@ func bttvEmotes(payload []bttvPayloadEmote) []thirdPartyEmote {
 	items := make([]thirdPartyEmote, 0, len(payload))
 	for _, item := range payload {
 		items = append(items, thirdPartyEmote{id: "bttv-" + item.ID, name: item.Code, asset: "https://cdn.betterttv.net/emote/" + url.PathEscape(item.ID) + "/3x"})
+	}
+	return items
+}
+
+type ffzPayloadEmote struct {
+	ID   int64             `json:"id"`
+	Name string            `json:"name"`
+	URLs map[string]string `json:"urls"`
+}
+
+type ffzPayloadSet struct {
+	Emoticons []ffzPayloadEmote `json:"emoticons"`
+}
+
+type ffzPayload struct {
+	DefaultSets []int64                  `json:"default_sets"`
+	Sets        map[string]ffzPayloadSet `json:"sets"`
+}
+
+func (c *thirdPartyEmotes) loadFFZGlobal(ctx context.Context) ([]thirdPartyEmote, error) {
+	var payload ffzPayload
+	if err := c.getJSON(ctx, c.ffzAPI+"/set/global", &payload); err != nil {
+		return nil, fmt.Errorf("load FrankerFaceZ global emotes: %w", err)
+	}
+	items := make([]thirdPartyEmote, 0)
+	for _, setID := range payload.DefaultSets {
+		items = append(items, ffzEmotes(payload.Sets[fmt.Sprint(setID)].Emoticons)...)
+	}
+	return items, nil
+}
+
+func (c *thirdPartyEmotes) loadFFZChannel(ctx context.Context, channelID string) ([]thirdPartyEmote, error) {
+	var payload ffzPayload
+	if err := c.getJSON(ctx, c.ffzAPI+"/room/id/"+url.PathEscape(channelID), &payload); err != nil {
+		return nil, fmt.Errorf("load FrankerFaceZ channel emotes: %w", err)
+	}
+	items := make([]thirdPartyEmote, 0)
+	setIDs := make([]string, 0, len(payload.Sets))
+	for setID := range payload.Sets {
+		setIDs = append(setIDs, setID)
+	}
+	slices.Sort(setIDs)
+	for _, setID := range setIDs {
+		items = append(items, ffzEmotes(payload.Sets[setID].Emoticons)...)
+	}
+	return items, nil
+}
+
+func ffzEmotes(payload []ffzPayloadEmote) []thirdPartyEmote {
+	items := make([]thirdPartyEmote, 0, len(payload))
+	for _, raw := range payload {
+		asset := raw.URLs["4"]
+		if asset == "" {
+			asset = raw.URLs["2"]
+		}
+		if asset == "" {
+			asset = raw.URLs["1"]
+		}
+		if strings.HasPrefix(asset, "//") {
+			asset = "https:" + asset
+		}
+		items = append(items, thirdPartyEmote{id: "ffz-" + fmt.Sprint(raw.ID), name: raw.Name, asset: asset})
 	}
 	return items
 }

@@ -18,6 +18,10 @@ func TestThirdPartyEmotesLoadAndEnrich(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"id":"global","code":"GlobalThing"},{"id":"old","code":"SameName"}]`))
 		case "/bttv/users/twitch/100":
 			_, _ = w.Write([]byte(`{"sharedEmotes":[{"id":"shared","code":"SharedThing"}],"channelEmotes":[{"id":"channel","code":"ChannelThing"}]}`))
+		case "/ffz/set/global":
+			_, _ = w.Write([]byte(`{"default_sets":[3],"sets":{"3":{"emoticons":[{"id":30,"name":"FFZGlobal","urls":{"1":"//cdn.frankerfacez.com/emote/30/1","4":"//cdn.frankerfacez.com/emote/30/4"}}]}}}`))
+		case "/ffz/room/id/100":
+			_, _ = w.Write([]byte(`{"sets":{"40":{"emoticons":[{"id":40,"name":"FFZThing","urls":{"1":"https://cdn.frankerfacez.com/emote/40/1","2":"https://cdn.frankerfacez.com/emote/40/2"}}]}}}`))
 		case "/7tv/users/twitch/100":
 			_, _ = w.Write([]byte(`{"emote_set":{"emotes":[{"id":"binding","name":"SevenThing","data":{"id":"seven","name":"SevenThing","animated":false}},{"id":"binding2","name":"SameName","data":{"id":"new","name":"SameName","animated":true}}]}}`))
 		case "/7tv/emote-sets/global":
@@ -28,13 +32,13 @@ func TestThirdPartyEmotesLoadAndEnrich(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalogue := newThirdPartyEmotes(server.Client(), server.URL+"/bttv", server.URL+"/7tv")
+	catalogue := newThirdPartyEmotes(server.Client(), server.URL+"/bttv", server.URL+"/ffz", server.URL+"/7tv")
 	if err := catalogue.Load(context.Background(), "100"); err != nil {
 		t.Fatal(err)
 	}
-	message := chat.Message{Platform: chat.PlatformTwitch, Text: "你好 GlobalThing ChannelThing SevenThing SameName"}
+	message := chat.Message{Platform: chat.PlatformTwitch, Text: "你好 GlobalThing ChannelThing FFZGlobal FFZThing SevenThing SameName"}
 	message = catalogue.Enrich(message)
-	if len(message.Emotes) != 4 {
+	if len(message.Emotes) != 6 {
 		t.Fatalf("emotes=%+v", message.Emotes)
 	}
 	want := []struct {
@@ -43,8 +47,10 @@ func TestThirdPartyEmotesLoadAndEnrich(t *testing.T) {
 	}{
 		{"bttv-global", "GlobalThing", "https://cdn.betterttv.net/emote/global/3x", 3, 13},
 		{"bttv-channel", "ChannelThing", "https://cdn.betterttv.net/emote/channel/3x", 15, 26},
-		{"7tv-seven", "SevenThing", "https://cdn.7tv.app/emote/seven/4x.png", 28, 37},
-		{"7tv-new", "SameName", "https://cdn.7tv.app/emote/new/4x.gif", 39, 46},
+		{"ffz-30", "FFZGlobal", "https://cdn.frankerfacez.com/emote/30/4", 28, 36},
+		{"ffz-40", "FFZThing", "https://cdn.frankerfacez.com/emote/40/2", 38, 45},
+		{"7tv-seven", "SevenThing", "https://cdn.7tv.app/emote/seven/4x.png", 47, 56},
+		{"7tv-new", "SameName", "https://cdn.7tv.app/emote/new/4x.gif", 58, 65},
 	}
 	for index, expected := range want {
 		got := message.Emotes[index]
@@ -55,7 +61,7 @@ func TestThirdPartyEmotesLoadAndEnrich(t *testing.T) {
 }
 
 func TestThirdPartyEmotesPreserveNativeRangesAndExactTokens(t *testing.T) {
-	catalogue := newThirdPartyEmotes(nil, "", "")
+	catalogue := newThirdPartyEmotes(nil, "", "", "")
 	catalogue.byName = map[string]thirdPartyEmote{
 		"Kappa": {id: "bttv-kappa", name: "Kappa", asset: "https://cdn.betterttv.net/emote/kappa/3x"},
 		"KEKW":  {id: "7tv-kekw", name: "KEKW", asset: "https://cdn.7tv.app/emote/kekw/4x.png"},
@@ -76,7 +82,7 @@ func TestThirdPartyEmotesPartialProviderFailure(t *testing.T) {
 		http.Error(w, "unavailable", http.StatusBadGateway)
 	}))
 	defer server.Close()
-	catalogue := newThirdPartyEmotes(&http.Client{Timeout: time.Second}, server.URL+"/bttv", server.URL+"/7tv")
+	catalogue := newThirdPartyEmotes(&http.Client{Timeout: time.Second}, server.URL+"/bttv", server.URL+"/ffz", server.URL+"/7tv")
 	if err := catalogue.Load(context.Background(), "100"); err != nil {
 		t.Fatalf("partial provider failure should retain successful catalogue: %v", err)
 	}
