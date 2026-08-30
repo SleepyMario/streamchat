@@ -10,6 +10,7 @@
 #include <QQuickStyle>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QUrl>
 
 namespace {
 void writeLog(QtMsgType type, const QMessageLogContext &, const QString &message)
@@ -49,7 +50,7 @@ int main(int argc, char *argv[])
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &application, [] { QCoreApplication::exit(1); },
                      Qt::QueuedConnection);
-    engine.loadFromModule(QStringLiteral("Streamchat"), QStringLiteral("Main"));
+    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Streamchat/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
 
