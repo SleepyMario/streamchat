@@ -13,7 +13,9 @@ set(CMAKE_SKIP_RPATH ON)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
 
 qt_standard_project_setup(REQUIRES 6.4)
-qt_policy(SET QTP0004 NEW)
+if(COMMAND qt_policy)
+    qt_policy(SET QTP0004 NEW)
+endif()
 
 qt_add_executable(streamchat-gui WIN32
     main.cpp
