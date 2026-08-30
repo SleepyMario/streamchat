@@ -378,13 +378,14 @@ type Client struct {
 	API                           *API
 	WebSocketURL, Channel, UserID string
 	Dial                          Dial
+	thirdParty                    *thirdPartyEmotes
 	mu                            sync.Mutex
 	seen                          map[string]struct{}
 	order                         []string
 }
 
 func New(api *API, wsURL, channel, userID string) *Client {
-	return &Client{API: api, WebSocketURL: wsURL, Channel: channel, UserID: userID, Dial: defaultDial, seen: map[string]struct{}{}}
+	return &Client{API: api, WebSocketURL: wsURL, Channel: channel, UserID: userID, Dial: defaultDial, thirdParty: newThirdPartyEmotes(nil, "", ""), seen: map[string]struct{}{}}
 }
 func (c *Client) Name() string { return "twitch" }
 
@@ -605,6 +606,9 @@ func (c *Client) runSocketConnected(ctx context.Context, conn wsConn, broadcaste
 			return "", &chat.AdapterError{Kind: kind, Op: "Twitch EventSub", Err: fmt.Errorf("subscription revoked (%s); run: streamchat setup twitch", v.Payload.Subscription.Status)}
 		case "notification":
 			if m != nil && !c.duplicate(v.Metadata.MessageID) {
+				if c.thirdParty != nil {
+					*m = c.thirdParty.Enrich(*m)
+				}
 				select {
 				case out <- *m:
 				case <-ctx.Done():
@@ -623,6 +627,11 @@ func (c *Client) Run(ctx context.Context, out chan<- chat.Message) error {
 	user, err := c.API.User(ctx, login)
 	if err != nil {
 		return err
+	}
+	if c.thirdParty != nil {
+		// Third-party emotes are optional presentation metadata. A provider
+		// outage or slow response must never delay Twitch chat from connecting.
+		go func() { _ = c.thirdParty.Load(ctx, user.ID) }()
 	}
 	u := c.WebSocketURL
 	inherited := false
