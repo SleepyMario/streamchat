@@ -30,6 +30,31 @@ func testMessage(id string) chat.Message {
 	return chat.Message{ID: id, Platform: chat.PlatformKick, Timestamp: time.Now().UTC(), AuthorDisplayName: "viewer", Text: "hello", EventType: chat.EventMessage}
 }
 
+func TestCoreStatusEndpointIsAuthenticatedAndVersionNeutral(t *testing.T) {
+	server := NewServer("", "/relay", testToken, nil)
+	server.Status = func() any {
+		return map[string]any{"schema_version": 1, "media": map[string]any{"width": 1920, "height": 1080}}
+	}
+	handler := server.Handler()
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"schema_version":1`) || !strings.Contains(response.Body.String(), `"width":1920`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache control=%q", response.Header().Get("Cache-Control"))
+	}
+}
+
 func TestPersistenceAndRelayUseSameMessage(t *testing.T) {
 	store, err := archive.Open(filepath.Join(t.TempDir(), "streamchat.db"))
 	if err != nil {

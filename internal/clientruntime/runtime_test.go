@@ -125,4 +125,35 @@ func TestSharedRuntimeSelectsAndSendsThroughKickProvider(t *testing.T) {
 	}
 }
 
+func TestBotConfigUsesSeparateAccountsWithoutChangingTargets(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Kick.BroadcasterID = "123"
+	cfg.Kick.AccessToken = "owner-kick"
+	cfg.Twitch.Channel = "owner-channel"
+	cfg.Twitch.AccessToken = "owner-twitch"
+	cfg.Bot.Kick = config.BotAccount{ClientID: "bot-kick-client", AccessToken: "bot-kick"}
+	cfg.Bot.Twitch = config.BotAccount{ClientID: "bot-twitch-client", AccessToken: "bot-twitch", UserID: "bot-user"}
+	got := botConfig(cfg)
+	if got.Kick.AccessToken != "bot-kick" || got.Kick.BroadcasterID != "123" {
+		t.Fatalf("Kick bot identity or target lost: %+v", got.Kick)
+	}
+	if got.Twitch.AccessToken != "bot-twitch" || got.Twitch.Channel != "owner-channel" || got.Twitch.UserID != "bot-user" {
+		t.Fatalf("Twitch bot identity or target lost: %+v", got.Twitch)
+	}
+	if cfg.Kick.AccessToken != "owner-kick" || cfg.Twitch.AccessToken != "owner-twitch" {
+		t.Fatal("source configuration was mutated")
+	}
+}
+
+func TestBotConfigFallsBackPerPlatform(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Kick.AccessToken = "owner-kick"
+	cfg.Twitch.AccessToken = "owner-twitch"
+	cfg.Bot.Kick.AccessToken = "bot-kick"
+	got := botConfig(cfg)
+	if got.Kick.AccessToken != "bot-kick" || got.Twitch.AccessToken != "owner-twitch" {
+		t.Fatalf("unexpected fallback: kick=%q twitch=%q", got.Kick.AccessToken, got.Twitch.AccessToken)
+	}
+}
+
 func timeNow() time.Time { return time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC) }

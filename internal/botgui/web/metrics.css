@@ -1,0 +1,67 @@
+.channel-meta {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 0.55fr;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.channel-meta span {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0a1018;
+}
+
+.channel-meta small {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.channel-meta b {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-toggle { display:flex; align-items:center; gap:9px; color:var(--muted); font-size:10px; cursor:pointer; }
+.compact-toggle input { display:none; }
+.compact-toggle .switch { margin-left:0; }
+.chat-feed { max-height:320px; overflow-y:auto; margin-top:15px; }
+.chat-message { display:grid; grid-template-columns:62px minmax(90px,auto) 1fr; gap:9px; padding:9px 3px; border-top:1px solid var(--line); font-size:11px; }
+.chat-platform { color:var(--accent); text-transform:uppercase; }
+.platform.placeholder { opacity:.72; }
+.platform.placeholder .copy { min-width:0; }
+.youtube .platform-icon { color:#ff5d67; }
+.peertube .platform-icon { color:#f2a45f; }
+.planned { margin-left:auto; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font-size:9px; font-weight:850; letter-spacing:.09em; }
+.planned-nav { opacity:.62; }
+.planned-nav span { font-size:13px; font-weight:900; letter-spacing:.04em; }
+.minis { grid-template-columns:repeat(4,1fr); }
+.recording-row { margin-top:16px; }
+.recording-panel { padding:22px 26px; }
+.recording-actions { display:flex; align-items:center; gap:14px; }
+.placeholder-control { cursor:not-allowed; opacity:.65; }
+.placeholder-control small { padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:8px; font-weight:850; letter-spacing:.08em; }
+.recording-grid { display:grid; grid-template-columns:.7fr .8fr .8fr .9fr 2fr; gap:10px; margin-top:18px; }
+.recording-grid>span { min-width:0; padding:11px 13px; border:1px solid var(--line); border-radius:10px; background:#0a1018; }
+.recording-grid small { display:block; color:var(--muted); font-size:9px; }
+.recording-grid b { display:block; overflow:hidden; margin-top:4px; color:var(--text); font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
+.recording-grid em { color:var(--muted); font-size:9px; font-style:normal; font-weight:500; }
+.recording-location b { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; }
+.automation-roadmap { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:16px; }
+.roadmap-card { min-height:210px; }
+.roadmap-head { display:flex; align-items:center; justify-content:space-between; }
+.roadmap-icon { display:grid; place-items:center; width:39px; height:39px; border:1px solid #383557; border-radius:12px; background:#18172b; color:#bbb5ff; font-size:14px; font-weight:900; }
+.roadmap-card h3 { margin:18px 0 7px; font-size:17px; }
+.roadmap-card p { min-height:48px; margin:0; color:var(--muted); font-size:11px; }
+.placeholder-line { display:flex; align-items:center; gap:8px; margin-top:21px; padding-top:14px; border-top:1px solid var(--line); color:#6f7b90; font-size:10px; }
+.placeholder-line i { width:7px; height:7px; border:1px solid #657086; border-radius:50%; }
+.chat-author { overflow:hidden; color:var(--text); font-weight:750; text-overflow:ellipsis; white-space:nowrap; }
+.chat-text { overflow-wrap:anywhere; color:#aab4c5; }
+@media(max-width:1050px){.recording-grid{grid-template-columns:repeat(2,1fr)}.recording-location{grid-column:1/-1}.automation-roadmap{grid-template-columns:1fr}}
+@media(max-width:720px){.recording-actions{align-items:flex-end;flex-direction:column;gap:8px}.recording-grid{grid-template-columns:1fr 1fr}}

@@ -19,6 +19,8 @@ import (
 
 	"github.com/SleepyMario/streamchat/internal/aggregate"
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
+	"github.com/SleepyMario/streamchat/internal/bot"
+	"github.com/SleepyMario/streamchat/internal/botgui"
 	"github.com/SleepyMario/streamchat/internal/chat"
 	"github.com/SleepyMario/streamchat/internal/chattercolor"
 	"github.com/SleepyMario/streamchat/internal/clientruntime"
@@ -34,7 +36,9 @@ import (
 	"github.com/SleepyMario/streamchat/internal/platform/youtube"
 	"github.com/SleepyMario/streamchat/internal/relay"
 	"github.com/SleepyMario/streamchat/internal/render"
+	"github.com/SleepyMario/streamchat/internal/serverstatus"
 	"github.com/SleepyMario/streamchat/internal/setup"
+	"github.com/SleepyMario/streamchat/internal/streamprobe"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
@@ -461,8 +465,91 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 
 	serverCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	statusRuntime, statusErr := clientruntime.New(serverCtx, c)
+	if statusErr != nil {
+		return fmt.Errorf("initialize core server status: %w", statusErr)
+	}
+	mediaProbe := streamprobe.New(c.Bot.FFprobe, os.Getenv(c.Bot.StreamProbeURLEnv), 15*time.Second).WithMetrics(os.Getenv(c.Bot.MetricsURLEnv), c.Bot.MediaPath)
+	statusService := serverstatus.New(mediaProbe, statusRuntime)
+	go statusService.Run(serverCtx)
+	server.Status = func() any { return statusService.Snapshot() }
+	server.Observe = statusService.Observe
 	if os.Getenv("STREAMCHAT_LOCAL_SERVER") == "1" {
 		server.LocalShutdown = cancel
+	}
+	if c.Bot.Enabled || c.Bot.GUIListen != "" {
+		botRuntime, runtimeErr := clientruntime.NewBot(serverCtx, c)
+		if runtimeErr != nil {
+			fmt.Fprintf(out, "Streamchat bot unavailable: %s\n", safeError(runtimeErr))
+		} else {
+			disabled := map[string]bool{}
+			for _, platform := range c.Bot.DisabledPlatforms {
+				disabled[strings.ToLower(strings.TrimSpace(platform))] = true
+			}
+			engine := bot.New(botRuntime, bot.Config{Enabled: c.Bot.Enabled, ShowChat: c.Bot.ShowChat, CommandsReply: c.Bot.CommandsReply, Cooldown: time.Duration(c.Bot.CooldownSeconds) * time.Second, Disabled: disabled})
+			server.Observe = func(message chat.Message) {
+				statusService.Observe(message)
+				if !engine.Enqueue(message) {
+					fmt.Fprintln(out, "Streamchat bot queue full; command skipped.")
+				}
+			}
+			go engine.Run(serverCtx, func(err error) {
+				fmt.Fprintf(out, "Streamchat bot: %s\n", safeError(err))
+			})
+			if c.Bot.Enabled {
+				fmt.Fprintln(out, "Streamchat bot enabled for Kick and Twitch (!commands).")
+			}
+			if c.Bot.GUIListen != "" {
+				admin, guiErr := botgui.New(botgui.Config{
+					Listen: c.Bot.GUIListen, Password: c.Bot.GUIPassword, Engine: engine,
+					Stream: func() any { return statusService.Snapshot().Media },
+					Channel: func() any {
+						return statusService.Snapshot().Channel
+					},
+					Chat: func() any { return statusService.Snapshot().RecentChat },
+					Accounts: func() map[string]string {
+						accounts := map[string]string{"kick": "Uses primary account", "twitch": "Uses primary account"}
+						if c.Bot.Kick.AccessToken != "" || c.Bot.Kick.RefreshToken != "" {
+							accounts["kick"] = "Dedicated bot account configured"
+						}
+						if c.Bot.Twitch.AccessToken != "" || c.Bot.Twitch.RefreshToken != "" {
+							accounts["twitch"] = "Dedicated bot account configured"
+							if c.Bot.Twitch.UserLogin != "" {
+								accounts["twitch"] = "Dedicated: " + c.Bot.Twitch.UserLogin
+							}
+						}
+						return accounts
+					},
+					Save: func(state bot.State) error {
+						loaded, loadErr := config.Load(o.config)
+						if loadErr != nil {
+							return loadErr
+						}
+						loaded.Bot.Enabled = state.Enabled
+						loaded.Bot.ShowChat = state.ShowChat
+						loaded.Bot.CommandsReply = state.CommandsReply
+						loaded.Bot.CooldownSeconds = state.Cooldown
+						loaded.Bot.DisabledPlatforms = nil
+						for _, platform := range []string{"kick", "twitch"} {
+							if !state.Platforms[platform] {
+								loaded.Bot.DisabledPlatforms = append(loaded.Bot.DisabledPlatforms, platform)
+							}
+						}
+						return config.Save(o.config, loaded)
+					},
+				})
+				if guiErr != nil {
+					return guiErr
+				}
+				go func() {
+					if runErr := admin.Run(); runErr != nil {
+						fmt.Fprintf(out, "Streamchat bot GUI stopped: %s\n", safeError(runErr))
+					}
+				}()
+				go func() { <-serverCtx.Done(); _ = admin.Shutdown() }()
+				fmt.Fprintf(out, "Streamchat bot GUI listening on %s\n", c.Bot.GUIListen)
+			}
+		}
 	}
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.Run(serverCtx, messages) }()

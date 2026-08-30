@@ -1,0 +1,22 @@
+:root {
+  --bg: #080b12;
+  --panel: #101521;
+  --line: #252d3d;
+  --text: #eef2fa;
+  --muted: #8994a8;
+  --accent: #7c73ff;
+  --violet: #7c73ff;
+  --mint: #42d894;
+}
+
+body {
+  background: radial-gradient(circle at 20% -10%, #1d1c42 0, transparent 32%), var(--bg);
+}
+
+.hero, .metrics, .panel {
+  background: linear-gradient(145deg, #111723, #0e131d);
+}
+
+.rail {
+  background: #080b12dc;
+}

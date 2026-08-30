@@ -25,6 +25,7 @@ type Config struct {
 	Client            Client  `json:"client"`
 	Storage           Storage `json:"storage"`
 	Emotes            Emotes  `json:"emotes"`
+	Bot               Bot     `json:"bot"`
 	ChatColorMode     string  `json:"chat_color_mode,omitempty"`
 	RelayAuthToken    string  `json:"relay_auth_token,omitempty"`
 	LogFile           string  `json:"log_file,omitempty"`
@@ -98,6 +99,34 @@ type Emotes struct {
 	Debug bool   `json:"debug,omitempty"`
 }
 
+type Bot struct {
+	Enabled           bool       `json:"enabled,omitempty"`
+	ShowChat          bool       `json:"show_chat,omitempty"`
+	CommandsReply     string     `json:"commands_reply,omitempty"`
+	CooldownSeconds   int        `json:"cooldown_seconds,omitempty"`
+	DisabledPlatforms []string   `json:"disabled_platforms,omitempty"`
+	GUIListen         string     `json:"gui_listen,omitempty"`
+	GUIPassword       string     `json:"gui_password,omitempty"`
+	StreamProbeURLEnv string     `json:"stream_probe_url_env,omitempty"`
+	MetricsURLEnv     string     `json:"mediamtx_metrics_url_env,omitempty"`
+	MediaPath         string     `json:"media_path,omitempty"`
+	FFprobe           string     `json:"ffprobe,omitempty"`
+	Kick              BotAccount `json:"kick,omitempty"`
+	Twitch            BotAccount `json:"twitch,omitempty"`
+}
+
+// BotAccount holds a separate chat identity. Channel targets continue to come
+// from the normal Kick and Twitch sections.
+type BotAccount struct {
+	ClientID     string    `json:"client_id,omitempty"`
+	ClientSecret string    `json:"client_secret,omitempty"`
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	TokenExpiry  time.Time `json:"token_expiry,omitempty"`
+	UserID       string    `json:"user_id,omitempty"`
+	UserLogin    string    `json:"user_login,omitempty"`
+}
+
 const legacyYouTubeRedirectURI = "http://localhost:8791/oauth/youtube/callback"
 
 func Defaults() Config {
@@ -108,6 +137,7 @@ func Defaults() Config {
 		Server:        Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		Storage:       Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
 		Emotes:        Emotes{Mode: "auto"},
+		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe"},
 		ChatColorMode: chattercolor.ModeLine,
 		QueueSize:     256, DuplicateCapacity: 10000,
 	}
@@ -193,6 +223,24 @@ func applyDefaults(c *Config) {
 	}
 	if c.Emotes.Mode == "" {
 		c.Emotes.Mode = d.Emotes.Mode
+	}
+	if c.Bot.CommandsReply == "" {
+		c.Bot.CommandsReply = d.Bot.CommandsReply
+	}
+	if c.Bot.CooldownSeconds == 0 {
+		c.Bot.CooldownSeconds = d.Bot.CooldownSeconds
+	}
+	if c.Bot.StreamProbeURLEnv == "" {
+		c.Bot.StreamProbeURLEnv = d.Bot.StreamProbeURLEnv
+	}
+	if c.Bot.MetricsURLEnv == "" {
+		c.Bot.MetricsURLEnv = d.Bot.MetricsURLEnv
+	}
+	if c.Bot.MediaPath == "" {
+		c.Bot.MediaPath = d.Bot.MediaPath
+	}
+	if c.Bot.FFprobe == "" {
+		c.Bot.FFprobe = d.Bot.FFprobe
 	}
 	if c.ChatColorMode == "" {
 		c.ChatColorMode = d.ChatColorMode
@@ -309,6 +357,12 @@ func (c Config) Validate(mode string) error {
 	if c.DuplicateCapacity < 1 || c.DuplicateCapacity > 1000000 {
 		return errors.New("duplicate_capacity must be between 1 and 1000000")
 	}
+	if c.Bot.CooldownSeconds < 1 || c.Bot.CooldownSeconds > 3600 {
+		return errors.New("bot.cooldown_seconds must be between 1 and 3600")
+	}
+	if strings.TrimSpace(c.Bot.CommandsReply) == "" {
+		return errors.New("bot.commands_reply must not be blank")
+	}
 	if c.Kick.Listen == "" {
 		return errors.New("kick.listen is required")
 	}
@@ -400,6 +454,13 @@ func Redacted(c Config) Config {
 	r.Twitch.ClientSecret = Redact(c.Twitch.ClientSecret)
 	r.Twitch.AccessToken = Redact(c.Twitch.AccessToken)
 	r.Twitch.RefreshToken = Redact(c.Twitch.RefreshToken)
+	r.Bot.Kick.ClientSecret = Redact(c.Bot.Kick.ClientSecret)
+	r.Bot.Kick.AccessToken = Redact(c.Bot.Kick.AccessToken)
+	r.Bot.Kick.RefreshToken = Redact(c.Bot.Kick.RefreshToken)
+	r.Bot.Twitch.ClientSecret = Redact(c.Bot.Twitch.ClientSecret)
+	r.Bot.Twitch.AccessToken = Redact(c.Bot.Twitch.AccessToken)
+	r.Bot.Twitch.RefreshToken = Redact(c.Bot.Twitch.RefreshToken)
+	r.Bot.GUIPassword = Redact(c.Bot.GUIPassword)
 	r.RelayAuthToken = Redact(c.RelayAuthToken)
 	return r
 }

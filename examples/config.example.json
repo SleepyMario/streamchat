@@ -42,6 +42,33 @@
     "mode": "auto",
     "debug": false
   },
+  "bot": {
+    "enabled": false,
+    "show_chat": false,
+    "commands_reply": "Commands: !commands",
+    "cooldown_seconds": 5,
+    "disabled_platforms": [],
+    "gui_listen": "127.0.0.1:8793",
+    "gui_password": "",
+    "stream_probe_url_env": "STREAMCHAT_MEDIA_INPUT_URL",
+    "mediamtx_metrics_url_env": "STREAMCHAT_MEDIAMTX_METRICS_URL",
+    "media_path": "pc/stream",
+    "ffprobe": "/usr/bin/ffprobe",
+    "kick": {
+      "client_id": "",
+      "client_secret": "",
+      "access_token": "",
+      "refresh_token": ""
+    },
+    "twitch": {
+      "client_id": "",
+      "client_secret": "",
+      "access_token": "",
+      "refresh_token": "",
+      "user_id": "",
+      "user_login": ""
+    }
+  },
   "chat_color_mode": "line",
   "relay_auth_token": "",
   "log_file": "",

@@ -336,6 +336,10 @@ The setup writer creates missing directories, writes mode `0600`, and atomically
 
 Persistent credentials live in the config. YouTube live URLs/video IDs and Twitch channels can be supplied per run; a default Twitch channel may also be saved for convenience.
 
+The core server status service reports the dimensions and incoming bitrate of the encoded video that actually reaches the VPS, together with the canonical stream title and category obtained from Streamchat's channel-status providers. It runs `ffprobe` against the private MediaMTX input every 15 seconds and publishes versioned, sanitized state through the authenticated `/api/status` endpoint. The bot console is currently one consumer; the CLI, GUI, and future appliance can use the same API. `bot.stream_probe_url_env` names the protected service environment variable containing that input URL (by default `STREAMCHAT_MEDIA_INPUT_URL`); the URL and any MediaMTX reader credentials are therefore not stored in Streamchat's JSON configuration or returned by its API. When `STREAMCHAT_MEDIAMTX_METRICS_URL` is set, the same probe samples MediaMTX's `paths_inbound_bytes` counter for `bot.media_path` and reports the measured stream-connection rate. It never counts unrelated host traffic. MediaMTX is authoritative for media properties—not the OBS canvas or delayed platform dashboards—while Streamchat's platform APIs are authoritative for title and category.
+
+The intended bot is an event-driven automation system, not only a command responder. Platform adapters will normalize chat, follows, subscriptions, gifts, raids, paid interactions, rewards, moderation, stream lifecycle, clock and manual events. Durable rules will map those events to chat messages, delayed message sequences, alerts, media, archives, dashboard notifications, safe internal utilities and optional conversational replies. Only the Kick/Twitch `!commands` rule is executable today; the other dashboard areas are honest placeholders. See [`docs/bot-architecture.md`](docs/bot-architecture.md) for the complete working/planned boundary and intended runtime model.
+
 Advanced environment variables:
 
 - YouTube: `STREAMCHAT_YOUTUBE_API_KEY`, `STREAMCHAT_YOUTUBE_CLIENT_ID`, `STREAMCHAT_YOUTUBE_CLIENT_SECRET`, `STREAMCHAT_YOUTUBE_ACCESS_TOKEN`, `STREAMCHAT_YOUTUBE_REFRESH_TOKEN`, `STREAMCHAT_YOUTUBE_REDIRECT_URI`, `STREAMCHAT_YOUTUBE_VIDEO_ID`
@@ -360,9 +364,12 @@ See `examples/config.example.json` for the manual JSON shape. Environment-provid
 - `internal/outbound`: canonical outbound target selection and command aliases
 - `internal/clientruntime`: frontend-neutral sending, control, setup, health, and archive operations
 - `internal/gui`: private loopback HTTP/SSE bridge shared by browser development and the native frontend
+- `internal/bot` and `internal/botgui`: provider-neutral event/rule foundation, current always-on command engine, and separately bound private administration console
+- `internal/streamprobe`: cached VPS-local MediaMTX media-property probe
+- `internal/serverstatus`: versioned shared server telemetry consumed by CLI, GUI, bot, and appliance clients
 - `internal/clientstate`: atomic, non-secret interactive client preferences
 - `internal/platform/twitch`: OAuth/API support and EventSub WebSocket adapter
-- `internal/relay`: authenticated in-memory WebSocket broadcast server/client
+- `internal/relay`: authenticated WebSocket chat relay plus the shared `/api/status` endpoint
 - `internal/archive`: versioned SQLite storage and operational statistics
 - `internal/setup`: interactive, safely rerunnable setup wizard
 - `internal/config`: JSON/env/defaults, atomic writer, validation, redaction

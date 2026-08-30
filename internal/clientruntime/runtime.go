@@ -74,9 +74,24 @@ type Runtime struct {
 }
 
 func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
+	return newRuntime(ctx, cfg, false)
+}
+
+// NewBot creates an outbound runtime using dedicated bot credentials when
+// configured. Missing bot credentials fall back to the normal chat identity.
+func NewBot(ctx context.Context, cfg config.Config) (*Runtime, error) {
+	return newRuntime(ctx, cfg, true)
+}
+
+func newRuntime(ctx context.Context, cfg config.Config, botIdentity bool) (*Runtime, error) {
+	if botIdentity {
+		cfg = botConfig(cfg)
+	}
 	r := &Runtime{cfg: cfg, path: cfg.Path, http: &http.Client{Timeout: 20 * time.Second}, relay: "disconnected", streams: map[string]StreamStatus{}}
-	r.kick = &kickTarget{cfg: cfg.Kick, path: cfg.Path, http: r.http}
-	twitchTarget, twitchErr := newTwitchTarget(ctx, &r.cfg, r.path)
+	kickPersist := func(value config.Kick) error { return persistKickIdentity(cfg.Path, value, botIdentity) }
+	twitchPersist := func(value config.Twitch) error { return persistTwitchIdentity(cfg.Path, value, botIdentity) }
+	r.kick = &kickTarget{cfg: cfg.Kick, path: cfg.Path, http: r.http, persist: kickPersist}
+	twitchTarget, twitchErr := newTwitchTarget(ctx, &r.cfg, r.path, twitchPersist)
 	r.twitch = twitchTarget
 	if twitchErr != nil {
 		r.twitchErr = twitchErr.Error()
@@ -108,6 +123,68 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	return r, nil
 }
 
+func botConfig(cfg config.Config) config.Config {
+	if accountConfigured(cfg.Bot.Kick) {
+		cfg.Kick.ClientID = cfg.Bot.Kick.ClientID
+		cfg.Kick.ClientSecret = cfg.Bot.Kick.ClientSecret
+		cfg.Kick.AccessToken = cfg.Bot.Kick.AccessToken
+		cfg.Kick.RefreshToken = cfg.Bot.Kick.RefreshToken
+		cfg.Kick.TokenExpiry = cfg.Bot.Kick.TokenExpiry
+	}
+	if accountConfigured(cfg.Bot.Twitch) {
+		cfg.Twitch.ClientID = cfg.Bot.Twitch.ClientID
+		cfg.Twitch.ClientSecret = cfg.Bot.Twitch.ClientSecret
+		cfg.Twitch.AccessToken = cfg.Bot.Twitch.AccessToken
+		cfg.Twitch.RefreshToken = cfg.Bot.Twitch.RefreshToken
+		cfg.Twitch.TokenExpiry = cfg.Bot.Twitch.TokenExpiry
+		cfg.Twitch.UserID = cfg.Bot.Twitch.UserID
+		cfg.Twitch.UserLogin = cfg.Bot.Twitch.UserLogin
+	}
+	return cfg
+}
+
+func accountConfigured(account config.BotAccount) bool {
+	return account.AccessToken != "" || account.RefreshToken != ""
+}
+
+func persistKickIdentity(path string, value config.Kick, botIdentity bool) error {
+	loaded, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if botIdentity && accountConfigured(loaded.Bot.Kick) {
+		loaded.Bot.Kick.ClientID = value.ClientID
+		loaded.Bot.Kick.ClientSecret = value.ClientSecret
+		loaded.Bot.Kick.AccessToken = value.AccessToken
+		loaded.Bot.Kick.RefreshToken = value.RefreshToken
+		loaded.Bot.Kick.TokenExpiry = value.TokenExpiry
+	} else {
+		loaded.Kick.AccessToken = value.AccessToken
+		loaded.Kick.RefreshToken = value.RefreshToken
+		loaded.Kick.TokenExpiry = value.TokenExpiry
+	}
+	return config.Save(path, loaded)
+}
+
+func persistTwitchIdentity(path string, value config.Twitch, botIdentity bool) error {
+	loaded, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if botIdentity && accountConfigured(loaded.Bot.Twitch) {
+		loaded.Bot.Twitch.ClientID = value.ClientID
+		loaded.Bot.Twitch.ClientSecret = value.ClientSecret
+		loaded.Bot.Twitch.AccessToken = value.AccessToken
+		loaded.Bot.Twitch.RefreshToken = value.RefreshToken
+		loaded.Bot.Twitch.TokenExpiry = value.TokenExpiry
+		loaded.Bot.Twitch.UserID = value.UserID
+		loaded.Bot.Twitch.UserLogin = value.UserLogin
+	} else {
+		loaded.Twitch = value
+	}
+	return config.Save(path, loaded)
+}
+
 func (r *Runtime) Session() *outbound.Session { return r.session }
 
 func (r *Runtime) Execute(ctx context.Context, command string) (string, error) {
@@ -120,6 +197,31 @@ func (r *Runtime) Execute(ctx context.Context, command string) (string, error) {
 func (r *Runtime) Select(ctx context.Context, platform string) error {
 	_, err := r.Execute(ctx, "/"+strings.ToLower(strings.TrimSpace(platform)))
 	return err
+}
+
+// SendTo sends directly to a named provider without changing the interactive
+// target selection shared by the GUI and terminal client.
+func (r *Runtime) SendTo(ctx context.Context, platform, message string) error {
+	if r == nil {
+		return errors.New("Streamchat runtime is unavailable")
+	}
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case string(chat.PlatformKick):
+		if r.kick == nil || r.cfg.Kick.BroadcasterID == "" || (r.cfg.Kick.AccessToken == "" && r.cfg.Kick.RefreshToken == "") {
+			return errors.New("Kick sending is unavailable")
+		}
+		return r.kick.Send(ctx, message)
+	case string(chat.PlatformTwitch):
+		if r.twitch == nil {
+			if r.twitchErr != "" {
+				return fmt.Errorf("Twitch sending is unavailable: %s", r.twitchErr)
+			}
+			return errors.New("Twitch sending is unavailable")
+		}
+		return r.twitch.Send(ctx, message)
+	default:
+		return fmt.Errorf("unsupported outbound platform %q", platform)
+	}
 }
 
 func (r *Runtime) SetRelayState(value string) {
@@ -425,10 +527,11 @@ func (r *Runtime) clear(ctx context.Context, argument string) (string, error) {
 }
 
 type kickTarget struct {
-	mu   sync.Mutex
-	cfg  config.Kick
-	path string
-	http *http.Client
+	mu      sync.Mutex
+	cfg     config.Kick
+	path    string
+	http    *http.Client
+	persist func(config.Kick) error
 }
 
 func (k *kickTarget) Send(ctx context.Context, message string) error {
@@ -578,14 +681,10 @@ func (k *kickTarget) refresh(ctx context.Context) error {
 	if os.Getenv("STREAMCHAT_KICK_ACCESS_TOKEN") != "" {
 		return nil
 	}
-	loaded, err := config.Load(k.path)
-	if err != nil {
-		return err
+	if k.persist == nil {
+		return nil
 	}
-	loaded.Kick.AccessToken = k.cfg.AccessToken
-	loaded.Kick.RefreshToken = k.cfg.RefreshToken
-	loaded.Kick.TokenExpiry = k.cfg.TokenExpiry
-	return config.Save(k.path, loaded)
+	return k.persist(k.cfg)
 }
 
 type twitchTarget struct {
@@ -595,7 +694,7 @@ type twitchTarget struct {
 	userID, userLogin string
 }
 
-func newTwitchTarget(ctx context.Context, c *config.Config, path string) (*twitchTarget, error) {
+func newTwitchTarget(ctx context.Context, c *config.Config, path string, persist func(config.Twitch) error) (*twitchTarget, error) {
 	if c.Twitch.ClientID == "" || c.Twitch.Channel == "" || (c.Twitch.AccessToken == "" && c.Twitch.RefreshToken == "") {
 		return nil, errors.New("Twitch is not configured")
 	}
@@ -609,12 +708,10 @@ func newTwitchTarget(ctx context.Context, c *config.Config, path string) (*twitc
 		if os.Getenv("STREAMCHAT_TWITCH_ACCESS_TOKEN") != "" {
 			return nil
 		}
-		loaded, err := config.Load(path)
-		if err != nil {
-			return err
+		if persist == nil {
+			return nil
 		}
-		loaded.Twitch = c.Twitch
-		return config.Save(path, loaded)
+		return persist(c.Twitch)
 	}
 	identity, err := api.ValidateToken(ctx)
 	if err != nil && c.Twitch.RefreshToken != "" {

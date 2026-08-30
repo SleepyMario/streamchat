@@ -86,6 +86,11 @@ type Server struct {
 	// Accept runs before broadcast. Returning false suppresses a duplicate;
 	// returning an error stops the server so archival failures are visible.
 	Accept func(context.Context, chat.Message) (bool, error)
+	// Observe runs after acceptance and before broadcast. It must return quickly;
+	// observational failures must not interrupt archival or relay delivery.
+	Observe func(chat.Message)
+	// Status returns sanitized shared server state for authenticated clients.
+	Status func() any
 	hub    *hub
 	server *http.Server
 }
@@ -142,6 +147,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.Path, s.websocket)
+	mux.HandleFunc("/api/status", s.status)
 	if s.LocalShutdown != nil {
 		mux.HandleFunc("/_streamchat/local-shutdown", s.localShutdown)
 	}
@@ -149,6 +155,25 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", s.Webhook)
 	}
 	return mux
+}
+
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r.Header.Get("Authorization"), s.Token) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.Status == nil {
+		http.Error(w, "status unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(s.Status())
 }
 
 func (s *Server) localShutdown(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +224,9 @@ func (s *Server) forward(ctx context.Context, messages <-chan chat.Message) erro
 				if !accepted {
 					continue
 				}
+			}
+			if s.Observe != nil {
+				s.Observe(m)
 			}
 			if err := s.Broadcast(m); err != nil {
 				return fmt.Errorf("relay message: %w", err)
