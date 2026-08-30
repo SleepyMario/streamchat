@@ -26,6 +26,8 @@ type AuthorizeFunc func(context.Context, oauthpkg.Request, io.Writer, func(strin
 
 var ErrCancelled = errors.New("setup cancelled")
 
+var youtubeServerScopes = []string{youtube.ForceSSLScope}
+
 type Wizard struct {
 	In          *bufio.Reader
 	rawIn       io.Reader
@@ -169,14 +171,14 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 }
 
 func (w *Wizard) youtubeServer(ctx context.Context, c *config.Config) error {
-	fmt.Fprintln(w.Out, `Server-side YouTube ingestion uses Google's official OAuth 2.0 desktop-app flow and the read-only YouTube scope.
+	fmt.Fprintln(w.Out, `Server-side YouTube integration uses Google's official OAuth 2.0 desktop-app flow and the youtube.force-ssl scope.
 
 1. Enable YouTube Data API v3 in a Google Cloud project.
 2. Configure the OAuth consent screen for that project.
 3. Create an OAuth Client ID whose application type is Desktop app.
 4. Streamchat opens a loopback callback on `+c.YouTube.RedirectURI+`.
 
-Offline access stores a refresh token so streamchat serve can discover the authenticated account's active broadcast and ingest chat while no interactive client is running. No chat-write or moderation scope is requested.`)
+Offline access stores a refresh token so streamchat serve can discover the authenticated account's active broadcast and ingest chat while no interactive client is running. This authorization also permits Streamchat's YouTube chat sending and moderation features as they are connected to the shared runtime.`)
 	var err error
 	c.YouTube.ClientID, err = w.value("Google OAuth Client ID", c.YouTube.ClientID, false)
 	if err != nil {
@@ -190,7 +192,7 @@ Offline access stores a refresh token so streamchat serve can discover the authe
 		AuthorizeURL: youtube.AuthorizeURL,
 		ClientID:     c.YouTube.ClientID,
 		RedirectURI:  c.YouTube.RedirectURI,
-		Scopes:       []string{youtube.ReadOnlyScope},
+		Scopes:       youtubeServerScopes,
 		UsePKCE:      true,
 		Parameters: map[string]string{
 			"access_type":            "offline",

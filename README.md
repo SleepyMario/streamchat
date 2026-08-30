@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat 2.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. Kick and Twitch support reading, sending, channel controls, and moderation. YouTube currently supports read-only chat ingestion. Streamchat uses only documented official platform APIs.
+Streamchat 2.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. Kick and Twitch support reading, sending, channel controls, and moderation. YouTube chat ingestion is implemented; authorization now also covers chat sending and moderation as those operations are connected to the shared runtime. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
@@ -218,7 +218,7 @@ Authorize YouTube once as the service account. Create a Google OAuth Client ID w
 streamchat setup youtube-server --config /etc/streamchat/config.json
 ```
 
-The browser flow uses the loopback callback `http://127.0.0.1:8791`, PKCE, and only `youtube.readonly`. It requests offline access and stores the refresh token in the mode-`0600` config, allowing the service to refresh access without the Gentoo client. On a headless VM, use SSH port forwarding (`ssh -L 8791:127.0.0.1:8791 utility-vm`) and open the printed Google URL on your workstation. By default the server calls authenticated `liveBroadcasts.list` to find the active broadcast and its `snippet.liveChatId`; setting `youtube.video_id` retains an explicit broadcast/video override.
+The browser flow uses the loopback callback `http://127.0.0.1:8791`, PKCE, and `youtube.force-ssl`, the narrower of Google's two documented scopes that permit live-chat sending and moderation. It requests offline access and stores the refresh token in the mode-`0600` config, allowing the service to refresh access without the Gentoo client. On a headless VM, use SSH port forwarding (`ssh -L 8791:127.0.0.1:8791 utility-vm`) and open the printed Google URL on your workstation. By default the server calls authenticated `liveBroadcasts.list` to find the active broadcast and its `snippet.liveChatId`; setting `youtube.video_id` retains an explicit broadcast/video override.
 
 Google’s official `liveChatMessages.streamList` HTTP transport supplies live messages and a continuation token. Streamchat reconnects with that token after recoverable failures and waits between broadcasts so the service can remain running continuously.
 
@@ -287,7 +287,7 @@ The wizard explains how to create/select a Google Cloud project, enable YouTube 
 
 For local public live chat, the API key remains sufficient. Streamchat uses official `videos.list` to discover `activeLiveChatId`, then polls official `liveChatMessages.list`, preserving `nextPageToken` and honoring `pollingIntervalMillis`.
 
-For the utility server, `streamchat setup youtube-server` performs Google's official desktop OAuth authorization-code flow with PKCE and offline access. It requests only `youtube.readonly`, stores and refreshes the access/refresh tokens, discovers the authenticated account's active broadcast through `liveBroadcasts.list`, and consumes the preferred lower-latency `liveChatMessages.streamList` endpoint. It does not request chat-write or moderation access.
+For the utility server, `streamchat setup youtube-server` performs Google's official desktop OAuth authorization-code flow with PKCE and offline access. It requests `youtube.force-ssl`, stores and refreshes the access/refresh tokens, discovers the authenticated account's active broadcast through `liveBroadcasts.list`, and consumes the preferred lower-latency `liveChatMessages.streamList` endpoint. The same authorization can be used for official live-chat sending and moderation operations when those controls are connected to the shared runtime.
 
 ### Kick
 

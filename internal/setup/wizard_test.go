@@ -116,6 +116,13 @@ func TestTwitchOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestYouTubeOAuthScopeSupportsChatAndModeration(t *testing.T) {
+	want := []string{"https://www.googleapis.com/auth/youtube.force-ssl"}
+	if !reflect.DeepEqual(youtubeServerScopes, want) {
+		t.Fatalf("scopes=%v want=%v", youtubeServerScopes, want)
+	}
+}
+
 func TestTwitchInstructionsExplainFeatureScopedReauthorization(t *testing.T) {
 	text := twitchInstructions(config.Defaults())
 	for _, want := range []string{
