@@ -10,9 +10,9 @@ set(CMAKE_AUTOMOC ON)
 # directly into their final location.
 set(CMAKE_SKIP_RPATH ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
 
-qt_standard_project_setup(REQUIRES 6.5)
+qt_standard_project_setup(REQUIRES 6.4)
 qt_policy(SET QTP0004 NEW)
 
 qt_add_executable(streamchat-gui WIN32
