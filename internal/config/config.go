@@ -111,8 +111,19 @@ type Bot struct {
 	MetricsURLEnv     string     `json:"mediamtx_metrics_url_env,omitempty"`
 	MediaPath         string     `json:"media_path,omitempty"`
 	FFprobe           string     `json:"ffprobe,omitempty"`
+	Discord           DiscordBot `json:"discord,omitempty"`
 	Kick              BotAccount `json:"kick,omitempty"`
 	Twitch            BotAccount `json:"twitch,omitempty"`
+}
+
+// DiscordBot configures one low-privilege Discord bot destination. The bot
+// token itself remains in the named service environment variable.
+type DiscordBot struct {
+	Enabled       bool   `json:"enabled,omitempty"`
+	ChannelID     string `json:"channel_id,omitempty"`
+	Message       string `json:"message,omitempty"`
+	TokenEnv      string `json:"token_env,omitempty"`
+	Confirmations int    `json:"confirmations,omitempty"`
 }
 
 // BotAccount holds a separate chat identity. Channel targets continue to come
@@ -137,7 +148,7 @@ func Defaults() Config {
 		Server:        Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		Storage:       Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
 		Emotes:        Emotes{Mode: "auto"},
-		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe"},
+		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", Confirmations: 2}},
 		ChatColorMode: chattercolor.ModeLine,
 		QueueSize:     256, DuplicateCapacity: 10000,
 	}
@@ -241,6 +252,15 @@ func applyDefaults(c *Config) {
 	}
 	if c.Bot.FFprobe == "" {
 		c.Bot.FFprobe = d.Bot.FFprobe
+	}
+	if c.Bot.Discord.Message == "" {
+		c.Bot.Discord.Message = d.Bot.Discord.Message
+	}
+	if c.Bot.Discord.TokenEnv == "" {
+		c.Bot.Discord.TokenEnv = d.Bot.Discord.TokenEnv
+	}
+	if c.Bot.Discord.Confirmations == 0 {
+		c.Bot.Discord.Confirmations = d.Bot.Discord.Confirmations
 	}
 	if c.ChatColorMode == "" {
 		c.ChatColorMode = d.ChatColorMode
@@ -362,6 +382,20 @@ func (c Config) Validate(mode string) error {
 	}
 	if strings.TrimSpace(c.Bot.CommandsReply) == "" {
 		return errors.New("bot.commands_reply must not be blank")
+	}
+	if c.Bot.Discord.Enabled {
+		if id, err := strconv.ParseUint(c.Bot.Discord.ChannelID, 10, 64); err != nil || id == 0 {
+			return errors.New("bot.discord.channel_id must be a positive Discord channel ID")
+		}
+		if strings.TrimSpace(c.Bot.Discord.Message) == "" {
+			return errors.New("bot.discord.message must not be blank")
+		}
+		if strings.TrimSpace(c.Bot.Discord.TokenEnv) == "" || strings.ContainsAny(c.Bot.Discord.TokenEnv, " \t\r\n=") {
+			return errors.New("bot.discord.token_env must name one environment variable")
+		}
+		if c.Bot.Discord.Confirmations < 1 || c.Bot.Discord.Confirmations > 5 {
+			return errors.New("bot.discord.confirmations must be between 1 and 5")
+		}
 	}
 	if c.Kick.Listen == "" {
 		return errors.New("kick.listen is required")

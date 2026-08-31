@@ -102,6 +102,25 @@ func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 	}
 }
 
+func TestDiscordBotDefaultsAndValidation(t *testing.T) {
+	c := Defaults()
+	if c.Bot.Discord.TokenEnv != "STREAMCHAT_DISCORD_BOT_TOKEN" || c.Bot.Discord.Message == "" || c.Bot.Discord.Confirmations != 2 {
+		t.Fatalf("unexpected Discord defaults: %+v", c.Bot.Discord)
+	}
+	c.Bot.Discord.Enabled = true
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "channel_id") {
+		t.Fatalf("missing channel ID accepted: %v", err)
+	}
+	c.Bot.Discord.ChannelID = "123456789012345678"
+	if err := c.Validate("check"); err != nil {
+		t.Fatal(err)
+	}
+	c.Bot.Discord.TokenEnv = "BAD ENV"
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "token_env") {
+		t.Fatalf("invalid token environment accepted: %v", err)
+	}
+}
+
 func TestCheckFileModeRejectsGroupReadableSecrets(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(p, []byte("{}"), 0644); err != nil {

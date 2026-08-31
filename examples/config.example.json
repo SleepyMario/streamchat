@@ -54,6 +54,13 @@
     "mediamtx_metrics_url_env": "STREAMCHAT_MEDIAMTX_METRICS_URL",
     "media_path": "pc/stream",
     "ffprobe": "/usr/bin/ffprobe",
+    "discord": {
+      "enabled": false,
+      "channel_id": "",
+      "message": "@everyone Sleepymario has started streaming on",
+      "token_env": "STREAMCHAT_DISCORD_BOT_TOKEN",
+      "confirmations": 2
+    },
     "kick": {
       "client_id": "",
       "client_secret": "",

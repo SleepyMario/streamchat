@@ -26,6 +26,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/clientruntime"
 	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
+	"github.com/SleepyMario/streamchat/internal/discordnotify"
 	"github.com/SleepyMario/streamchat/internal/emote"
 	"github.com/SleepyMario/streamchat/internal/launcher"
 	"github.com/SleepyMario/streamchat/internal/logging"
@@ -104,6 +105,7 @@ Useful commands:
   streamchat config show           Show configuration with secrets redacted
   streamchat config check          Check configuration and recovery steps
   streamchat archive stats         Show SQLite archive status
+  streamchat bot discord-test      Send the configured Discord test message
   streamchat demo                  Run an offline demonstration
 
 Advanced compatibility commands:
@@ -165,6 +167,12 @@ func runWithInput(args []string, in io.Reader, out, errw io.Writer) int {
 			e = errors.New("choose 'archive stats'")
 		} else {
 			e = archiveStats(ctx, args[2:], out)
+		}
+	case "bot":
+		if len(args) < 2 || args[1] != "discord-test" {
+			e = errors.New("choose 'bot discord-test'")
+		} else {
+			e = discordTest(ctx, args[2:], out)
 		}
 	case "kick":
 		if len(args) < 2 {
@@ -481,6 +489,20 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	server.Status = func() any { return statusService.Snapshot() }
 	server.Control = statusRuntime.RemoteControl
 	server.Observe = statusService.Observe
+	if c.Bot.Discord.Enabled {
+		token := os.Getenv(c.Bot.Discord.TokenEnv)
+		discordClient, discordErr := discordnotify.New(c.Bot.Discord.ChannelID, token)
+		if discordErr != nil {
+			return fmt.Errorf("initialize Discord live notification: %w", discordErr)
+		}
+		go (discordnotify.Watcher{
+			Sender: discordClient, State: func() streamprobe.State { return statusService.Snapshot().Media },
+			BuildMessage:  (discordnotify.Announcement{Source: statusRuntime}).Build,
+			Confirmations: c.Bot.Discord.Confirmations,
+			OnError:       func(err error) { fmt.Fprintf(out, "Discord live notification: %s\n", safeError(err)) },
+		}).Run(serverCtx)
+		fmt.Fprintln(out, "Discord live notification enabled.")
+	}
 	if os.Getenv("STREAMCHAT_LOCAL_SERVER") == "1" {
 		server.LocalShutdown = cancel
 	}
@@ -1754,6 +1776,28 @@ func demo(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
+func discordTest(ctx context.Context, args []string, out io.Writer) error {
+	_, c, err := flags("bot discord-test", args)
+	if err != nil {
+		return err
+	}
+	if !c.Bot.Discord.Enabled {
+		return errors.New("Discord notifications are disabled; configure bot.discord first")
+	}
+	if err = c.Validate("check"); err != nil {
+		return err
+	}
+	client, err := discordnotify.New(c.Bot.Discord.ChannelID, os.Getenv(c.Bot.Discord.TokenEnv))
+	if err != nil {
+		return err
+	}
+	if err = client.Send(ctx, "ComradeKip test: Discord notification delivery is working."); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Discord test notification sent.")
+	return nil
+}
+
 func showConfig(args []string, out io.Writer) error {
 	_, c, e := flags("config show", args)
 	if e != nil {
@@ -1797,6 +1841,16 @@ func check(args []string, out io.Writer) error {
 		youtubeServerStatus = "configured for active-broadcast discovery and streamList"
 	}
 	fmt.Fprintf(out, "%-16s %s\n", "YouTube server:", youtubeServerStatus)
+	discordStatus := "disabled"
+	if c.Bot.Discord.Enabled {
+		discordStatus = "configured for channel " + c.Bot.Discord.ChannelID
+		if os.Getenv(c.Bot.Discord.TokenEnv) == "" {
+			discordStatus += "; token missing from " + c.Bot.Discord.TokenEnv
+		} else {
+			discordStatus += "; token available"
+		}
+	}
+	fmt.Fprintf(out, "%-16s %s\n", "Discord bot:", discordStatus)
 	fmt.Fprintf(out, "%-16s %s\n", "SQLite archive:", c.Storage.SQLitePath)
 	relayStatus := "not configured"
 	if c.Client.ServerURL != "" && c.RelayAuthToken != "" {
