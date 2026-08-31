@@ -48,7 +48,7 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 3.0 combines Kick, Twitch, and YouTube chat.
+const usage = `Streamchat 3.1 combines Kick, Twitch, and YouTube chat.
 All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:

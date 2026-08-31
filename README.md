@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat 3.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, and opening the active stream. Streamchat uses only documented official platform APIs.
+Streamchat 3.1 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, and opening the active stream. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
@@ -408,18 +408,18 @@ Tests use fake adapters, `httptest` servers, invented fixtures, and fake WebSock
 Build the client and headless-server packages with the locally installed Go toolchain and `dpkg-deb`:
 
 ```sh
-VERSION=3.0 make deb
-sudo apt install ./dist/streamchat_3.0_amd64.deb
+VERSION=3.1 make deb
+sudo apt install ./dist/streamchat_3.1_amd64.deb
 ```
 
-Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream version into the binary, so this release reports `streamchat 3.0`.
+Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream version into the binary, so this release reports `streamchat 3.1`.
 
 `streamchat` owns the statically linked `/usr/bin/streamchat`, user-facing documentation, and no systemd service. `streamchat-server` depends on the exact same version of `streamchat`, avoiding a duplicate executable, and owns `streamchat-server.service` plus the server configuration example. Install a server with both local artifacts:
 
 ```sh
 sudo apt install \
-  ./dist/streamchat_3.0_amd64.deb \
-  ./dist/streamchat-server_3.0_amd64.deb
+  ./dist/streamchat_3.1_amd64.deb \
+  ./dist/streamchat-server_3.1_amd64.deb
 ```
 
 The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:

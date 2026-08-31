@@ -271,7 +271,7 @@ func (c *thirdPartyEmotes) getJSON(ctx context.Context, endpoint string, target 
 		return err
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "Streamchat/3.0")
+	request.Header.Set("User-Agent", "Streamchat/3.1")
 	response, err := c.http.Do(request)
 	if err != nil {
 		return err
