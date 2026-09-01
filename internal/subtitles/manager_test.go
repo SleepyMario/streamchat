@@ -1,7 +1,11 @@
 package subtitles
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +43,7 @@ func (f *captureProvider) Create(_ context.Context, request CreateRequest) (Pod,
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
-	return Config{Enabled: true, APIBaseURL: "https://example.invalid/v1", APIKey: "not-a-real-key", Image: "example/worker:test", GPUTypeIDs: []string{"cheap-gpu", "fallback-gpu"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyTimeout: time.Hour, MaxRuntime: 6 * time.Hour, HeartbeatTimeout: time.Hour, MaxCostPerHour: 0.35, StatePath: t.TempDir() + "/session.json"}
+	return Config{Enabled: true, APIBaseURL: "https://api.runpod.io/v2", APIKey: "not-a-real-key", Image: "example/worker:test", GPUTypeIDs: []string{"cheap-gpu", "fallback-gpu"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyTimeout: time.Hour, MaxRuntime: 6 * time.Hour, HeartbeatTimeout: time.Hour, MaxCostPerHour: 0.35, StatePath: t.TempDir() + "/session.json"}
 }
 
 func TestStartCreatesOneEphemeralWorkerAndStopDeletesIt(t *testing.T) {
@@ -63,7 +67,7 @@ func TestStartCreatesOneEphemeralWorkerAndStopDeletesIt(t *testing.T) {
 	}
 	request := provider.creates[0]
 	provider.mu.Unlock()
-	if request.CloudType != "SECURE" || request.Interruptible || request.VolumeInGB != 0 {
+	if request.Cloud != "SECURE" || request.Image != "example/worker:test" || request.DiskGB != 30 {
 		t.Fatalf("unsafe create request: %#v", request)
 	}
 	if request.Env["SUBTITLE_AUTH_TOKEN"] != lease.Token || request.Env["SUBTITLE_MODEL"] != "large-v3" {
@@ -80,6 +84,68 @@ func TestStartCreatesOneEphemeralWorkerAndStopDeletesIt(t *testing.T) {
 	defer provider.mu.Unlock()
 	if len(provider.creates) != 1 || len(provider.deletes) != 1 || provider.deletes[0] != "pod-test" {
 		t.Fatalf("creates=%d deletes=%v", len(provider.creates), provider.deletes)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}
+}
+
+func TestRESTProviderUsesRunPodV2ContractAndOrderedFallback(t *testing.T) {
+	var paths, gpuIDs []string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		if request.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("missing bearer authorization")
+		}
+		var body struct {
+			Name  string `json:"name"`
+			Image string `json:"image"`
+			Cloud string `json:"cloud"`
+			GPU   struct {
+				ID    string `json:"id"`
+				Count int    `json:"count"`
+			} `json:"gpu"`
+			Disk  int               `json:"disk"`
+			Ports []string          `json:"ports"`
+			Env   map[string]string `json:"env"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		gpuIDs = append(gpuIDs, body.GPU.ID)
+		if body.Name != "subtitles" || body.Image != "repo/worker:tag" || body.Cloud != "SECURE" || body.GPU.Count != 1 || body.Disk != 30 || len(body.Ports) != 1 || body.Ports[0] != "8000/http" || body.Env["TOKEN"] != "worker-secret" {
+			t.Fatalf("unexpected v2 body: %#v", body)
+		}
+		if len(gpuIDs) == 1 {
+			return jsonResponse(http.StatusUnprocessableEntity, `{"error":"no capacity"}`), nil
+		}
+		return jsonResponse(http.StatusCreated, `{"id":"pod-v2","status":"RUNNING","gpu":{"id":"fallback"},"cost":0.27}`), nil
+	})}
+	provider := RESTProvider{BaseURL: "https://api.runpod.io/v2", APIKey: "secret", Client: client}
+	pod, err := provider.Create(context.Background(), CreateRequest{Name: "subtitles", Image: "repo/worker:tag", Cloud: "SECURE", GPUTypeIDs: []string{"cheap", "fallback"}, DiskGB: 30, Ports: []string{"8000/http"}, Env: map[string]string{"TOKEN": "worker-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod.ID != "pod-v2" || podCost(pod) != 0.27 || len(paths) != 2 || paths[0] != "/v2/pods" || paths[1] != "/v2/pods" || gpuIDs[0] != "cheap" || gpuIDs[1] != "fallback" {
+		t.Fatalf("pod=%#v paths=%v gpuIDs=%v", pod, paths, gpuIDs)
+	}
+}
+
+func TestRESTProviderDoesNotRetryAmbiguousFailure(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, context.DeadlineExceeded
+	})}
+	provider := RESTProvider{BaseURL: "https://api.runpod.io/v2", APIKey: "secret", Client: client}
+	_, err := provider.Create(context.Background(), CreateRequest{Name: "subtitles", Image: "repo/worker:tag", GPUTypeIDs: []string{"cheap", "fallback"}})
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }
 

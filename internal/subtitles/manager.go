@@ -56,26 +56,20 @@ type Lease struct {
 }
 
 type CreateRequest struct {
-	Name              string            `json:"name"`
-	ImageName         string            `json:"imageName"`
-	CloudType         string            `json:"cloudType"`
-	ComputeType       string            `json:"computeType"`
-	GPUCount          int               `json:"gpuCount"`
-	GPUTypeIDs        []string          `json:"gpuTypeIds"`
-	GPUTypePriority   string            `json:"gpuTypePriority"`
-	ContainerDiskInGB int               `json:"containerDiskInGb"`
-	VolumeInGB        int               `json:"volumeInGb"`
-	Ports             []string          `json:"ports"`
-	Env               map[string]string `json:"env"`
-	Interruptible     bool              `json:"interruptible"`
+	Name       string
+	Image      string
+	Cloud      string
+	GPUTypeIDs []string
+	DiskGB     int
+	Ports      []string
+	Env        map[string]string
 }
 
 type Pod struct {
-	ID            string         `json:"id"`
-	DesiredStatus string         `json:"desiredStatus"`
-	GPU           podGPU         `json:"gpu"`
-	Cost          flexibleNumber `json:"costPerHr"`
-	AdjustedCost  flexibleNumber `json:"adjustedCostPerHr"`
+	ID     string         `json:"id"`
+	Status string         `json:"status"`
+	GPU    podGPU         `json:"gpu"`
+	Cost   flexibleNumber `json:"cost"`
 }
 
 type podGPU struct {
@@ -116,6 +110,17 @@ type RESTProvider struct {
 	Client  *http.Client
 }
 
+type apiError struct {
+	StatusCode int
+	Method     string
+	Path       string
+	Message    string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("RunPod API %s %s returned %d: %s", e.Method, e.Path, e.StatusCode, e.Message)
+}
+
 func (p RESTProvider) request(ctx context.Context, method, path string, body any, result any) error {
 	var reader io.Reader
 	if body != nil {
@@ -144,7 +149,7 @@ func (p RESTProvider) request(ctx context.Context, method, path string, body any
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		return fmt.Errorf("RunPod API %s %s: %s", method, path, strings.TrimSpace(string(message)))
+		return &apiError{StatusCode: response.StatusCode, Method: method, Path: path, Message: strings.TrimSpace(string(message))}
 	}
 	if result != nil && response.StatusCode != http.StatusNoContent {
 		if err := json.NewDecoder(response.Body).Decode(result); err != nil {
@@ -155,9 +160,46 @@ func (p RESTProvider) request(ctx context.Context, method, path string, body any
 }
 
 func (p RESTProvider) Create(ctx context.Context, request CreateRequest) (Pod, error) {
-	var pod Pod
-	err := p.request(ctx, http.MethodPost, "/pods", request, &pod)
-	return pod, err
+	if len(request.GPUTypeIDs) == 0 {
+		return Pod{}, errors.New("no RunPod GPU type is configured")
+	}
+	type createBody struct {
+		Name  string `json:"name"`
+		Image string `json:"image"`
+		Cloud string `json:"cloud"`
+		GPU   struct {
+			ID    string `json:"id"`
+			Count int    `json:"count"`
+		} `json:"gpu"`
+		Disk  int               `json:"disk"`
+		Ports []string          `json:"ports"`
+		Env   map[string]string `json:"env"`
+	}
+	var last error
+	for _, gpuID := range request.GPUTypeIDs {
+		body := createBody{Name: request.Name, Image: request.Image, Cloud: request.Cloud, Disk: request.DiskGB, Ports: request.Ports, Env: request.Env}
+		body.GPU.ID, body.GPU.Count = gpuID, 1
+		var pod Pod
+		if err := p.request(ctx, http.MethodPost, "/pods", body, &pod); err != nil {
+			last = err
+			var responseErr *apiError
+			if !errors.As(err, &responseErr) || !retryableGPURejection(responseErr.StatusCode) {
+				return Pod{}, err
+			}
+			continue
+		}
+		return pod, nil
+	}
+	return Pod{}, fmt.Errorf("no configured RunPod GPU was accepted: %w", last)
+}
+
+func retryableGPURejection(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
 }
 func (p RESTProvider) Get(ctx context.Context, id string) (Pod, error) {
 	var pod Pod
@@ -238,11 +280,10 @@ func (m *Manager) Start(ctx context.Context) (Lease, error) {
 	defer func() { m.mu.Lock(); m.creating = false; m.mu.Unlock() }()
 
 	pod, err := m.provider.Create(ctx, CreateRequest{
-		Name: "streamchat-subtitles", ImageName: m.cfg.Image, CloudType: m.cfg.CloudType,
-		ComputeType: "GPU", GPUCount: 1, GPUTypeIDs: append([]string(nil), m.cfg.GPUTypeIDs...),
-		GPUTypePriority: "custom", ContainerDiskInGB: m.cfg.ContainerDiskGB, VolumeInGB: 0,
-		Ports: []string{fmt.Sprintf("%d/http", m.cfg.WorkerPort)}, Interruptible: false,
-		Env: map[string]string{"SUBTITLE_AUTH_TOKEN": token, "SUBTITLE_MODEL": m.cfg.Model, "SUBTITLE_ACCEPTED_LANGUAGES": m.cfg.AcceptedLanguages},
+		Name: "streamchat-subtitles", Image: m.cfg.Image, Cloud: m.cfg.CloudType,
+		GPUTypeIDs: append([]string(nil), m.cfg.GPUTypeIDs...), DiskGB: m.cfg.ContainerDiskGB,
+		Ports: []string{fmt.Sprintf("%d/http", m.cfg.WorkerPort)},
+		Env:   map[string]string{"SUBTITLE_AUTH_TOKEN": token, "SUBTITLE_MODEL": m.cfg.Model, "SUBTITLE_ACCEPTED_LANGUAGES": m.cfg.AcceptedLanguages},
 	})
 	if err != nil {
 		return Lease{}, fmt.Errorf("create subtitle worker: %w", err)
@@ -438,9 +479,6 @@ func gpuName(p Pod) string {
 	return p.GPU.ID
 }
 func podCost(p Pod) float64 {
-	if p.AdjustedCost > 0 {
-		return float64(p.AdjustedCost)
-	}
 	return float64(p.Cost)
 }
 
