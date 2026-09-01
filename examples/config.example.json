@@ -61,6 +61,27 @@
       "token_env": "STREAMCHAT_DISCORD_BOT_TOKEN",
       "confirmations": 2
     },
+    "subtitles": {
+      "enabled": false,
+      "api_base_url": "https://rest.runpod.io/v1",
+      "api_key_env": "RUNPOD_API_KEY",
+      "image": "sleepiestmario/gpu-subtitle-worker:0.1.0-test2",
+      "gpu_type_ids": [
+        "NVIDIA RTX A4000",
+        "NVIDIA RTX A4500",
+        "NVIDIA RTX 4000 Ada Generation"
+      ],
+      "cloud_type": "SECURE",
+      "model": "large-v3",
+      "accepted_languages": "en,nl,de,zh,ko,vi,ja",
+      "worker_port": 8000,
+      "container_disk_gb": 30,
+      "ready_minutes": 15,
+      "max_minutes": 360,
+      "heartbeat_seconds": 120,
+      "max_cost_per_hour": 0.35,
+      "state_path": "/var/lib/streamchat/subtitle-session.json"
+    },
     "kick": {
       "client_id": "",
       "client_secret": "",

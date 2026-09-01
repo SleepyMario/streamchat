@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SleepyMario/streamchat/internal/bot"
+	"github.com/SleepyMario/streamchat/internal/subtitles"
 )
 
 //go:embed web/*
@@ -26,6 +27,7 @@ type Config struct {
 	Stream           func() any
 	Channel          func() any
 	Chat             func() any
+	Subtitles        *subtitles.Manager
 }
 
 type Server struct {
@@ -63,8 +65,94 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/state", s.state)
 	mux.HandleFunc("/api/settings", s.settings)
 	mux.HandleFunc("/api/test", s.test)
+	mux.HandleFunc("/api/subtitles", s.subtitleStatus)
+	mux.HandleFunc("/api/subtitles/start", s.subtitleStart)
+	mux.HandleFunc("/api/subtitles/stop", s.subtitleStop)
+	mux.HandleFunc("/api/subtitles/lease", s.subtitleLease)
+	mux.HandleFunc("/api/subtitles/heartbeat", s.subtitleHeartbeat)
 	mux.Handle("/", http.FileServer(http.FS(s.web)))
 	return headers(s.authenticate(mux))
+}
+
+func (s *Server) subtitleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.cfg.Subtitles == nil {
+		jsonResponse(w, 200, subtitles.Status{State: "disabled", Message: "GPU subtitles are not configured"})
+		return
+	}
+	jsonResponse(w, 200, s.cfg.Subtitles.Status())
+}
+
+func (s *Server) subtitleStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.cfg.Subtitles == nil {
+		jsonResponse(w, 409, map[string]string{"error": "GPU subtitles are not configured"})
+		return
+	}
+	lease, err := s.cfg.Subtitles.Start(r.Context())
+	if err != nil {
+		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	// The authenticated Slacktop controller needs this one-session token. The
+	// phone browser only talks to that controller and never receives this reply.
+	jsonResponse(w, 202, lease)
+}
+
+func (s *Server) subtitleStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.cfg.Subtitles == nil {
+		jsonResponse(w, 200, subtitles.Status{State: "disabled"})
+		return
+	}
+	if err := s.cfg.Subtitles.Stop(r.Context()); err != nil {
+		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, 200, s.cfg.Subtitles.Status())
+}
+
+func (s *Server) subtitleLease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.cfg.Subtitles == nil {
+		jsonResponse(w, 409, map[string]string{"error": "GPU subtitles are not configured"})
+		return
+	}
+	lease, err := s.cfg.Subtitles.Lease()
+	if err != nil {
+		jsonResponse(w, 404, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, 200, lease)
+}
+
+func (s *Server) subtitleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.cfg.Subtitles == nil {
+		jsonResponse(w, 409, map[string]string{"error": "GPU subtitles are not configured"})
+		return
+	}
+	status, err := s.cfg.Subtitles.Heartbeat()
+	if err != nil {
+		jsonResponse(w, 404, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, 200, status)
 }
 
 func (s *Server) Run() error {
@@ -137,7 +225,11 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	if state.ShowChat && s.cfg.Chat != nil {
 		recentChat = s.cfg.Chat()
 	}
-	jsonResponse(w, 200, map[string]any{"bot": state, "accounts": accounts, "activity": s.cfg.Engine.Activity(), "stream": stream, "channel": channel, "recent_chat": recentChat})
+	subtitleState := subtitles.Status{State: "disabled", Message: "GPU subtitles are not configured"}
+	if s.cfg.Subtitles != nil {
+		subtitleState = s.cfg.Subtitles.Status()
+	}
+	jsonResponse(w, 200, map[string]any{"bot": state, "accounts": accounts, "activity": s.cfg.Engine.Activity(), "stream": stream, "channel": channel, "recent_chat": recentChat, "subtitles": subtitleState})
 }
 
 func (s *Server) test(w http.ResponseWriter, r *http.Request) {

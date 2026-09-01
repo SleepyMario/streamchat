@@ -50,4 +50,10 @@ func TestUIAndSettings(t *testing.T) {
 	if w.Code != http.StatusOK || len(engine.Activity()) != 1 {
 		t.Fatalf("test=%d activity=%v", w.Code, engine.Activity())
 	}
+	r = httptest.NewRequest(http.MethodGet, "/api/subtitles", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"state":"disabled"`) {
+		t.Fatalf("subtitle status=%d %s", w.Code, w.Body.String())
+	}
 }

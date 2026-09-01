@@ -8,7 +8,15 @@ The Discord notification watches the authoritative VPS media probe. Two consecut
 
 The Discord application is technically named `streamchat-bot`; its public bot identity is `ComradeKip`. It needs only the `bot` installation scope and the View Channels, Send Messages and Mention Everyone permissions in the designated channel. No privileged gateway intent is required for this one-way notification. Discord's `allowed_mentions` payload permits only `everyone`, so stream titles and future configurable text cannot accidentally ping users or other roles. The channel ID lives under `bot.discord` in JSON. The legacy `message` setting remains accepted for configuration compatibility but live announcements are generated from current platform state. The bot token is read only from the environment variable named by `bot.discord.token_env` (default `STREAMCHAT_DISCORD_BOT_TOKEN`) and must not be stored in JSON, logs, Git, or command history.
 
-Follow/subscription alerts, arbitrary rules, timed messages, message sequences, overlays, conversational AI, recording control, subtitles, clips, YouTube bot actions and PeerTube integration are **planned architecture**, not working features. Their dashboard controls remain disabled or absent until the corresponding adapter and runtime have real tests.
+Follow/subscription alerts, arbitrary rules, timed messages, message sequences, overlays, conversational AI, recording control, clips, YouTube bot actions and PeerTube integration are **planned architecture**, not working features. Their dashboard controls remain disabled or absent until the corresponding adapter and runtime have real tests.
+
+## GPU subtitle sessions
+
+Streamchat-bot owns the control plane for temporary RunPod subtitle workers. When explicitly enabled, its authenticated API can create one Secure Cloud worker from an ordered inexpensive-GPU preference list, issue a fresh random worker token, report readiness and price, accept controller heartbeats, and permanently delete the worker. It rejects a second concurrent creation, refuses a worker above the configured hourly price ceiling, stores recovery state privately, deletes recovered orphan state after a service restart, and enforces both a heartbeat timeout and a six-hour default maximum lifetime. The permanent RunPod key is read from `RUNPOD_API_KEY` (or the configured environment-variable name), never from JSON.
+
+The Slacktop phone controller is the data-plane coordinator. It starts the bot-owned worker, launches the local microphone sender, sends heartbeats, and stops both parts. Microphone audio travels directly from Slacktop to the authenticated RunPod WebSocket; it never passes through the VPS or phone browser. The worker returns original-language text and an English translation. Slacktop writes those to separate local OBS text files. The accepted original languages are English, Dutch, German, Simplified Mandarin Chinese, Korean, Vietnamese and Japanese.
+
+This is deliberately session-based. It has no persistent RunPod volume, does not place secrets in the public image, and does not start a paid worker merely because Streamchat starts. Production deployment and a real live-stream acceptance test remain separate gates.
 
 ## Data flow
 

@@ -40,6 +40,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/serverstatus"
 	"github.com/SleepyMario/streamchat/internal/setup"
 	"github.com/SleepyMario/streamchat/internal/streamprobe"
+	"github.com/SleepyMario/streamchat/internal/subtitles"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
 
@@ -529,9 +530,28 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 				fmt.Fprintln(out, "Streamchat bot enabled for Kick and Twitch (!commands).")
 			}
 			if c.Bot.GUIListen != "" {
+				var subtitleManager *subtitles.Manager
+				if c.Bot.Subtitles.Enabled {
+					s := c.Bot.Subtitles
+					var subtitleErr error
+					subtitleManager, subtitleErr = subtitles.New(serverCtx, subtitles.Config{
+						Enabled: true, APIBaseURL: s.APIBaseURL, APIKey: os.Getenv(s.APIKeyEnv),
+						Image: s.Image, GPUTypeIDs: s.GPUTypeIDs, CloudType: s.CloudType,
+						Model: s.Model, AcceptedLanguages: s.AcceptedLanguages, WorkerPort: s.WorkerPort,
+						ContainerDiskGB: s.ContainerDiskGB, ReadyTimeout: time.Duration(s.ReadyMinutes) * time.Minute,
+						MaxRuntime:       time.Duration(s.MaxMinutes) * time.Minute,
+						HeartbeatTimeout: time.Duration(s.HeartbeatSeconds) * time.Second,
+						MaxCostPerHour:   s.MaxCostPerHour, StatePath: s.StatePath,
+					}, nil)
+					if subtitleErr != nil {
+						return fmt.Errorf("initialize GPU subtitle controller: %w", subtitleErr)
+					}
+					fmt.Fprintln(out, "GPU subtitle controller enabled.")
+				}
 				admin, guiErr := botgui.New(botgui.Config{
 					Listen: c.Bot.GUIListen, Password: c.Bot.GUIPassword, Engine: engine,
-					Stream: func() any { return statusService.Snapshot().Media },
+					Subtitles: subtitleManager,
+					Stream:    func() any { return statusService.Snapshot().Media },
 					Channel: func() any {
 						return statusService.Snapshot().Channel
 					},

@@ -100,20 +100,41 @@ type Emotes struct {
 }
 
 type Bot struct {
-	Enabled           bool       `json:"enabled,omitempty"`
-	ShowChat          bool       `json:"show_chat,omitempty"`
-	CommandsReply     string     `json:"commands_reply,omitempty"`
-	CooldownSeconds   int        `json:"cooldown_seconds,omitempty"`
-	DisabledPlatforms []string   `json:"disabled_platforms,omitempty"`
-	GUIListen         string     `json:"gui_listen,omitempty"`
-	GUIPassword       string     `json:"gui_password,omitempty"`
-	StreamProbeURLEnv string     `json:"stream_probe_url_env,omitempty"`
-	MetricsURLEnv     string     `json:"mediamtx_metrics_url_env,omitempty"`
-	MediaPath         string     `json:"media_path,omitempty"`
-	FFprobe           string     `json:"ffprobe,omitempty"`
-	Discord           DiscordBot `json:"discord,omitempty"`
-	Kick              BotAccount `json:"kick,omitempty"`
-	Twitch            BotAccount `json:"twitch,omitempty"`
+	Enabled           bool        `json:"enabled,omitempty"`
+	ShowChat          bool        `json:"show_chat,omitempty"`
+	CommandsReply     string      `json:"commands_reply,omitempty"`
+	CooldownSeconds   int         `json:"cooldown_seconds,omitempty"`
+	DisabledPlatforms []string    `json:"disabled_platforms,omitempty"`
+	GUIListen         string      `json:"gui_listen,omitempty"`
+	GUIPassword       string      `json:"gui_password,omitempty"`
+	StreamProbeURLEnv string      `json:"stream_probe_url_env,omitempty"`
+	MetricsURLEnv     string      `json:"mediamtx_metrics_url_env,omitempty"`
+	MediaPath         string      `json:"media_path,omitempty"`
+	FFprobe           string      `json:"ffprobe,omitempty"`
+	Discord           DiscordBot  `json:"discord,omitempty"`
+	Kick              BotAccount  `json:"kick,omitempty"`
+	Twitch            BotAccount  `json:"twitch,omitempty"`
+	Subtitles         SubtitleBot `json:"subtitles,omitempty"`
+}
+
+// SubtitleBot configures the bot-owned lifecycle for a temporary RunPod GPU
+// subtitle worker. Provider and worker credentials remain environment-only.
+type SubtitleBot struct {
+	Enabled           bool     `json:"enabled,omitempty"`
+	APIBaseURL        string   `json:"api_base_url,omitempty"`
+	APIKeyEnv         string   `json:"api_key_env,omitempty"`
+	Image             string   `json:"image,omitempty"`
+	GPUTypeIDs        []string `json:"gpu_type_ids,omitempty"`
+	CloudType         string   `json:"cloud_type,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	AcceptedLanguages string   `json:"accepted_languages,omitempty"`
+	WorkerPort        int      `json:"worker_port,omitempty"`
+	ContainerDiskGB   int      `json:"container_disk_gb,omitempty"`
+	ReadyMinutes      int      `json:"ready_minutes,omitempty"`
+	MaxMinutes        int      `json:"max_minutes,omitempty"`
+	HeartbeatSeconds  int      `json:"heartbeat_seconds,omitempty"`
+	MaxCostPerHour    float64  `json:"max_cost_per_hour,omitempty"`
+	StatePath         string   `json:"state_path,omitempty"`
 }
 
 // DiscordBot configures one low-privilege Discord bot destination. The bot
@@ -148,7 +169,7 @@ func Defaults() Config {
 		Server:        Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		Storage:       Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
 		Emotes:        Emotes{Mode: "auto"},
-		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", Confirmations: 2}},
+		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", Confirmations: 2}, Subtitles: SubtitleBot{APIBaseURL: "https://rest.runpod.io/v1", APIKeyEnv: "RUNPOD_API_KEY", Image: "sleepiestmario/gpu-subtitle-worker:0.1.0-test2", GPUTypeIDs: []string{"NVIDIA RTX A4000", "NVIDIA RTX A4500", "NVIDIA RTX 4000 Ada Generation"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyMinutes: 15, MaxMinutes: 360, HeartbeatSeconds: 120, MaxCostPerHour: 0.35, StatePath: "/var/lib/streamchat/subtitle-session.json"}},
 		ChatColorMode: chattercolor.ModeLine,
 		QueueSize:     256, DuplicateCapacity: 10000,
 	}
@@ -261,6 +282,48 @@ func applyDefaults(c *Config) {
 	}
 	if c.Bot.Discord.Confirmations == 0 {
 		c.Bot.Discord.Confirmations = d.Bot.Discord.Confirmations
+	}
+	if c.Bot.Subtitles.APIBaseURL == "" {
+		c.Bot.Subtitles.APIBaseURL = d.Bot.Subtitles.APIBaseURL
+	}
+	if c.Bot.Subtitles.APIKeyEnv == "" {
+		c.Bot.Subtitles.APIKeyEnv = d.Bot.Subtitles.APIKeyEnv
+	}
+	if c.Bot.Subtitles.Image == "" {
+		c.Bot.Subtitles.Image = d.Bot.Subtitles.Image
+	}
+	if len(c.Bot.Subtitles.GPUTypeIDs) == 0 {
+		c.Bot.Subtitles.GPUTypeIDs = append([]string(nil), d.Bot.Subtitles.GPUTypeIDs...)
+	}
+	if c.Bot.Subtitles.CloudType == "" {
+		c.Bot.Subtitles.CloudType = d.Bot.Subtitles.CloudType
+	}
+	if c.Bot.Subtitles.Model == "" {
+		c.Bot.Subtitles.Model = d.Bot.Subtitles.Model
+	}
+	if c.Bot.Subtitles.AcceptedLanguages == "" {
+		c.Bot.Subtitles.AcceptedLanguages = d.Bot.Subtitles.AcceptedLanguages
+	}
+	if c.Bot.Subtitles.WorkerPort == 0 {
+		c.Bot.Subtitles.WorkerPort = d.Bot.Subtitles.WorkerPort
+	}
+	if c.Bot.Subtitles.ContainerDiskGB == 0 {
+		c.Bot.Subtitles.ContainerDiskGB = d.Bot.Subtitles.ContainerDiskGB
+	}
+	if c.Bot.Subtitles.ReadyMinutes == 0 {
+		c.Bot.Subtitles.ReadyMinutes = d.Bot.Subtitles.ReadyMinutes
+	}
+	if c.Bot.Subtitles.MaxMinutes == 0 {
+		c.Bot.Subtitles.MaxMinutes = d.Bot.Subtitles.MaxMinutes
+	}
+	if c.Bot.Subtitles.HeartbeatSeconds == 0 {
+		c.Bot.Subtitles.HeartbeatSeconds = d.Bot.Subtitles.HeartbeatSeconds
+	}
+	if c.Bot.Subtitles.MaxCostPerHour == 0 {
+		c.Bot.Subtitles.MaxCostPerHour = d.Bot.Subtitles.MaxCostPerHour
+	}
+	if c.Bot.Subtitles.StatePath == "" {
+		c.Bot.Subtitles.StatePath = d.Bot.Subtitles.StatePath
 	}
 	if c.ChatColorMode == "" {
 		c.ChatColorMode = d.ChatColorMode
@@ -395,6 +458,36 @@ func (c Config) Validate(mode string) error {
 		}
 		if c.Bot.Discord.Confirmations < 1 || c.Bot.Discord.Confirmations > 5 {
 			return errors.New("bot.discord.confirmations must be between 1 and 5")
+		}
+	}
+	if c.Bot.Subtitles.Enabled {
+		s := c.Bot.Subtitles
+		if strings.TrimSpace(c.Bot.GUIListen) == "" {
+			return errors.New("bot.gui_listen is required when GPU subtitles are enabled")
+		}
+		if strings.TrimSpace(s.APIKeyEnv) == "" || strings.ContainsAny(s.APIKeyEnv, " \t\r\n=") {
+			return errors.New("bot.subtitles.api_key_env must name one environment variable")
+		}
+		if u, err := url.Parse(s.APIBaseURL); err != nil || u.Scheme != "https" || u.Host == "" {
+			return errors.New("bot.subtitles.api_base_url must be an absolute HTTPS URL")
+		}
+		if strings.TrimSpace(s.Image) == "" || len(s.GPUTypeIDs) == 0 {
+			return errors.New("bot.subtitles.image and gpu_type_ids are required")
+		}
+		if s.CloudType != "SECURE" && s.CloudType != "COMMUNITY" {
+			return errors.New("bot.subtitles.cloud_type must be SECURE or COMMUNITY")
+		}
+		if s.WorkerPort < 1 || s.WorkerPort > 65535 {
+			return errors.New("bot.subtitles.worker_port must be a valid port")
+		}
+		if s.ReadyMinutes < 1 || s.ReadyMinutes > 60 || s.MaxMinutes < 1 || s.MaxMinutes > 1440 {
+			return errors.New("bot.subtitles ready/max minutes are outside the safe range")
+		}
+		if s.HeartbeatSeconds < 30 || s.HeartbeatSeconds > 900 {
+			return errors.New("bot.subtitles.heartbeat_seconds must be 30-900")
+		}
+		if s.MaxCostPerHour <= 0 || s.MaxCostPerHour > 5 {
+			return errors.New("bot.subtitles.max_cost_per_hour must be greater than zero and at most 5")
 		}
 	}
 	if c.Kick.Listen == "" {

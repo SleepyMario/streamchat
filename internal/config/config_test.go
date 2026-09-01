@@ -121,6 +121,25 @@ func TestDiscordBotDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestSubtitleBotDefaultsAndValidation(t *testing.T) {
+	c := Defaults()
+	if c.Bot.Subtitles.CloudType != "SECURE" || c.Bot.Subtitles.MaxMinutes != 360 || c.Bot.Subtitles.MaxCostPerHour != 0.35 {
+		t.Fatalf("unexpected subtitle defaults: %+v", c.Bot.Subtitles)
+	}
+	c.Bot.Subtitles.Enabled = true
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "gui_listen") {
+		t.Fatalf("subtitle controller without authenticated API accepted: %v", err)
+	}
+	c.Bot.GUIListen = "127.0.0.1:8793"
+	if err := c.Validate("check"); err != nil {
+		t.Fatal(err)
+	}
+	c.Bot.Subtitles.MaxCostPerHour = 0
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "max_cost_per_hour") {
+		t.Fatalf("zero price ceiling accepted: %v", err)
+	}
+}
+
 func TestCheckFileModeRejectsGroupReadableSecrets(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(p, []byte("{}"), 0644); err != nil {
