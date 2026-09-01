@@ -405,20 +405,34 @@ Tests use fake adapters, `httptest` servers, invented fixtures, and fake WebSock
 
 ## Debian and Ubuntu packages
 
-Build the client and headless-server packages with the locally installed Go toolchain and `dpkg-deb`:
+Streamchat uses the following distribution model:
+
+- Gentoo provides one `streamchat` package with the existing `cli`, `server`, `gui`, and `bot` USE flags.
+- Ubuntu and Debian provide separate `streamchat-cli`, `streamchat-server`, and `streamchat-gui` packages.
+- Windows provides the GUI with its optional built-in local server. The CLI is not packaged for Windows.
+- Manual builds may select whichever components are needed.
+
+The general Linux and container component model consists of `cli`, `server`, `gui`, and `bot`. A later packaging pass may map all four components more rigorously across Debian/Ubuntu, Arch Linux, and Docker; the exact split is deliberately left open for now.
+
+Ubuntu 24.04 is the canonical Debian-package build and validation target. A move to Ubuntu 26.04 is planned around March 2027, with packages, services, VMs, and deployment paths retested as part of that migration.
+
+Build all three Ubuntu/Debian packages with the locally installed Go toolchain, Qt 6 development files, and `dpkg-deb`:
 
 ```sh
 VERSION=3.1 make deb
-sudo apt install ./dist/streamchat_3.1_amd64.deb
+sudo apt install \
+  ./dist/streamchat-cli_3.1_amd64.deb \
+  ./dist/streamchat-server_3.1_amd64.deb \
+  ./dist/streamchat-gui_3.1_amd64.deb
 ```
 
-Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Both package builds inject the upstream version into the binary, so this release reports `streamchat 3.1`.
+Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. The package builds inject the upstream version into the binaries, so this release reports `streamchat 3.1`.
 
-`streamchat` owns the statically linked `/usr/bin/streamchat`, user-facing documentation, and no systemd service. `streamchat-server` depends on the exact same version of `streamchat`, avoiding a duplicate executable, and owns `streamchat-server.service` plus the server configuration example. Install a server with both local artifacts:
+`streamchat-cli` owns the statically linked shared runtime and `/usr/bin/streamchat`. It explicitly replaces the legacy combined `streamchat` package during upgrades. `streamchat-server` depends on the exact same CLI version and owns `streamchat-server.service`. `streamchat-gui` depends on the exact same CLI version and provides the native Qt application. Install a headless server with these two local artifacts:
 
 ```sh
 sudo apt install \
-  ./dist/streamchat_3.1_amd64.deb \
+  ./dist/streamchat-cli_3.1_amd64.deb \
   ./dist/streamchat-server_3.1_amd64.deb
 ```
 

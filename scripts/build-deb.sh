@@ -129,6 +129,9 @@ Architecture: ${architecture}
 Maintainer: ${maintainer}
 Installed-Size: ${cli_size}
 Depends: ca-certificates
+Provides: streamchat (= ${debian_version})
+Conflicts: streamchat
+Replaces: streamchat
 Homepage: https://github.com/SleepyMario/streamchat
 Description: Streamchat terminal client and shared runtime
  Unified Kick, Twitch, and YouTube live chat through documented platform APIs.

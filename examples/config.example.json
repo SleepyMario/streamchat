@@ -65,7 +65,7 @@
       "enabled": false,
       "api_base_url": "https://api.runpod.io/v2",
       "api_key_env": "RUNPOD_API_KEY",
-      "image": "sleepiestmario/gpu-subtitle-worker:0.1.0-test2",
+      "image": "sleepiestmario/gpu-subtitle-worker:3.1",
       "gpu_type_ids": [
         "NVIDIA RTX A4000",
         "NVIDIA RTX A4500",
