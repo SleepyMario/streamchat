@@ -497,7 +497,7 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 			return fmt.Errorf("initialize Discord live notification: %w", discordErr)
 		}
 		go (discordnotify.Watcher{
-			Sender: discordClient, State: func() streamprobe.State { return statusService.Snapshot().Media },
+			Sender: discordClient, State: func() streamprobe.State { return discordTriggerState(statusService.Snapshot()) },
 			BuildMessage:  (discordnotify.Announcement{Source: statusRuntime}).Build,
 			Confirmations: c.Bot.Discord.Confirmations,
 			OnError:       func(err error) { fmt.Fprintf(out, "Discord live notification: %s\n", safeError(err)) },
@@ -651,6 +651,24 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "Twitch server ingestion enabled (EventSub channel.chat.message v1).")
 	}
 	return waitForServer(ctx, cancel, serverErr, youtubeErr, twitchErr, out)
+}
+
+// discordTriggerState combines the fast local media probe with the platform
+// status providers. The relay can receive more than one input path (for
+// example pc/stream and the IRL live/stream), so one fixed RTSP probe must not
+// be the only way to detect that a public broadcast started.
+func discordTriggerState(snapshot serverstatus.Snapshot) streamprobe.State {
+	state := snapshot.Media
+	for _, channel := range snapshot.Channels {
+		if channel.Available && channel.Live {
+			state.Online = true
+			break
+		}
+	}
+	// The watcher samples this composite state itself. A fresh timestamp lets it
+	// debounce both probe changes and platform-only changes uniformly.
+	state.CheckedAt = time.Now()
+	return state
 }
 
 func waitForServer(ctx context.Context, cancel context.CancelFunc, serverErr, youtubeErr, twitchErr <-chan error, out io.Writer) error {
