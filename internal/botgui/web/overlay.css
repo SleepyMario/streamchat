@@ -18,7 +18,7 @@ body {
 body {
   display: flex;
   align-items: flex-end;
-  padding: 10px 2px 2px;
+  padding: 10px 12px;
 }
 
 #chat {
@@ -54,7 +54,7 @@ body {
   margin-right: .3em;
   color: #d7e0ea;
   font-size: .68em;
-  font-weight: 700;
+  font-weight: 900;
   letter-spacing: .04em;
   vertical-align: .12em;
 }
@@ -62,10 +62,10 @@ body {
 .author {
   margin-right: .35em;
   color: #8ee7ff;
-  font-weight: 600;
+  font-weight: 800;
 }
 
-.text { font-weight: 400; }
+.text { font-weight: 600; }
 
 .message.paid,
 .message.membership {

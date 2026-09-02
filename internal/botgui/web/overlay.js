@@ -2,12 +2,6 @@ const chat = document.querySelector("#chat");
 const query = new URLSearchParams(location.search);
 const limit = Math.min(20, Math.max(1, Number(query.get("limit")) || 10));
 const ttlSeconds = Math.min(900, Math.max(15, Number(query.get("ttl")) || 120));
-const mutedAuthors = new Set(
-  (query.get("mute") || "")
-    .split(",")
-    .map(value => value.trim().toLocaleLowerCase())
-    .filter(Boolean),
-);
 let rendered = new Set();
 
 const platformLabel = platform => ({ kick: "K", twitch: "T", youtube: "YT" }[platform] || "?");
@@ -44,11 +38,6 @@ function refresh(messages) {
   const now = Date.now();
   const recent = (Array.isArray(messages) ? messages : [])
     .filter(message => message && message.id && message.event_type !== "moderation" && message.event_type !== "system")
-    .filter(message => {
-      const login = String(message.author_login || "").toLocaleLowerCase();
-      const displayName = String(message.author_display_name || "").toLocaleLowerCase();
-      return !mutedAuthors.has(login) && !mutedAuthors.has(displayName);
-    })
     .filter(message => now - Date.parse(message.timestamp) <= ttlSeconds * 1000)
     .slice(0, limit)
     .reverse();
