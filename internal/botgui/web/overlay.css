@@ -1,7 +1,7 @@
 :root {
   color-scheme: dark;
   font-family: "Noto Sans", "Noto Sans CJK TC", "DejaVu Sans", sans-serif;
-  font-size: 25px;
+  font-size: 32px;
 }
 
 * { box-sizing: border-box; }
@@ -27,13 +27,13 @@ body {
   max-height: 100%;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
 }
 
 .message {
   width: fit-content;
   max-width: 100%;
-  padding: 7px 11px 8px;
+  padding: 9px 14px 10px;
   overflow-wrap: anywhere;
   background: rgb(12 17 27 / 78%);
   border-left: 5px solid #8aa0b8;
