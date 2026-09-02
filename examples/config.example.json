@@ -59,6 +59,7 @@
       "channel_id": "",
       "message": "@everyone Sleepymario has started streaming on",
       "token_env": "STREAMCHAT_DISCORD_BOT_TOKEN",
+      "media_hook_token_env": "STREAMCHAT_MEDIA_HOOK_TOKEN",
       "confirmations": 2
     },
     "subtitles": {

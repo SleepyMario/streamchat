@@ -83,6 +83,10 @@ func (h *hub) count() int {
 type Server struct {
 	Listen, Path, Token string
 	Webhook             http.Handler
+	// InputHookToken authenticates the narrow MediaMTX lifecycle endpoints.
+	// InputReady receives only the authoritative continuous OBS input state.
+	InputHookToken string
+	InputReady     func(bool)
 	// LocalShutdown is intentionally nil for normal servers. The desktop bundle
 	// enables it only for its private loopback child server.
 	LocalShutdown func()
@@ -156,6 +160,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(s.Path, s.websocket)
 	mux.HandleFunc("/api/status", s.status)
 	mux.HandleFunc("/api/control", s.control)
+	if s.InputReady != nil {
+		mux.HandleFunc("/api/bot/input-ready", s.inputReady(true))
+		mux.HandleFunc("/api/bot/input-not-ready", s.inputReady(false))
+	}
 	if s.LocalShutdown != nil {
 		mux.HandleFunc("/_streamchat/local-shutdown", s.localShutdown)
 	}
@@ -163,6 +171,22 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", s.Webhook)
 	}
 	return mux
+}
+
+func (s *Server) inputReady(online bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !authorized(r.Header.Get("Authorization"), s.InputHookToken) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.InputReady(online)
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 type ControlRequest struct {

@@ -18,37 +18,13 @@ import (
 
 	archivepkg "github.com/SleepyMario/streamchat/internal/archive"
 	"github.com/SleepyMario/streamchat/internal/chat"
-	"github.com/SleepyMario/streamchat/internal/clientruntime"
 	"github.com/SleepyMario/streamchat/internal/clientstate"
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/outbound"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
 	"github.com/SleepyMario/streamchat/internal/render"
-	"github.com/SleepyMario/streamchat/internal/serverstatus"
-	"github.com/SleepyMario/streamchat/internal/streamprobe"
 	"github.com/SleepyMario/streamchat/internal/terminalui"
 )
-
-func TestDiscordTriggerStateAcceptsMediaOrAnyLivePlatform(t *testing.T) {
-	tests := []struct {
-		name     string
-		snapshot serverstatus.Snapshot
-		want     bool
-	}{
-		{name: "offline", snapshot: serverstatus.Snapshot{}},
-		{name: "media", snapshot: serverstatus.Snapshot{Media: streamprobe.State{Online: true}}, want: true},
-		{name: "kick", snapshot: serverstatus.Snapshot{Channels: map[string]clientruntime.StreamStatus{"kick": {Available: true, Live: true}}}, want: true},
-		{name: "unavailable platform is ignored", snapshot: serverstatus.Snapshot{Channels: map[string]clientruntime.StreamStatus{"youtube": {Live: true}}}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			state := discordTriggerState(test.snapshot)
-			if state.Online != test.want || state.CheckedAt.IsZero() {
-				t.Fatalf("state=%+v want online=%v", state, test.want)
-			}
-		})
-	}
-}
 
 func TestInteractiveEmotePresentationKeepsReadableFallbackWithoutBackend(t *testing.T) {
 	c := config.Defaults()

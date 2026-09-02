@@ -77,6 +77,44 @@ func TestCoreStatusEndpointIsAuthenticatedAndVersionNeutral(t *testing.T) {
 	}
 }
 
+func TestMediaInputLifecycleHooksAreNarrowAndAuthenticated(t *testing.T) {
+	server := NewServer("", "/relay", testToken, nil)
+	server.InputHookToken = "media-hook-token"
+	states := make(chan bool, 2)
+	server.InputReady = func(online bool) { states <- online }
+	handler := server.Handler()
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/api/bot/input-ready", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+
+	wrongMethod := httptest.NewRequest(http.MethodGet, "/api/bot/input-ready", nil)
+	wrongMethod.Header.Set("Authorization", "Bearer media-hook-token")
+	wrongMethodResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongMethodResponse, wrongMethod)
+	if wrongMethodResponse.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("wrong method status=%d", wrongMethodResponse.Code)
+	}
+
+	for _, test := range []struct {
+		path string
+		want bool
+	}{
+		{path: "/api/bot/input-ready", want: true},
+		{path: "/api/bot/input-not-ready", want: false},
+	} {
+		request := httptest.NewRequest(http.MethodPost, test.path, nil)
+		request.Header.Set("Authorization", "Bearer media-hook-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent || <-states != test.want {
+			t.Fatalf("path=%s status=%d", test.path, response.Code)
+		}
+	}
+}
+
 func TestPersistenceAndRelayUseSameMessage(t *testing.T) {
 	store, err := archive.Open(filepath.Join(t.TempDir(), "streamchat.db"))
 	if err != nil {

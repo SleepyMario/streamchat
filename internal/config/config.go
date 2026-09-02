@@ -140,11 +140,12 @@ type SubtitleBot struct {
 // DiscordBot configures one low-privilege Discord bot destination. The bot
 // token itself remains in the named service environment variable.
 type DiscordBot struct {
-	Enabled       bool   `json:"enabled,omitempty"`
-	ChannelID     string `json:"channel_id,omitempty"`
-	Message       string `json:"message,omitempty"`
-	TokenEnv      string `json:"token_env,omitempty"`
-	Confirmations int    `json:"confirmations,omitempty"`
+	Enabled           bool   `json:"enabled,omitempty"`
+	ChannelID         string `json:"channel_id,omitempty"`
+	Message           string `json:"message,omitempty"`
+	TokenEnv          string `json:"token_env,omitempty"`
+	MediaHookTokenEnv string `json:"media_hook_token_env,omitempty"`
+	Confirmations     int    `json:"confirmations,omitempty"`
 }
 
 // BotAccount holds a separate chat identity. Channel targets continue to come
@@ -169,7 +170,7 @@ func Defaults() Config {
 		Server:        Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		Storage:       Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
 		Emotes:        Emotes{Mode: "auto"},
-		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", Confirmations: 2}, Subtitles: SubtitleBot{APIBaseURL: "https://api.runpod.io/v2", APIKeyEnv: "RUNPOD_API_KEY", Image: "sleepiestmario/gpu-subtitle-worker:3.1", GPUTypeIDs: []string{"NVIDIA RTX A4000", "NVIDIA RTX A4500", "NVIDIA RTX 4000 Ada Generation"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyMinutes: 15, MaxMinutes: 360, HeartbeatSeconds: 120, MaxCostPerHour: 0.35, StatePath: "/var/lib/streamchat/subtitle-session.json"}},
+		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", MediaHookTokenEnv: "STREAMCHAT_MEDIA_HOOK_TOKEN", Confirmations: 2}, Subtitles: SubtitleBot{APIBaseURL: "https://api.runpod.io/v2", APIKeyEnv: "RUNPOD_API_KEY", Image: "sleepiestmario/gpu-subtitle-worker:3.1", GPUTypeIDs: []string{"NVIDIA RTX A4000", "NVIDIA RTX A4500", "NVIDIA RTX 4000 Ada Generation"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyMinutes: 15, MaxMinutes: 360, HeartbeatSeconds: 120, MaxCostPerHour: 0.35, StatePath: "/var/lib/streamchat/subtitle-session.json"}},
 		ChatColorMode: chattercolor.ModeLine,
 		QueueSize:     256, DuplicateCapacity: 10000,
 	}
@@ -279,6 +280,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Bot.Discord.TokenEnv == "" {
 		c.Bot.Discord.TokenEnv = d.Bot.Discord.TokenEnv
+	}
+	if c.Bot.Discord.MediaHookTokenEnv == "" {
+		c.Bot.Discord.MediaHookTokenEnv = d.Bot.Discord.MediaHookTokenEnv
 	}
 	if c.Bot.Discord.Confirmations == 0 {
 		c.Bot.Discord.Confirmations = d.Bot.Discord.Confirmations
@@ -455,6 +459,9 @@ func (c Config) Validate(mode string) error {
 		}
 		if strings.TrimSpace(c.Bot.Discord.TokenEnv) == "" || strings.ContainsAny(c.Bot.Discord.TokenEnv, " \t\r\n=") {
 			return errors.New("bot.discord.token_env must name one environment variable")
+		}
+		if strings.TrimSpace(c.Bot.Discord.MediaHookTokenEnv) == "" || strings.ContainsAny(c.Bot.Discord.MediaHookTokenEnv, " \t\r\n=") {
+			return errors.New("bot.discord.media_hook_token_env must name one environment variable")
 		}
 		if c.Bot.Discord.Confirmations < 1 || c.Bot.Discord.Confirmations > 5 {
 			return errors.New("bot.discord.confirmations must be between 1 and 5")

@@ -104,7 +104,7 @@ func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 
 func TestDiscordBotDefaultsAndValidation(t *testing.T) {
 	c := Defaults()
-	if c.Bot.Discord.TokenEnv != "STREAMCHAT_DISCORD_BOT_TOKEN" || c.Bot.Discord.Message == "" || c.Bot.Discord.Confirmations != 2 {
+	if c.Bot.Discord.TokenEnv != "STREAMCHAT_DISCORD_BOT_TOKEN" || c.Bot.Discord.MediaHookTokenEnv != "STREAMCHAT_MEDIA_HOOK_TOKEN" || c.Bot.Discord.Message == "" || c.Bot.Discord.Confirmations != 2 {
 		t.Fatalf("unexpected Discord defaults: %+v", c.Bot.Discord)
 	}
 	c.Bot.Discord.Enabled = true
@@ -118,6 +118,11 @@ func TestDiscordBotDefaultsAndValidation(t *testing.T) {
 	c.Bot.Discord.TokenEnv = "BAD ENV"
 	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "token_env") {
 		t.Fatalf("invalid token environment accepted: %v", err)
+	}
+	c.Bot.Discord.TokenEnv = "STREAMCHAT_DISCORD_BOT_TOKEN"
+	c.Bot.Discord.MediaHookTokenEnv = "BAD ENV"
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "media_hook_token_env") {
+		t.Fatalf("invalid media hook token environment accepted: %v", err)
 	}
 }
 
