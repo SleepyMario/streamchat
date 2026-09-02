@@ -43,6 +43,25 @@ func TestOverlayIsReadOnlyWithoutControlPassword(t *testing.T) {
 	}
 }
 
+func TestOverlayScriptIgnoresKnownBots(t *testing.T) {
+	engine := bot.New(sender{}, bot.Config{})
+	server, err := New(Config{Listen: "127.0.0.1:8793", Engine: engine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/overlay.js", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("overlay script=%d %s", w.Code, w.Body.String())
+	}
+	for _, author := range []string{"botrix", "kickbot"} {
+		if !strings.Contains(w.Body.String(), `"`+author+`"`) {
+			t.Fatalf("overlay ignore list is missing %q", author)
+		}
+	}
+}
+
 func TestUIAndSettings(t *testing.T) {
 	engine := bot.New(sender{}, bot.Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5e9})
 	saved := false

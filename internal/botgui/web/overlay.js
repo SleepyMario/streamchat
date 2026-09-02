@@ -2,6 +2,7 @@ const chat = document.querySelector("#chat");
 const query = new URLSearchParams(location.search);
 const limit = Math.min(20, Math.max(1, Number(query.get("limit")) || 10));
 const ttlSeconds = Math.min(900, Math.max(15, Number(query.get("ttl")) || 120));
+const ignoredAuthors = new Set(["botrix", "kickbot"]);
 let rendered = new Set();
 
 const platformIcon = platform => ({
@@ -12,6 +13,10 @@ const platformIcon = platform => ({
 
 function safeColor(value) {
   return /^#[0-9a-f]{6}$/i.test(value || "") ? value : "";
+}
+
+function ignoredAuthor(message) {
+  return ignoredAuthors.has((message.author_display_name || "").trim().toLowerCase());
 }
 
 function messageNode(message) {
@@ -46,6 +51,7 @@ function refresh(messages) {
   const now = Date.now();
   const recent = (Array.isArray(messages) ? messages : [])
     .filter(message => message && message.id && message.event_type !== "moderation" && message.event_type !== "system")
+    .filter(message => !ignoredAuthor(message))
     .filter(message => now - Date.parse(message.timestamp) <= ttlSeconds * 1000)
     .slice(0, limit)
     .reverse();
