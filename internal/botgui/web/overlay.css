@@ -51,6 +51,20 @@ body {
   vertical-align: -.08em;
 }
 
+.platform {
+  display: inline-flex;
+  width: .9em;
+  height: .9em;
+  flex: 0 0 .9em;
+  margin-right: .25em;
+}
+
+.platform svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .author {
   color: #8ee7ff;
   font-weight: 800;
