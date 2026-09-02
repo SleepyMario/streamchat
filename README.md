@@ -350,6 +350,23 @@ The core server status service reports the dimensions and incoming bitrate of th
 
 The intended bot is an event-driven automation system, not only a command responder. Platform adapters will normalize chat, follows, subscriptions, gifts, raids, paid interactions, rewards, moderation, stream lifecycle, clock and manual events. Durable rules will map those events to chat messages, delayed message sequences, alerts, media, archives, dashboard notifications, safe internal utilities and optional conversational replies. The Kick/Twitch `!commands` rule and a deduplicated Discord live notification are executable today; the other dashboard areas are honest placeholders. The Discord application is named `streamchat-bot`, while its visible bot name may be `ComradeKip`. Its token stays in `STREAMCHAT_DISCORD_BOT_TOKEN`; only the destination channel ID and transition-confirmation count belong in JSON. At the start of a newly confirmed session, Streamchat refreshes all three platform statuses and sends one `@everyone` notification containing one clickable URL for every output it can verify as live. Discord mention parsing is restricted to `@everyone`; user and role mentions in any other text stay inert. Run `streamchat bot discord-test` for a non-pinging delivery test. See [`docs/bot-architecture.md`](docs/bot-architecture.md) for the complete working/planned boundary and intended runtime model.
 
+The server also provides a transparent, read-only OBS chat overlay at
+`/overlay/chat`. For example, a private WireGuard deployment listening on
+`10.77.0.1:8793` can be added to OBS as a browser source using:
+
+```text
+http://10.77.0.1:8793/overlay/chat?limit=10&ttl=120
+```
+
+`limit` controls the number of visible messages (1-20) and `ttl` controls how
+many seconds a message remains visible (15-900). The overlay normalizes Kick,
+Twitch and YouTube chat, wraps long text, identifies the source platform, and
+omits moderation and system events. Its page, stylesheet, script and chat-feed
+endpoint are intentionally available without the administration password so
+an OBS browser source can read them. They expose no controls or credentials;
+bind a non-loopback console only to a trusted private interface and keep every
+administration endpoint password-protected.
+
 Advanced environment variables:
 
 - YouTube: `STREAMCHAT_YOUTUBE_API_KEY`, `STREAMCHAT_YOUTUBE_CLIENT_ID`, `STREAMCHAT_YOUTUBE_CLIENT_SECRET`, `STREAMCHAT_YOUTUBE_ACCESS_TOKEN`, `STREAMCHAT_YOUTUBE_REFRESH_TOKEN`, `STREAMCHAT_YOUTUBE_REDIRECT_URI`, `STREAMCHAT_YOUTUBE_VIDEO_ID`

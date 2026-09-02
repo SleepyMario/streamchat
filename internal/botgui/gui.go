@@ -63,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("/api/state", s.state)
+	mux.HandleFunc("/api/overlay/chat", s.overlayChat)
+	mux.HandleFunc("/overlay/chat", s.overlayPage)
 	mux.HandleFunc("/api/settings", s.settings)
 	mux.HandleFunc("/api/test", s.test)
 	mux.HandleFunc("/api/subtitles", s.subtitleStatus)
@@ -72,6 +74,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/subtitles/heartbeat", s.subtitleHeartbeat)
 	mux.Handle("/", http.FileServer(http.FS(s.web)))
 	return headers(s.authenticate(mux))
+}
+
+func (s *Server) overlayPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	content, err := fs.ReadFile(s.web, "overlay.html")
+	if err != nil {
+		http.Error(w, "chat overlay unavailable", http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(content)
+}
+
+func (s *Server) overlayChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var recent any = []any{}
+	if s.cfg.Chat != nil {
+		recent = s.cfg.Chat()
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, http.StatusOK, map[string]any{"recent_chat": recent})
 }
 
 func (s *Server) subtitleStatus(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +208,14 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The read-only overlay contains public chat and is designed for an OBS
+		// browser source. The listener is still restricted to the private
+		// WireGuard address; all control and configuration routes remain
+		// password-protected.
+		if r.Method == http.MethodGet && (r.URL.Path == "/overlay/chat" || r.URL.Path == "/api/overlay/chat" || r.URL.Path == "/overlay.css" || r.URL.Path == "/overlay.js") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		_, password, ok := r.BasicAuth()
 		if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.Password)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Streamchat Bot"`)

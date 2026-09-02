@@ -80,7 +80,9 @@ func (s *Service) Snapshot() Snapshot {
 		}
 	}
 	s.mu.RLock()
-	recent := append([]chat.Message(nil), s.chat...)
+	// Keep the JSON shape stable for consumers: an empty chat window is []
+	// rather than null.
+	recent := append([]chat.Message{}, s.chat...)
 	s.mu.RUnlock()
 	return Snapshot{SchemaVersion: SchemaVersion, GeneratedAt: time.Now(), Media: s.probe.State(), Channel: canonical, Channels: channels, RecentChat: recent}
 }

@@ -20,6 +20,29 @@ func TestRequiresPasswordOutsideLoopback(t *testing.T) {
 		t.Fatal("public bind accepted without password")
 	}
 }
+
+func TestOverlayIsReadOnlyWithoutControlPassword(t *testing.T) {
+	engine := bot.New(sender{}, bot.Config{})
+	server, err := New(Config{Listen: "10.77.0.1:8793", Password: "secret", Engine: engine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/overlay/chat", "/api/overlay/chat", "/overlay.css", "/overlay.js"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s=%d %s", path, w.Code, w.Body.String())
+		}
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("protected state=%d", w.Code)
+	}
+}
+
 func TestUIAndSettings(t *testing.T) {
 	engine := bot.New(sender{}, bot.Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5e9})
 	saved := false
@@ -55,5 +78,17 @@ func TestUIAndSettings(t *testing.T) {
 	server.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"state":"disabled"`) {
 		t.Fatalf("subtitle status=%d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodGet, "/overlay/chat", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Streamchat overlay") {
+		t.Fatalf("overlay=%d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/overlay/chat", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"recent_chat":[]`) {
+		t.Fatalf("overlay chat=%d %s", w.Code, w.Body.String())
 	}
 }
