@@ -26,6 +26,7 @@ type Config struct {
 	Accounts         func() map[string]string
 	Stream           func() any
 	Channel          func() any
+	Channels         func() any
 	Chat             func() any
 	Subtitles        *subtitles.Manager
 }
@@ -259,6 +260,10 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Channel != nil {
 		channel = s.cfg.Channel()
 	}
+	var channels any
+	if s.cfg.Channels != nil {
+		channels = s.cfg.Channels()
+	}
 	var recentChat any
 	if state.ShowChat && s.cfg.Chat != nil {
 		recentChat = s.cfg.Chat()
@@ -267,7 +272,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Subtitles != nil {
 		subtitleState = s.cfg.Subtitles.Status()
 	}
-	jsonResponse(w, 200, map[string]any{"bot": state, "accounts": accounts, "activity": s.cfg.Engine.Activity(), "stream": stream, "channel": channel, "recent_chat": recentChat, "subtitles": subtitleState})
+	jsonResponse(w, 200, map[string]any{"bot": state, "accounts": accounts, "activity": s.cfg.Engine.Activity(), "stream": stream, "channel": channel, "channels": channels, "recent_chat": recentChat, "subtitles": subtitleState})
 }
 
 func (s *Server) test(w http.ResponseWriter, r *http.Request) {

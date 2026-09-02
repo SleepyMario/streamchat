@@ -65,7 +65,11 @@ func TestOverlayScriptIgnoresKnownBots(t *testing.T) {
 func TestUIAndSettings(t *testing.T) {
 	engine := bot.New(sender{}, bot.Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5e9})
 	saved := false
-	server, err := New(Config{Listen: "127.0.0.1:8793", Engine: engine, Save: func(bot.State) error { saved = true; return nil }})
+	server, err := New(Config{
+		Listen: "127.0.0.1:8793", Engine: engine,
+		Channels: func() any { return map[string]any{"twitch": map[string]any{"live": true, "available": true}} },
+		Save:     func(bot.State) error { saved = true; return nil },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +78,12 @@ func TestUIAndSettings(t *testing.T) {
 	server.Handler().ServeHTTP(w, r)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "Streamchat Bot") {
 		t.Fatalf("ui=%d", w.Code)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"channels":{"twitch":{"available":true,"live":true}}`) {
+		t.Fatalf("state channels=%d %s", w.Code, w.Body.String())
 	}
 	body := bytes.NewBufferString(`{"enabled":false,"commands_reply":"Commands: !commands, !status","cooldown_seconds":9,"platforms":{"kick":true,"twitch":false}}`)
 	r = httptest.NewRequest(http.MethodPut, "/api/settings", body)

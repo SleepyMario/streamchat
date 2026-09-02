@@ -555,6 +555,9 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 					Channel: func() any {
 						return statusService.Snapshot().Channel
 					},
+					Channels: func() any {
+						return statusService.Snapshot().Channels
+					},
 					Chat: func() any { return statusService.Snapshot().RecentChat },
 					Accounts: func() map[string]string {
 						accounts := map[string]string{"kick": "Uses primary account", "twitch": "Uses primary account"}
