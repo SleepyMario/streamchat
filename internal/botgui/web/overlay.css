@@ -18,7 +18,7 @@ body {
 body {
   display: flex;
   align-items: flex-end;
-  padding: 10px 2px 2px;
+  padding: 10px 0 2px;
 }
 
 #chat {
@@ -31,7 +31,7 @@ body {
 }
 
 .message {
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   padding: 7px 11px 8px;
   overflow-wrap: anywhere;
@@ -48,19 +48,29 @@ body {
 .message.twitch { border-left-color: #a970ff; }
 .message.youtube { border-left-color: #ff3b30; }
 
+.identity {
+  display: inline-flex;
+  align-items: center;
+  margin-right: .35em;
+  white-space: nowrap;
+  vertical-align: -.08em;
+}
+
 .platform {
-  display: inline-block;
-  min-width: 1.5em;
-  margin-right: .3em;
-  color: #d7e0ea;
-  font-size: .68em;
-  font-weight: 900;
-  letter-spacing: .04em;
-  vertical-align: .12em;
+  display: inline-flex;
+  width: .9em;
+  height: .9em;
+  flex: 0 0 .9em;
+  margin-right: .25em;
+}
+
+.platform svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .author {
-  margin-right: .35em;
   color: #8ee7ff;
   font-weight: 800;
 }
