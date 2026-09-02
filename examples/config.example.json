@@ -47,6 +47,7 @@
     "show_chat": false,
     "commands_reply": "Commands: !commands",
     "cooldown_seconds": 5,
+    "command_log_path": "/var/lib/streamchat/bot-commands.jsonl",
     "disabled_platforms": [],
     "gui_listen": "127.0.0.1:8793",
     "gui_password": "",

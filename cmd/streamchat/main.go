@@ -519,11 +519,16 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 		if runtimeErr != nil {
 			fmt.Fprintf(out, "Streamchat bot unavailable: %s\n", safeError(runtimeErr))
 		} else {
+			commandLog, commandLogErr := bot.OpenCommandLog(c.Bot.CommandLogPath)
+			if commandLogErr != nil {
+				return fmt.Errorf("open bot command log: %w", commandLogErr)
+			}
+			defer commandLog.Close()
 			disabled := map[string]bool{}
 			for _, platform := range c.Bot.DisabledPlatforms {
 				disabled[strings.ToLower(strings.TrimSpace(platform))] = true
 			}
-			engine := bot.New(botRuntime, bot.Config{Enabled: c.Bot.Enabled, ShowChat: c.Bot.ShowChat, CommandsReply: c.Bot.CommandsReply, Cooldown: time.Duration(c.Bot.CooldownSeconds) * time.Second, Disabled: disabled})
+			engine := bot.New(botRuntime, bot.Config{Enabled: c.Bot.Enabled, ShowChat: c.Bot.ShowChat, CommandsReply: c.Bot.CommandsReply, Cooldown: time.Duration(c.Bot.CooldownSeconds) * time.Second, Disabled: disabled, CommandLog: commandLog})
 			server.Observe = func(message chat.Message) {
 				statusService.Observe(message)
 				if !engine.Enqueue(message) {

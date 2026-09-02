@@ -13,6 +13,13 @@ type recordingSender struct {
 	messages  []string
 }
 
+type recordingCommandLog struct{ records []CommandRecord }
+
+func (l *recordingCommandLog) WriteCommand(record CommandRecord) error {
+	l.records = append(l.records, record)
+	return nil
+}
+
 func (s *recordingSender) SendTo(_ context.Context, platform, message string) error {
 	s.platforms = append(s.platforms, platform)
 	s.messages = append(s.messages, message)
@@ -21,7 +28,8 @@ func (s *recordingSender) SendTo(_ context.Context, platform, message string) er
 
 func TestCommandsOnKickAndTwitchOnly(t *testing.T) {
 	sender := &recordingSender{}
-	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second})
+	commandLog := &recordingCommandLog{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second, CommandLog: commandLog})
 	engine.now = func() time.Time { return time.Unix(100, 0) }
 	for _, message := range []chat.Message{
 		{Platform: chat.PlatformKick, ChannelID: "kick", Text: " !COMMANDS ", EventType: chat.EventMessage},
@@ -36,11 +44,15 @@ func TestCommandsOnKickAndTwitchOnly(t *testing.T) {
 	if len(sender.messages) != 2 || sender.platforms[0] != string(chat.PlatformKick) || sender.platforms[1] != string(chat.PlatformTwitch) {
 		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
 	}
+	if len(commandLog.records) != 2 || commandLog.records[0].Command != "!commands" || commandLog.records[1].Command != "!commands" {
+		t.Fatalf("command records=%+v", commandLog.records)
+	}
 }
 
 func TestCommandsCooldownIsPerPlatformAndChannel(t *testing.T) {
 	sender := &recordingSender{}
-	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second})
+	commandLog := &recordingCommandLog{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second, CommandLog: commandLog})
 	now := time.Unix(100, 0)
 	engine.now = func() time.Time { return now }
 	message := chat.Message{Platform: chat.PlatformKick, ChannelID: "one", Text: "!commands", EventType: chat.EventMessage}
@@ -53,5 +65,8 @@ func TestCommandsCooldownIsPerPlatformAndChannel(t *testing.T) {
 	_ = engine.handle(context.Background(), message)
 	if len(sender.messages) != 3 {
 		t.Fatalf("sent=%d", len(sender.messages))
+	}
+	if len(commandLog.records) != 3 {
+		t.Fatalf("only executed commands should be recorded: %+v", commandLog.records)
 	}
 }

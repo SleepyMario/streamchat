@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type Config struct {
 	Cooldown      time.Duration
 	QueueSize     int
 	Disabled      map[string]bool
+	CommandLog    CommandRecorder
 }
 
 type State struct {
@@ -39,20 +41,21 @@ type Activity struct {
 }
 
 type Engine struct {
-	sender   Sender
-	cfg      Config
-	queue    chan Event
-	now      func() time.Time
-	mu       sync.Mutex
-	last     map[string]time.Time
-	activity []Activity
+	sender     Sender
+	cfg        Config
+	queue      chan Event
+	now        func() time.Time
+	mu         sync.Mutex
+	last       map[string]time.Time
+	activity   []Activity
+	commandLog CommandRecorder
 }
 
 func New(sender Sender, cfg Config) *Engine {
 	if cfg.QueueSize < 1 {
 		cfg.QueueSize = 32
 	}
-	return &Engine{sender: sender, cfg: cfg, queue: make(chan Event, cfg.QueueSize), now: time.Now, last: make(map[string]time.Time)}
+	return &Engine{sender: sender, cfg: cfg, queue: make(chan Event, cfg.QueueSize), now: time.Now, last: make(map[string]time.Time), commandLog: cfg.CommandLog}
 }
 
 // Enqueue is deliberately non-blocking: bot traffic may never stall chat relay.
@@ -113,9 +116,22 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	e.mu.Unlock()
 	if err := e.sender.SendTo(ctx, event.Platform, cfg.CommandsReply); err != nil {
 		e.record(event.Platform, "!commands reply failed", true)
+		if logErr := e.recordCommand(event.Platform, "!commands", false); logErr != nil {
+			return errors.Join(fmt.Errorf("answer !commands on %s: %w", event.Platform, err), logErr)
+		}
 		return fmt.Errorf("answer !commands on %s: %w", event.Platform, err)
 	}
 	e.record(event.Platform, "Answered !commands", false)
+	return e.recordCommand(event.Platform, "!commands", true)
+}
+
+func (e *Engine) recordCommand(platform, command string, succeeded bool) error {
+	if e.commandLog == nil {
+		return nil
+	}
+	if err := e.commandLog.WriteCommand(CommandRecord{Time: e.now().UTC(), Platform: platform, Command: command, Succeeded: succeeded}); err != nil {
+		return fmt.Errorf("record executed bot command: %w", err)
+	}
 	return nil
 }
 

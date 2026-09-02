@@ -104,6 +104,7 @@ type Bot struct {
 	ShowChat          bool        `json:"show_chat,omitempty"`
 	CommandsReply     string      `json:"commands_reply,omitempty"`
 	CooldownSeconds   int         `json:"cooldown_seconds,omitempty"`
+	CommandLogPath    string      `json:"command_log_path,omitempty"`
 	DisabledPlatforms []string    `json:"disabled_platforms,omitempty"`
 	GUIListen         string      `json:"gui_listen,omitempty"`
 	GUIPassword       string      `json:"gui_password,omitempty"`
@@ -170,7 +171,7 @@ func Defaults() Config {
 		Server:        Server{Listen: "127.0.0.1:8788", WebSocketPath: "/relay"},
 		Storage:       Storage{SQLitePath: "/var/lib/streamchat/streamchat.db"},
 		Emotes:        Emotes{Mode: "auto"},
-		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", MediaHookTokenEnv: "STREAMCHAT_MEDIA_HOOK_TOKEN", Confirmations: 2}, Subtitles: SubtitleBot{APIBaseURL: "https://api.runpod.io/v2", APIKeyEnv: "RUNPOD_API_KEY", Image: "sleepiestmario/gpu-subtitle-worker:3.1", GPUTypeIDs: []string{"NVIDIA RTX A4000", "NVIDIA RTX A4500", "NVIDIA RTX 4000 Ada Generation"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyMinutes: 15, MaxMinutes: 360, HeartbeatSeconds: 120, MaxCostPerHour: 0.35, StatePath: "/var/lib/streamchat/subtitle-session.json"}},
+		Bot:           Bot{CommandsReply: "Commands: !commands", CooldownSeconds: 5, CommandLogPath: "/var/lib/streamchat/bot-commands.jsonl", StreamProbeURLEnv: "STREAMCHAT_MEDIA_INPUT_URL", MetricsURLEnv: "STREAMCHAT_MEDIAMTX_METRICS_URL", MediaPath: "pc/stream", FFprobe: "/usr/bin/ffprobe", Discord: DiscordBot{Message: "@everyone Sleepymario has started streaming on", TokenEnv: "STREAMCHAT_DISCORD_BOT_TOKEN", MediaHookTokenEnv: "STREAMCHAT_MEDIA_HOOK_TOKEN", Confirmations: 2}, Subtitles: SubtitleBot{APIBaseURL: "https://api.runpod.io/v2", APIKeyEnv: "RUNPOD_API_KEY", Image: "sleepiestmario/gpu-subtitle-worker:3.1", GPUTypeIDs: []string{"NVIDIA RTX A4000", "NVIDIA RTX A4500", "NVIDIA RTX 4000 Ada Generation"}, CloudType: "SECURE", Model: "large-v3", AcceptedLanguages: "en,nl,de,zh,ko,vi,ja", WorkerPort: 8000, ContainerDiskGB: 30, ReadyMinutes: 15, MaxMinutes: 360, HeartbeatSeconds: 120, MaxCostPerHour: 0.35, StatePath: "/var/lib/streamchat/subtitle-session.json"}},
 		ChatColorMode: chattercolor.ModeLine,
 		QueueSize:     256, DuplicateCapacity: 10000,
 	}
@@ -262,6 +263,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Bot.CooldownSeconds == 0 {
 		c.Bot.CooldownSeconds = d.Bot.CooldownSeconds
+	}
+	if c.Bot.CommandLogPath == "" {
+		c.Bot.CommandLogPath = d.Bot.CommandLogPath
 	}
 	if c.Bot.StreamProbeURLEnv == "" {
 		c.Bot.StreamProbeURLEnv = d.Bot.StreamProbeURLEnv
@@ -449,6 +453,9 @@ func (c Config) Validate(mode string) error {
 	}
 	if strings.TrimSpace(c.Bot.CommandsReply) == "" {
 		return errors.New("bot.commands_reply must not be blank")
+	}
+	if strings.TrimSpace(c.Bot.CommandLogPath) == "" {
+		return errors.New("bot.command_log_path must not be blank")
 	}
 	if c.Bot.Discord.Enabled {
 		if id, err := strconv.ParseUint(c.Bot.Discord.ChannelID, 10, 64); err != nil || id == 0 {

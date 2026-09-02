@@ -104,6 +104,9 @@ func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 
 func TestDiscordBotDefaultsAndValidation(t *testing.T) {
 	c := Defaults()
+	if c.Bot.CommandLogPath != "/var/lib/streamchat/bot-commands.jsonl" {
+		t.Fatalf("unexpected bot command log path: %q", c.Bot.CommandLogPath)
+	}
 	if c.Bot.Discord.TokenEnv != "STREAMCHAT_DISCORD_BOT_TOKEN" || c.Bot.Discord.MediaHookTokenEnv != "STREAMCHAT_MEDIA_HOOK_TOKEN" || c.Bot.Discord.Message == "" || c.Bot.Discord.Confirmations != 2 {
 		t.Fatalf("unexpected Discord defaults: %+v", c.Bot.Discord)
 	}
