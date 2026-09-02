@@ -355,11 +355,13 @@ The server also provides a transparent, read-only OBS chat overlay at
 `10.77.0.1:8793` can be added to OBS as a browser source using:
 
 ```text
-http://10.77.0.1:8793/overlay/chat?limit=10&ttl=120
+http://10.77.0.1:8793/overlay/chat?limit=10&ttl=120&mute=kickbot,botrix
 ```
 
 `limit` controls the number of visible messages (1-20) and `ttl` controls how
-many seconds a message remains visible (15-900). The overlay normalizes Kick,
+many seconds a message remains visible (15-900). `mute` is an optional,
+comma-separated list of account names hidden from the overlay without removing
+them from ingestion or the archive. The overlay normalizes Kick,
 Twitch and YouTube chat, wraps long text, identifies the source platform, and
 omits moderation and system events. Its page, stylesheet, script and chat-feed
 endpoint are intentionally available without the administration password so
