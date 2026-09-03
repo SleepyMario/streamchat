@@ -21,6 +21,7 @@ type channelSender interface {
 
 const languageReply = "You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on that fat Sleepy dude."
 const youtubeLanguageReply = "You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on that Sleepy dude."
+const genderReply = "I'm a bot you dumbrr"
 
 type Config struct {
 	Enabled       bool
@@ -140,6 +141,10 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 			if event.Platform == string(chat.PlatformYouTube) {
 				reply = youtubeLanguageReply
 			}
+		}
+	case "!gender":
+		if supportedCommandPlatform(event.Platform) {
+			reply = genderReply
 		}
 	}
 	if reply == "" {

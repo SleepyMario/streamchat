@@ -551,7 +551,7 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 				if len(enabledPlatforms) == 0 {
 					fmt.Fprintln(out, "Streamchat bot enabled, but all chat platforms are disabled.")
 				} else {
-					fmt.Fprintf(out, "Streamchat bot enabled for %s (!commands, !language).\n", strings.Join(enabledPlatforms, " and "))
+					fmt.Fprintf(out, "Streamchat bot enabled for %s (!commands, !language, !gender).\n", strings.Join(enabledPlatforms, " and "))
 				}
 			}
 			if c.Bot.GUIListen != "" {

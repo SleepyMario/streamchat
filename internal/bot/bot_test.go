@@ -128,6 +128,33 @@ func TestLanguageCommandIsSharedAcrossAllPlatformsAndRecorded(t *testing.T) {
 	}
 }
 
+func TestGenderCommandIsSharedAcrossAllPlatformsAndRecorded(t *testing.T) {
+	sender := &recordingSender{}
+	commandLog := &recordingCommandLog{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands, !language, !gender", Cooldown: 5 * time.Second, CommandLog: commandLog})
+	engine.now = func() time.Time { return time.Unix(100, 0) }
+	for _, message := range []chat.Message{
+		{Platform: chat.PlatformTwitch, ChannelID: "twitch", Text: " !GENDER ", EventType: chat.EventMessage},
+		{Platform: chat.PlatformKick, ChannelID: "kick", Text: "!gender", EventType: chat.EventMessage},
+		{Platform: chat.PlatformYouTube, ChannelID: "youtube", Text: "!gender", EventType: chat.EventMessage},
+	} {
+		if err := engine.handle(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sender.messages) != 3 || sender.platforms[0] != "twitch" || sender.platforms[1] != "kick" || sender.platforms[2] != "youtube" {
+		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
+	}
+	for _, message := range sender.messages {
+		if message != genderReply {
+			t.Fatalf("message=%q want=%q", message, genderReply)
+		}
+	}
+	if len(commandLog.records) != 3 || commandLog.records[0].Command != "!gender" || commandLog.records[1].Command != "!gender" || commandLog.records[2].Command != "!gender" {
+		t.Fatalf("command records=%+v", commandLog.records)
+	}
+}
+
 func TestYouTubeSerializesDifferentRepliesAcrossCooldownWindow(t *testing.T) {
 	sender := &recordingSender{}
 	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands, !language", Cooldown: time.Minute})
