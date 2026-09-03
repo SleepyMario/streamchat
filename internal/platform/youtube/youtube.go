@@ -492,6 +492,47 @@ type listResponse struct {
 	OfflineAt       string       `json:"offlineAt"`
 	Items           []apiMessage `json:"items"`
 }
+
+// UnmarshalJSON accepts both the ordinary liveChatMessages.list response and
+// the array of list responses returned by the streamList HTTP transport.
+// Keeping the normalization here lets the polling and streaming paths share
+// the same message-processing loop.
+func (r *listResponse) UnmarshalJSON(data []byte) error {
+	type wireResponse listResponse
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return io.ErrUnexpectedEOF
+	}
+	if trimmed[0] != '[' {
+		var single wireResponse
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return err
+		}
+		*r = listResponse(single)
+		return nil
+	}
+
+	var pages []wireResponse
+	if err := json.Unmarshal(trimmed, &pages); err != nil {
+		return err
+	}
+	var merged listResponse
+	for _, page := range pages {
+		merged.Items = append(merged.Items, page.Items...)
+		if page.NextPageToken != "" {
+			merged.NextPageToken = page.NextPageToken
+		}
+		if page.PollingInterval != 0 {
+			merged.PollingInterval = page.PollingInterval
+		}
+		if page.OfflineAt != "" {
+			merged.OfflineAt = page.OfflineAt
+		}
+	}
+	*r = merged
+	return nil
+}
+
 type apiMessage struct {
 	ID      string `json:"id"`
 	Snippet struct {

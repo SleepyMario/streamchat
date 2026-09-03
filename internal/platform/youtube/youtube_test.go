@@ -2,6 +2,7 @@ package youtube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,20 @@ func TestDiscoveryPollingTokenAndEnded(t *testing.T) {
 	}
 	if !strings.Contains(paths[len(paths)-1], "pageToken=next") {
 		t.Fatalf("paths %v", paths)
+	}
+}
+
+func TestListResponseAcceptsStreamArray(t *testing.T) {
+	input := `[
+		{"nextPageToken":"first","items":[{"id":"one"}]},
+		{"nextPageToken":"second","offlineAt":"2026-09-03T05:00:00Z","items":[{"id":"two"}]}
+	]`
+	var got listResponse
+	if err := json.Unmarshal([]byte(input), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.NextPageToken != "second" || got.OfflineAt == "" || len(got.Items) != 2 {
+		t.Fatalf("unexpected merged response: %+v", got)
 	}
 }
 
