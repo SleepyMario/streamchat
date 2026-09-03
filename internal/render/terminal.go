@@ -83,7 +83,7 @@ var genericRoleBadges = []roleBadge{
 // retaining a predictable, fixed-width terminal layout. Raw provider badge IDs
 // remain available on chat.Message for graphical clients.
 var twitchRoleBadges = []roleBadge{
-	{chat.RoleBroadcaster, "🎥"},
+	{chat.RoleBroadcaster, "🔴"},
 	{chat.RoleModerator, "🗡️"},
 	{chat.RolePartner, "✅"},
 	{chat.RoleVIP, "💎"},
