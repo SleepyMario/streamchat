@@ -59,7 +59,7 @@ func TestChatterColorModes(t *testing.T) {
 	cyan := chattercolor.Palette()[0].ANSI
 
 	line := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeLine, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
-	if !strings.HasPrefix(line.Text, cyan+"[KICK]") || !strings.Contains(line.Text, "[M]") || !strings.Contains(line.Text, "Alice") || !strings.HasSuffix(line.Text, "hello\x1b[0m") {
+	if !strings.HasPrefix(line.Text, cyan+"[KICK]") || !strings.Contains(line.Text, "🛡️") || !strings.Contains(line.Text, "Alice") || !strings.HasSuffix(line.Text, "hello\x1b[0m") {
 		t.Fatalf("line mode=%q", line.Text)
 	}
 	if strings.Contains(strings.TrimPrefix(line.Text, cyan), "\x1b[32m") {
@@ -67,7 +67,7 @@ func TestChatterColorModes(t *testing.T) {
 	}
 
 	username := New(io.Discard, Options{Color: true, ChatColorMode: chattercolor.ModeUsername, ChatterColorSource: chattercolor.NewAllocator()}).Format(message)
-	if !strings.Contains(username.Text, "\x1b[32m[KICK]\x1b[0m") || !strings.Contains(username.Text, "[M]") || !strings.Contains(username.Text, cyan+"Alice\x1b[0m") || strings.Contains(username.Text, cyan+"hello") || !strings.HasSuffix(username.Text, "\x1b[0m") {
+	if !strings.Contains(username.Text, "\x1b[32m[KICK]\x1b[0m") || !strings.Contains(username.Text, "🛡️") || !strings.Contains(username.Text, cyan+"Alice\x1b[0m") || strings.Contains(username.Text, cyan+"hello") || !strings.HasSuffix(username.Text, "\x1b[0m") {
 		t.Fatalf("username mode=%q", username.Text)
 	}
 
@@ -382,8 +382,9 @@ func TestIdentityRendering(t *testing.T) {
 				authorWidth = 16
 			}
 			authorWidth = min(authorWidth, maxIdentityWidth)
+			badges := RenderPlatformRoleBadges(chat.PlatformKick, tt.roles)
 			wantPrefix := "[KICK]" + strings.Repeat(" ", providerColumnWidth-len("[KICK]")+columnGapWidth) +
-				RenderRoleBadges(tt.roles) + strings.Repeat(" ", roleColumnWidth-runewidth.StringWidth(RenderRoleBadges(tt.roles))+columnGapWidth) +
+				badges + strings.Repeat(" ", roleColumnWidth-runewidth.StringWidth(badges)+columnGapWidth) +
 				tt.wantAuthor + strings.Repeat(" ", authorWidth-runewidth.StringWidth(tt.wantAuthor)+columnGapWidth)
 			if plain != wantPrefix+"hello" {
 				t.Fatalf("Render() = %q, want prefix %q", got, wantPrefix)
@@ -456,12 +457,15 @@ func TestRenderRoleBadgesFixedOrderAndUnknownOmitted(t *testing.T) {
 	}
 }
 
-func TestRenderPlatformRoleBadgesUsesTwitchSymbolsOnlyForTwitch(t *testing.T) {
+func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 	roleSet := roles(chat.RoleFollower, chat.RoleSubscriber, chat.RoleOG, chat.RoleVIP, chat.RolePartner, chat.RoleModerator, chat.RoleBroadcaster)
 	if got := RenderPlatformRoleBadges(chat.PlatformTwitch, roleSet); got != "🔴🗡️✅💎" {
 		t.Fatalf("Twitch badges=%q", got)
 	}
-	for _, platform := range []chat.Platform{chat.PlatformKick, chat.PlatformYouTube, chat.Platform("")} {
+	if got := RenderPlatformRoleBadges(chat.PlatformKick, roleSet); got != "🟢🛡️✅💎" {
+		t.Fatalf("Kick badges=%q", got)
+	}
+	for _, platform := range []chat.Platform{chat.PlatformYouTube, chat.Platform("")} {
 		if got := RenderPlatformRoleBadges(platform, roleSet); got != "[B][M][P][V]" {
 			t.Fatalf("platform=%s badges=%q", platform, got)
 		}
@@ -483,6 +487,23 @@ func TestRenderPlatformRoleBadgesUsesTwitchSymbolsOnlyForTwitch(t *testing.T) {
 			t.Fatalf("role=%v badge=%q want=%q", badge.role, got, badge.want)
 		}
 	}
+	kickAvailable := []struct {
+		role chat.Role
+		want string
+	}{
+		{chat.RoleBroadcaster, "🟢"},
+		{chat.RoleModerator, "🛡️"},
+		{chat.RolePartner, "✅"},
+		{chat.RoleVIP, "💎"},
+		{chat.RoleOG, "🏆"},
+		{chat.RoleSubscriber, "⭐"},
+		{chat.RoleFollower, "💚"},
+	}
+	for _, badge := range kickAvailable {
+		if got := RenderPlatformRoleBadges(chat.PlatformKick, roles(badge.role)); got != badge.want {
+			t.Fatalf("Kick role=%v badge=%q want=%q", badge.role, got, badge.want)
+		}
+	}
 }
 
 func TestIdentityAlignmentIncludesRoleDisplayWidth(t *testing.T) {
@@ -495,7 +516,9 @@ func TestIdentityAlignmentIncludesRoleDisplayWidth(t *testing.T) {
 	}
 	plain := render("LongerName", 0)
 	badged := render("User", roles(chat.RoleModerator, chat.RoleSubscriber))
-	if strings.Index(plain, "message") != strings.Index(badged, "message") {
+	plainMessage := strings.Index(plain, "message")
+	badgedMessage := strings.Index(badged, "message")
+	if runewidth.StringWidth(plain[:plainMessage]) != runewidth.StringWidth(badged[:badgedMessage]) {
 		t.Fatalf("identity columns differ: plain=%q badged=%q", plain, badged)
 	}
 }

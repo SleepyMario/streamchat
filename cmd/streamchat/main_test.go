@@ -95,7 +95,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "Streamchat 3.5") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
+	if !strings.Contains(out.String(), "Streamchat 3.6") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
 		t.Fatalf("help does not describe stable platform support accurately: %s", out.String())
 	}
 }
@@ -355,7 +355,7 @@ func TestRunAdaptersDisplaysKickHumanAndBotMessages(t *testing.T) {
 	if !strings.Contains(rendered, "Viewer") || !strings.Contains(rendered, "human message") {
 		t.Fatalf("ordinary Kick message missing: %q / %q", rendered, errw.String())
 	}
-	if !strings.Contains(rendered, "[M]") || !strings.Contains(rendered, "BotRix") || !strings.Contains(rendered, "bot message") {
+	if !strings.Contains(rendered, "🛡️") || !strings.Contains(rendered, "BotRix") || !strings.Contains(rendered, "bot message") {
 		t.Fatalf("Kick bot message missing or metadata changed: %q / %q", rendered, errw.String())
 	}
 }

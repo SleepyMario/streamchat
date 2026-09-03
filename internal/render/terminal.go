@@ -92,6 +92,20 @@ var twitchRoleBadges = []roleBadge{
 	{chat.RoleFollower, "💜"},
 }
 
+// KickRoleBadges use the same stable terminal-safe approach as Twitch's
+// markers, but follow Kick's green visual identity and its channel-role
+// vocabulary. Provider artwork and custom subscriber images remain preserved
+// in chat.Message.Badges for graphical clients.
+var kickRoleBadges = []roleBadge{
+	{chat.RoleBroadcaster, "🟢"},
+	{chat.RoleModerator, "🛡️"},
+	{chat.RolePartner, "✅"},
+	{chat.RoleVIP, "💎"},
+	{chat.RoleOG, "🏆"},
+	{chat.RoleSubscriber, "⭐"},
+	{chat.RoleFollower, "💚"},
+}
+
 func renderRoleBadges(roles chat.RoleSet, available []roleBadge) string {
 	var badges strings.Builder
 	rendered := 0
@@ -112,10 +126,14 @@ func RenderRoleBadges(roles chat.RoleSet) string {
 }
 
 func RenderPlatformRoleBadges(platform chat.Platform, roles chat.RoleSet) string {
-	if platform == chat.PlatformTwitch {
+	switch platform {
+	case chat.PlatformTwitch:
 		return renderRoleBadges(roles, twitchRoleBadges)
+	case chat.PlatformKick:
+		return renderRoleBadges(roles, kickRoleBadges)
+	default:
+		return RenderRoleBadges(roles)
 	}
-	return RenderRoleBadges(roles)
 }
 
 func providerLabel(platform chat.Platform) string {
