@@ -209,6 +209,57 @@ func TestYouTubeBotSetupUsesSeparateBroadIdentity(t *testing.T) {
 	}
 }
 
+func TestYouTubeBotSetupWithoutLocalPrimaryAuthorization(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_, _ = io.WriteString(w, `{"access_token":"bot-access","refresh_token":"bot-refresh","expires_in":3600}`)
+		case "/channels":
+			if r.Header.Get("Authorization") != "Bearer bot-access" {
+				t.Fatalf("unexpected authorization: %q", r.Header.Get("Authorization"))
+			}
+			_, _ = io.WriteString(w, `{"items":[{"id":"bot-channel","snippet":{"title":"ComradeKip"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := config.Defaults()
+	c.YouTube.BaseURL = server.URL
+	var out bytes.Buffer
+	wizard := New(strings.NewReader("bot-client\nbot-secret\n"), &out, "")
+	wizard.HTTP = server.Client()
+	wizard.YouTubeTokenURL = server.URL + "/token"
+	wizard.Authorize = func(_ context.Context, _ oauthpkg.Request, _ io.Writer, _ func(string) error) (oauthpkg.Result, error) {
+		return oauthpkg.Result{Code: "bot-code", Verifier: "verifier"}, nil
+	}
+	if err := wizard.youtubeBot(context.Background(), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Bot.YouTube.UserID != "bot-channel" || c.Bot.YouTube.UserLogin != "ComradeKip" || c.Bot.YouTube.RefreshToken != "bot-refresh" {
+		t.Fatalf("bot identity not saved: %+v", c.Bot.YouTube)
+	}
+	if !strings.Contains(out.String(), "skipped the automatic bot-versus-broadcaster identity comparison") {
+		t.Fatalf("missing skipped-comparison notice: %s", out.String())
+	}
+}
+
+func TestCanVerifyPrimaryYouTubeIdentity(t *testing.T) {
+	if canVerifyPrimaryYouTubeIdentity(config.YouTube{}) {
+		t.Fatal("empty YouTube configuration was treated as identity-capable")
+	}
+	if !canVerifyPrimaryYouTubeIdentity(config.YouTube{AccessToken: "access"}) {
+		t.Fatal("access token should permit an identity check")
+	}
+	if !canVerifyPrimaryYouTubeIdentity(config.YouTube{ClientID: "client", ClientSecret: "secret", RefreshToken: "refresh"}) {
+		t.Fatal("refreshable authorization should permit an identity check")
+	}
+	if canVerifyPrimaryYouTubeIdentity(config.YouTube{RefreshToken: "refresh"}) {
+		t.Fatal("an unrefreshable token was treated as identity-capable")
+	}
+}
+
 func TestYouTubeBotSetupRejectsPrimaryIdentity(t *testing.T) {
 	if !sameYouTubeIdentity("owner-channel", "owner-channel") {
 		t.Fatal("matching YouTube channels were not recognized")

@@ -282,23 +282,27 @@ func (w *Wizard) youtubeBot(ctx context.Context, c *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("resolve YouTube bot identity: %w", err)
 	}
-	ownerClient := youtube.New(w.HTTP, c.YouTube.BaseURL, c.YouTube.APIKey, c.YouTube.AccessToken, "")
-	ownerClient.ClientID = c.YouTube.ClientID
-	ownerClient.ClientSecret = c.YouTube.ClientSecret
-	ownerClient.RefreshToken = c.YouTube.RefreshToken
-	ownerClient.TokenExpiry = c.YouTube.TokenExpiry
-	ownerClient.OnToken = func(refreshed youtube.Token) error {
-		c.YouTube.AccessToken = refreshed.AccessToken
-		c.YouTube.RefreshToken = refreshed.RefreshToken
-		c.YouTube.TokenExpiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
-		return nil
-	}
-	ownerID, _, err := ownerClient.CurrentChannel(ctx)
-	if err != nil {
-		return fmt.Errorf("verify primary YouTube identity before storing the bot: %w", err)
-	}
-	if sameYouTubeIdentity(ownerID, botID) {
-		return fmt.Errorf("YouTube authorized the primary channel %s, not a separate bot channel; choose the intended bot account and rerun: streamchat setup youtube-bot", botName)
+	if canVerifyPrimaryYouTubeIdentity(c.YouTube) {
+		ownerClient := youtube.New(w.HTTP, c.YouTube.BaseURL, c.YouTube.APIKey, c.YouTube.AccessToken, "")
+		ownerClient.ClientID = c.YouTube.ClientID
+		ownerClient.ClientSecret = c.YouTube.ClientSecret
+		ownerClient.RefreshToken = c.YouTube.RefreshToken
+		ownerClient.TokenExpiry = c.YouTube.TokenExpiry
+		ownerClient.OnToken = func(refreshed youtube.Token) error {
+			c.YouTube.AccessToken = refreshed.AccessToken
+			c.YouTube.RefreshToken = refreshed.RefreshToken
+			c.YouTube.TokenExpiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+			return nil
+		}
+		ownerID, _, err := ownerClient.CurrentChannel(ctx)
+		if err != nil {
+			return fmt.Errorf("verify primary YouTube identity before storing the bot: %w", err)
+		}
+		if sameYouTubeIdentity(ownerID, botID) {
+			return fmt.Errorf("YouTube authorized the primary channel %s, not a separate bot channel; choose the intended bot account and rerun: streamchat setup youtube-bot", botName)
+		}
+	} else {
+		fmt.Fprintln(w.Out, "Primary YouTube authorization is not configured in this file; skipped the automatic bot-versus-broadcaster identity comparison.")
 	}
 	account.AccessToken = token.AccessToken
 	account.RefreshToken = token.RefreshToken
@@ -308,6 +312,11 @@ func (w *Wizard) youtubeBot(ctx context.Context, c *config.Config) error {
 	c.Bot.YouTube = account
 	fmt.Fprintf(w.Out, "Authorized dedicated YouTube bot channel %s for replies on SleepyMario's live broadcasts.\n", botName)
 	return nil
+}
+
+func canVerifyPrimaryYouTubeIdentity(primary config.YouTube) bool {
+	return strings.TrimSpace(primary.AccessToken) != "" ||
+		(strings.TrimSpace(primary.RefreshToken) != "" && strings.TrimSpace(primary.ClientID) != "" && strings.TrimSpace(primary.ClientSecret) != "")
 }
 
 func sameYouTubeIdentity(primaryChannelID, candidateChannelID string) bool {
