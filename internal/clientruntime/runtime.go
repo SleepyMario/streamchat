@@ -93,13 +93,14 @@ func newRuntime(ctx context.Context, cfg config.Config, botIdentity bool) (*Runt
 	r := &Runtime{cfg: cfg, path: cfg.Path, http: &http.Client{Timeout: 20 * time.Second}, relay: "disconnected", streams: map[string]StreamStatus{}}
 	kickPersist := func(value config.Kick) error { return persistKickIdentity(cfg.Path, value, botIdentity) }
 	twitchPersist := func(value config.Twitch) error { return persistTwitchIdentity(cfg.Path, value, botIdentity) }
+	youtubePersist := func(value config.YouTube) error { return persistYouTubeIdentity(cfg.Path, value, botIdentity) }
 	r.kick = &kickTarget{cfg: cfg.Kick, path: cfg.Path, http: r.http, persist: kickPersist}
 	twitchTarget, twitchErr := newTwitchTarget(ctx, &r.cfg, r.path, twitchPersist)
 	r.twitch = twitchTarget
 	if twitchErr != nil {
 		r.twitchErr = twitchErr.Error()
 	}
-	youtubeTarget, youtubeErr := newYouTubeTarget(&r.cfg, r.path, r.http)
+	youtubeTarget, youtubeErr := newYouTubeTarget(&r.cfg, r.http, botIdentity, youtubePersist)
 	r.youtube = youtubeTarget
 	kickAvailable := cfg.Kick.BroadcasterID != "" && (cfg.Kick.AccessToken != "" || cfg.Kick.RefreshToken != "")
 	twitchAvailable := twitchErr == nil && twitchTarget != nil
@@ -151,6 +152,13 @@ func botConfig(cfg config.Config) config.Config {
 		cfg.Twitch.UserID = cfg.Bot.Twitch.UserID
 		cfg.Twitch.UserLogin = cfg.Bot.Twitch.UserLogin
 	}
+	if accountConfigured(cfg.Bot.YouTube) {
+		cfg.YouTube.ClientID = cfg.Bot.YouTube.ClientID
+		cfg.YouTube.ClientSecret = cfg.Bot.YouTube.ClientSecret
+		cfg.YouTube.AccessToken = cfg.Bot.YouTube.AccessToken
+		cfg.YouTube.RefreshToken = cfg.Bot.YouTube.RefreshToken
+		cfg.YouTube.TokenExpiry = cfg.Bot.YouTube.TokenExpiry
+	}
 	return cfg
 }
 
@@ -196,6 +204,25 @@ func persistTwitchIdentity(path string, value config.Twitch, botIdentity bool) e
 	return config.Save(path, loaded)
 }
 
+func persistYouTubeIdentity(path string, value config.YouTube, botIdentity bool) error {
+	loaded, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if botIdentity && accountConfigured(loaded.Bot.YouTube) {
+		loaded.Bot.YouTube.ClientID = value.ClientID
+		loaded.Bot.YouTube.ClientSecret = value.ClientSecret
+		loaded.Bot.YouTube.AccessToken = value.AccessToken
+		loaded.Bot.YouTube.RefreshToken = value.RefreshToken
+		loaded.Bot.YouTube.TokenExpiry = value.TokenExpiry
+	} else {
+		loaded.YouTube.AccessToken = value.AccessToken
+		loaded.YouTube.RefreshToken = value.RefreshToken
+		loaded.YouTube.TokenExpiry = value.TokenExpiry
+	}
+	return config.Save(path, loaded)
+}
+
 func (r *Runtime) Session() *outbound.Session { return r.session }
 
 func (r *Runtime) Execute(ctx context.Context, command string) (string, error) {
@@ -213,6 +240,12 @@ func (r *Runtime) Select(ctx context.Context, platform string) error {
 // SendTo sends directly to a named provider without changing the interactive
 // target selection shared by the GUI and terminal client.
 func (r *Runtime) SendTo(ctx context.Context, platform, message string) error {
+	return r.SendToChannel(ctx, platform, "", message)
+}
+
+// SendToChannel lets the bot reply to the exact broadcast that produced a
+// command. Other providers already carry a stable configured channel target.
+func (r *Runtime) SendToChannel(ctx context.Context, platform, channelID, message string) error {
 	if r == nil {
 		return errors.New("Streamchat runtime is unavailable")
 	}
@@ -233,6 +266,9 @@ func (r *Runtime) SendTo(ctx context.Context, platform, message string) error {
 	case string(chat.PlatformYouTube):
 		if r.youtube == nil {
 			return errors.New("YouTube sending is unavailable")
+		}
+		if strings.TrimSpace(channelID) != "" {
+			return r.youtube.SendToVideo(ctx, channelID, message)
 		}
 		return r.youtube.Send(ctx, message)
 	default:
@@ -579,8 +615,8 @@ type youtubeTarget struct {
 	archive string
 }
 
-func newYouTubeTarget(cfg *config.Config, path string, httpClient *http.Client) (*youtubeTarget, error) {
-	if cfg.Client.ServerURL != "" && cfg.RelayAuthToken != "" {
+func newYouTubeTarget(cfg *config.Config, httpClient *http.Client, botIdentity bool, persist func(config.YouTube) error) (*youtubeTarget, error) {
+	if !botIdentity && cfg.Client.ServerURL != "" && cfg.RelayAuthToken != "" {
 		return &youtubeTarget{remote: relay.NewControlClient(cfg.Client.ServerURL, cfg.RelayAuthToken), archive: cfg.Storage.SQLitePath}, nil
 	}
 	if cfg.YouTube.ClientID == "" || cfg.YouTube.ClientSecret == "" || cfg.YouTube.RefreshToken == "" {
@@ -593,16 +629,17 @@ func newYouTubeTarget(cfg *config.Config, path string, httpClient *http.Client) 
 		cfg.YouTube.AccessToken = token.AccessToken
 		cfg.YouTube.RefreshToken = token.RefreshToken
 		cfg.YouTube.TokenExpiry = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
-		loaded, err := config.Load(path)
-		if err != nil {
-			return err
-		}
-		loaded.YouTube.AccessToken = cfg.YouTube.AccessToken
-		loaded.YouTube.RefreshToken = cfg.YouTube.RefreshToken
-		loaded.YouTube.TokenExpiry = cfg.YouTube.TokenExpiry
-		return config.Save(path, loaded)
+		return persist(cfg.YouTube)
 	}
 	return &youtubeTarget{client: c, archive: cfg.Storage.SQLitePath}, nil
+}
+
+func (y *youtubeTarget) SendToVideo(ctx context.Context, videoID, message string) error {
+	if y == nil || y.client == nil {
+		return errors.New("direct YouTube bot sending is unavailable")
+	}
+	_, err := y.client.SendMessageToVideo(ctx, videoID, message)
+	return err
 }
 
 func (y *youtubeTarget) call(ctx context.Context, request relay.ControlRequest) (relay.ControlResponse, error) {

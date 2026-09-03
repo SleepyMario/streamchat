@@ -16,6 +16,7 @@ import (
 	oauthpkg "github.com/SleepyMario/streamchat/internal/oauth"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
 	"github.com/SleepyMario/streamchat/internal/platform/twitch"
+	"github.com/SleepyMario/streamchat/internal/platform/youtube"
 )
 
 func TestSelectionParsing(t *testing.T) {
@@ -131,6 +132,89 @@ func TestYouTubeOAuthScopeSupportsChatAndModeration(t *testing.T) {
 	want := []string{"https://www.googleapis.com/auth/youtube.force-ssl"}
 	if !reflect.DeepEqual(youtubeServerScopes, want) {
 		t.Fatalf("scopes=%v want=%v", youtubeServerScopes, want)
+	}
+}
+
+func TestYouTubeBotOAuthUsesBroadManageScope(t *testing.T) {
+	want := []string{youtube.ManageScope}
+	if !reflect.DeepEqual(youtubeBotScopes, want) {
+		t.Fatalf("scopes=%v want=%v", youtubeBotScopes, want)
+	}
+	text := youtubeBotInstructions(config.Defaults())
+	for _, expected := range []string{"separate YouTube channel", "Manage your YouTube account", "not a least-privilege", "destructive operations", "bot.youtube"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("YouTube bot instructions missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestYouTubeBotSetupUsesSeparateBroadIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Form.Get("client_id") != "shared-client" || r.Form.Get("client_secret") != "shared-secret" || r.Form.Get("code") != "bot-code" {
+				t.Fatalf("unexpected token exchange: %v", r.Form)
+			}
+			_, _ = io.WriteString(w, `{"access_token":"bot-access","refresh_token":"bot-refresh","expires_in":3600}`)
+		case "/channels":
+			if r.URL.Query().Get("mine") != "true" || r.URL.Query().Get("part") != "id,snippet" {
+				t.Fatalf("unexpected identity query: %s", r.URL.RawQuery)
+			}
+			switch r.Header.Get("Authorization") {
+			case "Bearer bot-access":
+				_, _ = io.WriteString(w, `{"items":[{"id":"bot-channel","snippet":{"title":"ComradeKip"}}]}`)
+			case "Bearer owner-access":
+				_, _ = io.WriteString(w, `{"items":[{"id":"owner-channel","snippet":{"title":"SleepyMario"}}]}`)
+			default:
+				t.Fatalf("unexpected authorization: %q", r.Header.Get("Authorization"))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := config.Defaults()
+	c.YouTube.BaseURL = server.URL
+	c.YouTube.ClientID = "shared-client"
+	c.YouTube.ClientSecret = "shared-secret"
+	c.YouTube.AccessToken = "owner-access"
+	c.YouTube.RefreshToken = "owner-refresh"
+	var out bytes.Buffer
+	wizard := New(strings.NewReader("y\ny\n"), &out, "")
+	wizard.HTTP = server.Client()
+	wizard.YouTubeTokenURL = server.URL + "/token"
+	wizard.Authorize = func(_ context.Context, request oauthpkg.Request, _ io.Writer, _ func(string) error) (oauthpkg.Result, error) {
+		if !reflect.DeepEqual(request.Scopes, youtubeBotScopes) || !request.UsePKCE || request.Parameters["prompt"] != "consent select_account" {
+			t.Fatalf("unexpected authorization request: %+v", request)
+		}
+		return oauthpkg.Result{Code: "bot-code", Verifier: "verifier"}, nil
+	}
+	if err := wizard.youtubeBot(context.Background(), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.YouTube.AccessToken != "owner-access" || c.YouTube.RefreshToken != "owner-refresh" {
+		t.Fatalf("primary identity changed: %+v", c.YouTube)
+	}
+	if c.Bot.YouTube.ClientID != "shared-client" || c.Bot.YouTube.AccessToken != "bot-access" || c.Bot.YouTube.RefreshToken != "bot-refresh" || c.Bot.YouTube.UserID != "bot-channel" || c.Bot.YouTube.UserLogin != "ComradeKip" {
+		t.Fatalf("bot identity not saved: %+v", c.Bot.YouTube)
+	}
+	for _, secret := range []string{"shared-secret", "bot-access", "bot-refresh"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("secret appeared in output: %s", out.String())
+		}
+	}
+}
+
+func TestYouTubeBotSetupRejectsPrimaryIdentity(t *testing.T) {
+	if !sameYouTubeIdentity("owner-channel", "owner-channel") {
+		t.Fatal("matching YouTube channels were not recognized")
+	}
+	if sameYouTubeIdentity("owner-channel", "bot-channel") {
+		t.Fatal("different YouTube channels were treated as identical")
 	}
 }
 

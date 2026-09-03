@@ -22,6 +22,7 @@ var ErrNoActiveBroadcast = errors.New("YouTube account has no active broadcast")
 
 const (
 	ForceSSLScope = "https://www.googleapis.com/auth/youtube.force-ssl"
+	ManageScope   = "https://www.googleapis.com/auth/youtube"
 	AuthorizeURL  = "https://accounts.google.com/o/oauth2/v2/auth"
 	TokenURL      = "https://oauth2.googleapis.com/token"
 )
@@ -271,6 +272,17 @@ func (c *Client) Discover(ctx context.Context) (string, string, error) {
 	if c.VideoID == "" {
 		return c.discoverActive(ctx)
 	}
+	return c.DiscoverVideo(ctx, c.VideoID)
+}
+
+// DiscoverVideo resolves the live chat attached to one explicit broadcast.
+// A dedicated bot account uses this instead of looking for a broadcast that it
+// owns; the broadcast ID comes from the already authenticated ingestion path.
+func (c *Client) DiscoverVideo(ctx context.Context, videoID string) (string, string, error) {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return "", "", errors.New("YouTube video ID is required")
+	}
 	var v struct {
 		Items []struct {
 			ID      string `json:"id"`
@@ -280,7 +292,7 @@ func (c *Client) Discover(ctx context.Context) (string, string, error) {
 			} `json:"liveStreamingDetails"`
 		} `json:"items"`
 	}
-	e := c.request(ctx, "/videos", url.Values{"part": {"snippet,liveStreamingDetails"}, "id": {c.VideoID}}, &v)
+	e := c.request(ctx, "/videos", url.Values{"part": {"snippet,liveStreamingDetails"}, "id": {videoID}}, &v)
 	if e != nil {
 		return "", "", e
 	}
@@ -291,6 +303,25 @@ func (c *Client) Discover(ctx context.Context) (string, string, error) {
 		return "", "", errors.New("YouTube video has no active live chat")
 	}
 	return v.Items[0].Snippet.LiveChatID, v.Items[0].ID, e
+}
+
+// CurrentChannel returns the identity associated with the current OAuth token.
+func (c *Client) CurrentChannel(ctx context.Context) (string, string, error) {
+	var response struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Snippet struct {
+				Title string `json:"title"`
+			} `json:"snippet"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, "/channels", url.Values{"part": {"id,snippet"}, "mine": {"true"}}, &response); err != nil {
+		return "", "", err
+	}
+	if len(response.Items) == 0 || strings.TrimSpace(response.Items[0].ID) == "" {
+		return "", "", errors.New("authorized Google account has no YouTube channel")
+	}
+	return response.Items[0].ID, response.Items[0].Snippet.Title, nil
 }
 
 func (c *Client) discoverActive(ctx context.Context) (string, string, error) {
@@ -333,9 +364,31 @@ func (c *Client) SendMessage(ctx context.Context, message string) (string, error
 	if err != nil {
 		return "", err
 	}
+	return c.SendMessageToLiveChat(ctx, chatID, message)
+}
+
+// SendMessageToVideo posts to a known live broadcast without assuming that the
+// authorized identity owns it. This is the dedicated YouTube bot path.
+func (c *Client) SendMessageToVideo(ctx context.Context, videoID, message string) (string, error) {
+	chatID, _, err := c.DiscoverVideo(ctx, videoID)
+	if err != nil {
+		return "", err
+	}
+	return c.SendMessageToLiveChat(ctx, chatID, message)
+}
+
+func (c *Client) SendMessageToLiveChat(ctx context.Context, chatID, message string) (string, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", errors.New("message must not be empty")
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return "", errors.New("YouTube live chat ID is required")
+	}
 	body := map[string]any{"snippet": map[string]any{"liveChatId": chatID, "type": "textMessageEvent", "textMessageDetails": map[string]string{"messageText": message}}}
 	var result sendResponse
-	err = c.requestJSON(ctx, http.MethodPost, "/liveChat/messages", url.Values{"part": {"snippet"}}, body, &result)
+	err := c.requestJSON(ctx, http.MethodPost, "/liveChat/messages", url.Values{"part": {"snippet"}}, body, &result)
 	return result.ID, err
 }
 

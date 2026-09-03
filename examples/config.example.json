@@ -97,6 +97,14 @@
       "refresh_token": "",
       "user_id": "",
       "user_login": ""
+    },
+    "youtube": {
+      "client_id": "",
+      "client_secret": "",
+      "access_token": "",
+      "refresh_token": "",
+      "user_id": "",
+      "user_login": ""
     }
   },
   "chat_color_mode": "line",

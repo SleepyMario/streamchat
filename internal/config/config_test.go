@@ -86,12 +86,15 @@ func TestRedactedJSONContainsNoSecrets(t *testing.T) {
 	c.Twitch.RefreshToken = "TWITCH-REFRESH"
 	c.Bot.Kick.AccessToken = "BOT-KICK-TOKEN"
 	c.Bot.Twitch.RefreshToken = "BOT-TWITCH-REFRESH"
+	c.Bot.YouTube.ClientSecret = "BOT-YOUTUBE-SECRET"
+	c.Bot.YouTube.AccessToken = "BOT-YOUTUBE-ACCESS"
+	c.Bot.YouTube.RefreshToken = "BOT-YOUTUBE-REFRESH"
 	c.RelayAuthToken = "RELAY-VERY-SECRET"
 	b, err := RedactedJSON(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"YT-VERY-SECRET", "YT-CLIENT-SECRET", "YT-ACCESS-TOKEN", "YT-REFRESH-TOKEN", "KICK-VERY-SECRET", "KICK-TOKEN", "TWITCH-REFRESH", "BOT-KICK-TOKEN", "BOT-TWITCH-REFRESH", "RELAY-VERY-SECRET"} {
+	for _, secret := range []string{"YT-VERY-SECRET", "YT-CLIENT-SECRET", "YT-ACCESS-TOKEN", "YT-REFRESH-TOKEN", "KICK-VERY-SECRET", "KICK-TOKEN", "TWITCH-REFRESH", "BOT-KICK-TOKEN", "BOT-TWITCH-REFRESH", "BOT-YOUTUBE-SECRET", "BOT-YOUTUBE-ACCESS", "BOT-YOUTUBE-REFRESH", "RELAY-VERY-SECRET"} {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("secret leaked: %s", secret)
 		}

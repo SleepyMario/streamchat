@@ -85,7 +85,7 @@ func TestUIAndSettings(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"channels":{"twitch":{"available":true,"live":true}}`) {
 		t.Fatalf("state channels=%d %s", w.Code, w.Body.String())
 	}
-	body := bytes.NewBufferString(`{"enabled":false,"commands_reply":"Commands: !commands, !status","cooldown_seconds":9,"platforms":{"kick":true,"twitch":false}}`)
+	body := bytes.NewBufferString(`{"enabled":false,"commands_reply":"Commands: !commands, !status","cooldown_seconds":9,"platforms":{"kick":true,"twitch":false,"youtube":true}}`)
 	r = httptest.NewRequest(http.MethodPut, "/api/settings", body)
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, r)
@@ -93,7 +93,7 @@ func TestUIAndSettings(t *testing.T) {
 		t.Fatalf("settings=%d %s", w.Code, w.Body.String())
 	}
 	state := engine.State()
-	if state.Enabled || state.Cooldown != 9 || state.Platforms["twitch"] {
+	if state.Enabled || state.Cooldown != 9 || state.Platforms["twitch"] || !state.Platforms["youtube"] {
 		t.Fatalf("state=%+v", state)
 	}
 	r = httptest.NewRequest(http.MethodPost, "/api/test", strings.NewReader(`{"platform":"kick"}`))

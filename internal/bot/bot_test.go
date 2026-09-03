@@ -26,7 +26,7 @@ func (s *recordingSender) SendTo(_ context.Context, platform, message string) er
 	return nil
 }
 
-func TestCommandsOnKickAndTwitchOnly(t *testing.T) {
+func TestCommandsOnEverySupportedPlatform(t *testing.T) {
 	sender := &recordingSender{}
 	commandLog := &recordingCommandLog{}
 	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second, CommandLog: commandLog})
@@ -41,10 +41,10 @@ func TestCommandsOnKickAndTwitchOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(sender.messages) != 2 || sender.platforms[0] != string(chat.PlatformKick) || sender.platforms[1] != string(chat.PlatformTwitch) {
+	if len(sender.messages) != 3 || sender.platforms[0] != string(chat.PlatformKick) || sender.platforms[1] != string(chat.PlatformTwitch) || sender.platforms[2] != string(chat.PlatformYouTube) {
 		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
 	}
-	if len(commandLog.records) != 2 || commandLog.records[0].Command != "!commands" || commandLog.records[1].Command != "!commands" {
+	if len(commandLog.records) != 3 || commandLog.records[0].Command != "!commands" || commandLog.records[1].Command != "!commands" || commandLog.records[2].Command != "!commands" {
 		t.Fatalf("command records=%+v", commandLog.records)
 	}
 }
@@ -106,7 +106,7 @@ func TestDuplicateCommandMayAnswerAfterFourInterveningMessages(t *testing.T) {
 	}
 }
 
-func TestLanguageCommandIsKickAndTwitchOnlyAndRecorded(t *testing.T) {
+func TestLanguageCommandIsSharedAcrossAllPlatformsAndRecorded(t *testing.T) {
 	sender := &recordingSender{}
 	commandLog := &recordingCommandLog{}
 	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second, CommandLog: commandLog})
@@ -120,11 +120,38 @@ func TestLanguageCommandIsKickAndTwitchOnlyAndRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(sender.messages) != 2 || sender.platforms[0] != "twitch" || sender.platforms[1] != "kick" || sender.messages[0] != languageReply || sender.messages[1] != languageReply {
+	if len(sender.messages) != 3 || sender.platforms[0] != "twitch" || sender.platforms[1] != "kick" || sender.platforms[2] != "youtube" || sender.messages[0] != languageReply || sender.messages[1] != languageReply || sender.messages[2] != languageReply {
 		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
 	}
-	if len(commandLog.records) != 2 || commandLog.records[0].Command != "!language" || commandLog.records[1].Command != "!language" || !commandLog.records[0].Succeeded || !commandLog.records[1].Succeeded {
+	if len(commandLog.records) != 3 || commandLog.records[0].Command != "!language" || commandLog.records[1].Command != "!language" || commandLog.records[2].Command != "!language" || !commandLog.records[0].Succeeded || !commandLog.records[1].Succeeded || !commandLog.records[2].Succeeded {
 		t.Fatalf("command records=%+v", commandLog.records)
+	}
+}
+
+type recordingChannelSender struct {
+	platform string
+	channel  string
+	message  string
+}
+
+func (s *recordingChannelSender) SendTo(context.Context, string, string) error {
+	return nil
+}
+
+func (s *recordingChannelSender) SendToChannel(_ context.Context, platform, channel, message string) error {
+	s.platform, s.channel, s.message = platform, channel, message
+	return nil
+}
+
+func TestYouTubeCommandRepliesToOriginatingBroadcast(t *testing.T) {
+	sender := &recordingChannelSender{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands, !language", Cooldown: time.Minute})
+	err := engine.handle(context.Background(), chat.Message{Platform: chat.PlatformYouTube, ChannelID: "youtube-video-id", Text: "!commands", EventType: chat.EventMessage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sender.platform != "youtube" || sender.channel != "youtube-video-id" || sender.message != "Commands: !commands, !language" {
+		t.Fatalf("platform=%q channel=%q message=%q", sender.platform, sender.channel, sender.message)
 	}
 }
 
@@ -168,5 +195,14 @@ func TestPlatformAlertsRespectPlatformDisableAndIgnoreYouTube(t *testing.T) {
 	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "youtube", Actor: "Follower"})
 	if len(sender.messages) != 0 {
 		t.Fatalf("unexpected messages=%v", sender.messages)
+	}
+}
+
+func TestUpdatePreservesIndependentYouTubePlatformState(t *testing.T) {
+	engine := New(&recordingSender{}, Config{})
+	engine.Update(State{Platforms: map[string]bool{"kick": true, "twitch": false, "youtube": true}, Cooldown: 60})
+	state := engine.State()
+	if !state.Platforms["kick"] || state.Platforms["twitch"] || !state.Platforms["youtube"] {
+		t.Fatalf("platform state=%v", state.Platforms)
 	}
 }

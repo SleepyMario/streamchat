@@ -15,6 +15,10 @@ type Sender interface {
 	SendTo(context.Context, string, string) error
 }
 
+type channelSender interface {
+	SendToChannel(context.Context, string, string, string) error
+}
+
 const languageReply = "You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on that fat Sleepy dude."
 
 type Config struct {
@@ -124,11 +128,11 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	reply := ""
 	switch command {
 	case "!commands":
-		if event.Platform == string(chat.PlatformKick) || event.Platform == string(chat.PlatformTwitch) {
+		if supportedCommandPlatform(event.Platform) {
 			reply = cfg.CommandsReply
 		}
 	case "!language":
-		if event.Platform == string(chat.PlatformKick) || event.Platform == string(chat.PlatformTwitch) {
+		if supportedCommandPlatform(event.Platform) {
 			reply = languageReply
 		}
 	}
@@ -153,7 +157,7 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	}
 	e.last[key] = commandReplyState{at: now, sequence: sequence}
 	e.mu.Unlock()
-	if err := e.sender.SendTo(ctx, event.Platform, reply); err != nil {
+	if err := e.sendReply(ctx, event, reply); err != nil {
 		e.record(event.Platform, command+" reply failed", true)
 		if logErr := e.recordCommand(event.Platform, command, false); logErr != nil {
 			return errors.Join(fmt.Errorf("answer %s on %s: %w", command, event.Platform, err), logErr)
@@ -162,6 +166,17 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	}
 	e.record(event.Platform, "Answered "+command, false)
 	return e.recordCommand(event.Platform, command, true)
+}
+
+func supportedCommandPlatform(platform string) bool {
+	return platform == string(chat.PlatformKick) || platform == string(chat.PlatformTwitch) || platform == string(chat.PlatformYouTube)
+}
+
+func (e *Engine) sendReply(ctx context.Context, event Event, reply string) error {
+	if sender, ok := e.sender.(channelSender); ok {
+		return sender.SendToChannel(ctx, event.Platform, event.ChannelID, reply)
+	}
+	return e.sender.SendTo(ctx, event.Platform, reply)
 }
 
 func platformAlertReply(event Event) (string, string) {
@@ -206,8 +221,8 @@ func (e *Engine) recordCommand(platform, command string, succeeded bool) error {
 
 func (e *Engine) Test(ctx context.Context, platform string) error {
 	platform = strings.ToLower(strings.TrimSpace(platform))
-	if platform != "kick" && platform != "twitch" {
-		return fmt.Errorf("test platform must be kick or twitch")
+	if platform != "kick" && platform != "twitch" && platform != "youtube" {
+		return fmt.Errorf("test platform must be kick, twitch, or youtube")
 	}
 	e.mu.Lock()
 	reply := e.cfg.CommandsReply
@@ -238,7 +253,7 @@ func (e *Engine) record(platform, message string, failed bool) {
 func (e *Engine) State() State {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return State{Enabled: e.cfg.Enabled, ShowChat: e.cfg.ShowChat, CommandsReply: e.cfg.CommandsReply, Cooldown: int(e.cfg.Cooldown / time.Second), Platforms: map[string]bool{"kick": !e.cfg.Disabled["kick"], "twitch": !e.cfg.Disabled["twitch"]}}
+	return State{Enabled: e.cfg.Enabled, ShowChat: e.cfg.ShowChat, CommandsReply: e.cfg.CommandsReply, Cooldown: int(e.cfg.Cooldown / time.Second), Platforms: map[string]bool{"kick": !e.cfg.Disabled["kick"], "twitch": !e.cfg.Disabled["twitch"], "youtube": !e.cfg.Disabled["youtube"]}}
 }
 
 func (e *Engine) Update(state State) {
@@ -248,5 +263,5 @@ func (e *Engine) Update(state State) {
 	e.cfg.ShowChat = state.ShowChat
 	e.cfg.CommandsReply = strings.TrimSpace(state.CommandsReply)
 	e.cfg.Cooldown = time.Duration(state.Cooldown) * time.Second
-	e.cfg.Disabled = map[string]bool{"kick": !state.Platforms["kick"], "twitch": !state.Platforms["twitch"]}
+	e.cfg.Disabled = map[string]bool{"kick": !state.Platforms["kick"], "twitch": !state.Platforms["twitch"], "youtube": !state.Platforms["youtube"]}
 }

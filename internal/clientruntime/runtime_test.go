@@ -207,8 +207,11 @@ func TestBotConfigUsesSeparateAccountsWithoutChangingTargets(t *testing.T) {
 	cfg.Kick.AccessToken = "owner-kick"
 	cfg.Twitch.Channel = "owner-channel"
 	cfg.Twitch.AccessToken = "owner-twitch"
+	cfg.YouTube.VideoID = "owner-video"
+	cfg.YouTube.AccessToken = "owner-youtube"
 	cfg.Bot.Kick = config.BotAccount{ClientID: "bot-kick-client", AccessToken: "bot-kick"}
 	cfg.Bot.Twitch = config.BotAccount{ClientID: "bot-twitch-client", AccessToken: "bot-twitch", UserID: "bot-user"}
+	cfg.Bot.YouTube = config.BotAccount{ClientID: "bot-youtube-client", AccessToken: "bot-youtube", UserID: "bot-channel"}
 	got := botConfig(cfg)
 	if got.Kick.AccessToken != "bot-kick" || got.Kick.BroadcasterID != "123" {
 		t.Fatalf("Kick bot identity or target lost: %+v", got.Kick)
@@ -216,7 +219,10 @@ func TestBotConfigUsesSeparateAccountsWithoutChangingTargets(t *testing.T) {
 	if got.Twitch.AccessToken != "bot-twitch" || got.Twitch.Channel != "owner-channel" || got.Twitch.UserID != "bot-user" {
 		t.Fatalf("Twitch bot identity or target lost: %+v", got.Twitch)
 	}
-	if cfg.Kick.AccessToken != "owner-kick" || cfg.Twitch.AccessToken != "owner-twitch" {
+	if got.YouTube.AccessToken != "bot-youtube" || got.YouTube.VideoID != "owner-video" {
+		t.Fatalf("YouTube bot identity or target lost: %+v", got.YouTube)
+	}
+	if cfg.Kick.AccessToken != "owner-kick" || cfg.Twitch.AccessToken != "owner-twitch" || cfg.YouTube.AccessToken != "owner-youtube" {
 		t.Fatal("source configuration was mutated")
 	}
 }
@@ -225,10 +231,11 @@ func TestBotConfigFallsBackPerPlatform(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Kick.AccessToken = "owner-kick"
 	cfg.Twitch.AccessToken = "owner-twitch"
+	cfg.YouTube.AccessToken = "owner-youtube"
 	cfg.Bot.Kick.AccessToken = "bot-kick"
 	got := botConfig(cfg)
-	if got.Kick.AccessToken != "bot-kick" || got.Twitch.AccessToken != "owner-twitch" {
-		t.Fatalf("unexpected fallback: kick=%q twitch=%q", got.Kick.AccessToken, got.Twitch.AccessToken)
+	if got.Kick.AccessToken != "bot-kick" || got.Twitch.AccessToken != "owner-twitch" || got.YouTube.AccessToken != "owner-youtube" {
+		t.Fatalf("unexpected fallback: kick=%q twitch=%q youtube=%q", got.Kick.AccessToken, got.Twitch.AccessToken, got.YouTube.AccessToken)
 	}
 }
 

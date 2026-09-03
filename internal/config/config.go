@@ -115,6 +115,7 @@ type Bot struct {
 	Discord           DiscordBot  `json:"discord,omitempty"`
 	Kick              BotAccount  `json:"kick,omitempty"`
 	Twitch            BotAccount  `json:"twitch,omitempty"`
+	YouTube           BotAccount  `json:"youtube,omitempty"`
 	Subtitles         SubtitleBot `json:"subtitles,omitempty"`
 }
 
@@ -601,6 +602,9 @@ func Redacted(c Config) Config {
 	r.Bot.Twitch.ClientSecret = Redact(c.Bot.Twitch.ClientSecret)
 	r.Bot.Twitch.AccessToken = Redact(c.Bot.Twitch.AccessToken)
 	r.Bot.Twitch.RefreshToken = Redact(c.Bot.Twitch.RefreshToken)
+	r.Bot.YouTube.ClientSecret = Redact(c.Bot.YouTube.ClientSecret)
+	r.Bot.YouTube.AccessToken = Redact(c.Bot.YouTube.AccessToken)
+	r.Bot.YouTube.RefreshToken = Redact(c.Bot.YouTube.RefreshToken)
 	r.Bot.GUIPassword = Redact(c.Bot.GUIPassword)
 	r.RelayAuthToken = Redact(c.RelayAuthToken)
 	return r

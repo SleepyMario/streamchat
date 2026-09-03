@@ -255,3 +255,68 @@ func TestWriteStatusAndChannelControls(t *testing.T) {
 		t.Fatalf("sent=%v deleted=%v banned=%v updated=%v", sent, deleted, banned, updated)
 	}
 }
+
+func TestCurrentChannelUsesAuthorizedIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/channels" || r.URL.Query().Get("mine") != "true" || r.URL.Query().Get("part") != "id,snippet" {
+			t.Fatalf("unexpected identity request: %s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer bot-token" {
+			t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"items":[{"id":"bot-channel","snippet":{"title":"ComradeKip"}}]}`))
+	}))
+	defer server.Close()
+
+	c := New(server.Client(), server.URL, "", "bot-token", "")
+	id, title, err := c.CurrentChannel(context.Background())
+	if err != nil || id != "bot-channel" || title != "ComradeKip" {
+		t.Fatalf("id=%q title=%q err=%v", id, title, err)
+	}
+}
+
+func TestSendMessageToVideoTargetsBroadcasterChatWithBotToken(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer bot-token" {
+			t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		switch calls {
+		case 1:
+			if r.Method != http.MethodGet || r.URL.Path != "/videos" || r.URL.Query().Get("id") != "broadcaster-video" {
+				t.Fatalf("unexpected discovery request: %s %s", r.Method, r.URL.String())
+			}
+			_, _ = w.Write([]byte(`{"items":[{"id":"broadcaster-video","liveStreamingDetails":{"activeLiveChatId":"broadcaster-chat"}}]}`))
+		case 2:
+			if r.Method != http.MethodPost || r.URL.Path != "/liveChat/messages" || r.URL.Query().Get("part") != "snippet" {
+				t.Fatalf("unexpected send request: %s %s", r.Method, r.URL.String())
+			}
+			var body struct {
+				Snippet struct {
+					LiveChatID         string `json:"liveChatId"`
+					Type               string `json:"type"`
+					TextMessageDetails struct {
+						Message string `json:"messageText"`
+					} `json:"textMessageDetails"`
+				} `json:"snippet"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Snippet.LiveChatID != "broadcaster-chat" || body.Snippet.Type != "textMessageEvent" || body.Snippet.TextMessageDetails.Message != "Commands: !commands, !language" {
+				t.Fatalf("unexpected message body: %+v", body)
+			}
+			_, _ = w.Write([]byte(`{"id":"reply-1"}`))
+		default:
+			t.Fatalf("unexpected extra request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	c := New(server.Client(), server.URL, "", "bot-token", "")
+	id, err := c.SendMessageToVideo(context.Background(), "broadcaster-video", "Commands: !commands, !language")
+	if err != nil || id != "reply-1" || calls != 2 {
+		t.Fatalf("id=%q calls=%d err=%v", id, calls, err)
+	}
+}

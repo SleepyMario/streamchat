@@ -49,7 +49,7 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 3.7 combines Kick, Twitch, and YouTube chat.
+const usage = `Streamchat 3.8 combines Kick, Twitch, and YouTube chat.
 All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:
@@ -102,6 +102,7 @@ Useful commands:
   streamchat setup youtube|kick|twitch [--config PATH]
   streamchat setup kick-bot         Authorize a dedicated Kick bot identity
   streamchat setup twitch-bot       Authorize a dedicated Twitch bot identity
+  streamchat setup youtube-bot      Authorize a dedicated YouTube bot identity
   streamchat setup youtube-server  Authorize unattended server ingestion
   streamchat run --youtube-video URL_OR_ID
   streamchat run --twitch-channel CHANNEL_OR_URL
@@ -541,8 +542,8 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 				fmt.Fprintf(out, "Streamchat bot: %s\n", safeError(err))
 			})
 			if c.Bot.Enabled {
-				enabledPlatforms := make([]string, 0, 2)
-				for _, platform := range []string{"Kick", "Twitch"} {
+				enabledPlatforms := make([]string, 0, 3)
+				for _, platform := range []string{"Kick", "Twitch", "YouTube"} {
 					if !disabled[strings.ToLower(platform)] {
 						enabledPlatforms = append(enabledPlatforms, platform)
 					}
@@ -584,7 +585,7 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 					},
 					Chat: func() any { return statusService.Snapshot().RecentChat },
 					Accounts: func() map[string]string {
-						accounts := map[string]string{"kick": "Uses primary account", "twitch": "Uses primary account"}
+						accounts := map[string]string{"kick": "Uses primary account", "twitch": "Uses primary account", "youtube": "Uses primary account"}
 						if c.Bot.Kick.AccessToken != "" || c.Bot.Kick.RefreshToken != "" {
 							accounts["kick"] = "Dedicated bot account configured"
 							if c.Bot.Kick.UserLogin != "" {
@@ -595,6 +596,12 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 							accounts["twitch"] = "Dedicated bot account configured"
 							if c.Bot.Twitch.UserLogin != "" {
 								accounts["twitch"] = "Dedicated: " + c.Bot.Twitch.UserLogin
+							}
+						}
+						if c.Bot.YouTube.AccessToken != "" || c.Bot.YouTube.RefreshToken != "" {
+							accounts["youtube"] = "Dedicated bot account configured"
+							if c.Bot.YouTube.UserLogin != "" {
+								accounts["youtube"] = "Dedicated: " + c.Bot.YouTube.UserLogin
 							}
 						}
 						return accounts
@@ -609,7 +616,7 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 						loaded.Bot.CommandsReply = state.CommandsReply
 						loaded.Bot.CooldownSeconds = state.Cooldown
 						loaded.Bot.DisabledPlatforms = nil
-						for _, platform := range []string{"kick", "twitch"} {
+						for _, platform := range []string{"kick", "twitch", "youtube"} {
 							if !state.Platforms[platform] {
 								loaded.Bot.DisabledPlatforms = append(loaded.Bot.DisabledPlatforms, platform)
 							}
@@ -1917,6 +1924,14 @@ func check(args []string, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "%-16s %s\n", "Twitch bot:", twitchBotStatus)
+	youtubeBotStatus := "not configured — run: streamchat setup youtube-bot"
+	if c.Bot.YouTube.AccessToken != "" || c.Bot.YouTube.RefreshToken != "" {
+		youtubeBotStatus = "configured"
+		if c.Bot.YouTube.UserLogin != "" {
+			youtubeBotStatus += " as " + c.Bot.YouTube.UserLogin
+		}
+	}
+	fmt.Fprintf(out, "%-16s %s\n", "YouTube bot:", youtubeBotStatus)
 	fmt.Fprintf(out, "%-16s %s\n", "SQLite archive:", c.Storage.SQLitePath)
 	relayStatus := "not configured"
 	if c.Client.ServerURL != "" && c.RelayAuthToken != "" {

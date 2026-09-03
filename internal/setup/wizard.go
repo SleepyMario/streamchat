@@ -27,15 +27,17 @@ type AuthorizeFunc func(context.Context, oauthpkg.Request, io.Writer, func(strin
 var ErrCancelled = errors.New("setup cancelled")
 
 var youtubeServerScopes = []string{youtube.ForceSSLScope}
+var youtubeBotScopes = []string{youtube.ManageScope}
 
 type Wizard struct {
-	In          *bufio.Reader
-	rawIn       io.Reader
-	Out         io.Writer
-	Path        string
-	HTTP        *http.Client
-	OpenBrowser func(string) error
-	Authorize   AuthorizeFunc
+	In              *bufio.Reader
+	rawIn           io.Reader
+	Out             io.Writer
+	Path            string
+	HTTP            *http.Client
+	YouTubeTokenURL string
+	OpenBrowser     func(string) error
+	Authorize       AuthorizeFunc
 }
 
 func New(in io.Reader, out io.Writer, path string) *Wizard {
@@ -148,6 +150,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 			err = w.youtube(ctx, &c)
 		case "youtube-server":
 			err = w.youtubeServer(ctx, &c)
+		case "youtube-bot":
+			err = w.youtubeBot(ctx, &c)
 		case "kick":
 			err = w.kick(ctx, &c)
 		case "kick-bot":
@@ -168,6 +172,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 		display := strings.ToUpper(name[:1]) + name[1:]
 		if name == "youtube-server" {
 			display = "YouTube server"
+		} else if name == "youtube-bot" {
+			display = "YouTube bot"
 		} else if name == "kick-bot" {
 			display = "Kick bot"
 		} else if name == "twitch-bot" {
@@ -211,7 +217,7 @@ Offline access stores a refresh token so streamchat serve can discover the authe
 	if err != nil {
 		return err
 	}
-	oc := youtube.OAuthClient{HTTP: w.HTTP, ClientID: c.YouTube.ClientID, ClientSecret: c.YouTube.ClientSecret}
+	oc := youtube.OAuthClient{HTTP: w.HTTP, TokenURL: w.YouTubeTokenURL, ClientID: c.YouTube.ClientID, ClientSecret: c.YouTube.ClientSecret}
 	tok, err := oc.Exchange(ctx, res.Code, c.YouTube.RedirectURI, res.Verifier)
 	if err != nil {
 		return err
@@ -224,6 +230,100 @@ Offline access stores a refresh token so streamchat serve can discover the authe
 	c.YouTube.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 	fmt.Fprintln(w.Out, "YouTube server authorization saved. streamchat serve will discover active broadcasts automatically.")
 	return nil
+}
+
+func (w *Wizard) youtubeBot(ctx context.Context, c *config.Config) error {
+	fmt.Fprintln(w.Out, youtubeBotInstructions(*c))
+	account := c.Bot.YouTube
+	if account.ClientID == "" {
+		account.ClientID = c.YouTube.ClientID
+	}
+	if account.ClientSecret == "" {
+		account.ClientSecret = c.YouTube.ClientSecret
+	}
+	var err error
+	account.ClientID, err = w.value("YouTube bot OAuth Client ID", account.ClientID, false)
+	if err != nil {
+		return err
+	}
+	account.ClientSecret, err = w.value("YouTube bot OAuth Client Secret", account.ClientSecret, true)
+	if err != nil {
+		return err
+	}
+	result, err := w.Authorize(ctx, oauthpkg.Request{
+		AuthorizeURL: youtube.AuthorizeURL,
+		ClientID:     account.ClientID,
+		RedirectURI:  c.YouTube.RedirectURI,
+		Scopes:       youtubeBotScopes,
+		UsePKCE:      true,
+		Parameters: map[string]string{
+			"access_type":            "offline",
+			"include_granted_scopes": "true",
+			"prompt":                 "consent select_account",
+		},
+	}, w.Out, w.OpenBrowser)
+	if err != nil {
+		return err
+	}
+	oauthClient := youtube.OAuthClient{HTTP: w.HTTP, TokenURL: w.YouTubeTokenURL, ClientID: account.ClientID, ClientSecret: account.ClientSecret}
+	token, err := oauthClient.Exchange(ctx, result.Code, c.YouTube.RedirectURI, result.Verifier)
+	if err != nil {
+		return err
+	}
+	if token.RefreshToken == "" {
+		return errors.New("Google did not return a bot refresh token; revoke the prior grant if necessary, then run: streamchat setup youtube-bot")
+	}
+	botClient := youtube.New(w.HTTP, c.YouTube.BaseURL, "", token.AccessToken, "")
+	botClient.ClientID = account.ClientID
+	botClient.ClientSecret = account.ClientSecret
+	botClient.RefreshToken = token.RefreshToken
+	botClient.TokenExpiry = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	botID, botName, err := botClient.CurrentChannel(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve YouTube bot identity: %w", err)
+	}
+	ownerClient := youtube.New(w.HTTP, c.YouTube.BaseURL, c.YouTube.APIKey, c.YouTube.AccessToken, "")
+	ownerClient.ClientID = c.YouTube.ClientID
+	ownerClient.ClientSecret = c.YouTube.ClientSecret
+	ownerClient.RefreshToken = c.YouTube.RefreshToken
+	ownerClient.TokenExpiry = c.YouTube.TokenExpiry
+	ownerClient.OnToken = func(refreshed youtube.Token) error {
+		c.YouTube.AccessToken = refreshed.AccessToken
+		c.YouTube.RefreshToken = refreshed.RefreshToken
+		c.YouTube.TokenExpiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+		return nil
+	}
+	ownerID, _, err := ownerClient.CurrentChannel(ctx)
+	if err != nil {
+		return fmt.Errorf("verify primary YouTube identity before storing the bot: %w", err)
+	}
+	if sameYouTubeIdentity(ownerID, botID) {
+		return fmt.Errorf("YouTube authorized the primary channel %s, not a separate bot channel; choose the intended bot account and rerun: streamchat setup youtube-bot", botName)
+	}
+	account.AccessToken = token.AccessToken
+	account.RefreshToken = token.RefreshToken
+	account.TokenExpiry = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	account.UserID = botID
+	account.UserLogin = botName
+	c.Bot.YouTube = account
+	fmt.Fprintf(w.Out, "Authorized dedicated YouTube bot channel %s for replies on SleepyMario's live broadcasts.\n", botName)
+	return nil
+}
+
+func sameYouTubeIdentity(primaryChannelID, candidateChannelID string) bool {
+	return primaryChannelID != "" && primaryChannelID == candidateChannelID
+}
+
+func youtubeBotInstructions(c config.Config) string {
+	return `This authorizes a separate YouTube channel for Streamchat's bot replies.
+
+1. Keep SleepyMario's primary YouTube authorization unchanged.
+2. Choose the Google account and YouTube channel intended to appear as ComradeKip.
+3. The bot authorization uses this loopback redirect URI:
+   ` + c.YouTube.RedirectURI + `
+4. At your request, Streamchat asks for Google's broad youtube scope (Manage your YouTube account), not a least-privilege chat-only grant. The 3.8 implementation itself uses it only to identify the bot channel and post live-chat replies, but the OAuth grant is broader and may authorize destructive operations on YouTube content if such code is added later or the credential is compromised.
+
+The existing Google OAuth Desktop application may be reused. The bot tokens and resolved channel identity are stored under bot.youtube; the primary YouTube credentials remain separate.`
 }
 
 func pathOrDefault(p string) string {
@@ -538,7 +638,7 @@ func ParsePlatforms(args []string) ([]string, error) {
 		return nil, errors.New("setup accepts at most one platform")
 	}
 	switch args[0] {
-	case "youtube", "youtube-server", "kick", "kick-bot", "twitch", "twitch-bot":
+	case "youtube", "youtube-server", "youtube-bot", "kick", "kick-bot", "twitch", "twitch-bot":
 		return []string{args[0]}, nil
 	default:
 		return nil, fmt.Errorf("unknown platform %q", args[0])
