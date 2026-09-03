@@ -190,22 +190,25 @@ func (s *Server) inputReady(online bool) http.HandlerFunc {
 }
 
 type ControlRequest struct {
-	Action   string `json:"action"`
-	Platform string `json:"platform"`
-	Text     string `json:"text,omitempty"`
-	User     string `json:"user,omitempty"`
-	Duration string `json:"duration,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Category string `json:"category,omitempty"`
-	Privacy  string `json:"privacy,omitempty"`
-	Days     int    `json:"days,omitempty"`
+	Action      string `json:"action"`
+	Platform    string `json:"platform"`
+	BroadcastID string `json:"broadcast_id,omitempty"`
+	Text        string `json:"text,omitempty"`
+	User        string `json:"user,omitempty"`
+	Duration    string `json:"duration,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Category    string `json:"category,omitempty"`
+	Privacy     string `json:"privacy,omitempty"`
+	Days        int    `json:"days,omitempty"`
 }
 
 type ControlResponse struct {
-	Result    string `json:"result,omitempty"`
-	MessageID string `json:"message_id,omitempty"`
-	URL       string `json:"url,omitempty"`
-	Status    any    `json:"status,omitempty"`
+	Result            string `json:"result,omitempty"`
+	MessageID         string `json:"message_id,omitempty"`
+	AuthorID          string `json:"author_id,omitempty"`
+	AuthorDisplayName string `json:"author_display_name,omitempty"`
+	URL               string `json:"url,omitempty"`
+	Status            any    `json:"status,omitempty"`
 }
 
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {

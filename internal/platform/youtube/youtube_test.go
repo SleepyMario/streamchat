@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -320,6 +321,70 @@ func TestIngestStatus(t *testing.T) {
 	got, err := c.IngestStatus(context.Background(), "stream-1")
 	if err != nil || got != "inactive" {
 		t.Fatalf("status=%q err=%v", got, err)
+	}
+}
+
+func TestStartBroadcastTransitionsPreparedBroadcast(t *testing.T) {
+	var transitioned bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/liveBroadcasts":
+			if r.URL.Query().Get("id") != "broadcast-1" || r.URL.Query().Get("part") != "status" {
+				t.Fatalf("unexpected status query: %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`{"items":[{"status":{"lifeCycleStatus":"ready"}}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/liveBroadcasts/transition":
+			transitioned = true
+			if r.URL.Query().Get("id") != "broadcast-1" || r.URL.Query().Get("broadcastStatus") != "live" {
+				t.Fatalf("unexpected transition query: %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`{"id":"broadcast-1","status":{"lifeCycleStatus":"live"}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	c := New(server.Client(), server.URL, "", "token", "")
+	if err := c.StartBroadcast(context.Background(), "broadcast-1"); err != nil || !transitioned {
+		t.Fatalf("transitioned=%v err=%v", transitioned, err)
+	}
+}
+
+func TestStartBroadcastAlreadyLiveIsNoop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/liveBroadcasts" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"items":[{"status":{"lifeCycleStatus":"live"}}]}`))
+	}))
+	defer server.Close()
+	c := New(server.Client(), server.URL, "", "token", "")
+	if err := c.StartBroadcast(context.Background(), "broadcast-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartBroadcastAcceptsAutoStartRace(t *testing.T) {
+	statusChecks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/liveBroadcasts":
+			statusChecks++
+			status := "ready"
+			if statusChecks > 1 {
+				status = "live"
+			}
+			_, _ = fmt.Fprintf(w, `{"items":[{"status":{"lifeCycleStatus":%q}}]}`, status)
+		case r.Method == http.MethodPost && r.URL.Path == "/liveBroadcasts/transition":
+			http.Error(w, `{"error":{"message":"invalid transition"}}`, http.StatusUnprocessableEntity)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	c := New(server.Client(), server.URL, "", "token", "")
+	if err := c.StartBroadcast(context.Background(), "broadcast-1"); err != nil || statusChecks != 2 {
+		t.Fatalf("statusChecks=%d err=%v", statusChecks, err)
 	}
 }
 

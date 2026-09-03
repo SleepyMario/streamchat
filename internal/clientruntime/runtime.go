@@ -610,9 +610,11 @@ func (r *Runtime) clear(ctx context.Context, argument string) (string, error) {
 }
 
 type youtubeTarget struct {
-	client  *youtube.Client
-	remote  *relay.ControlClient
-	archive string
+	client               *youtube.Client
+	remote               *relay.ControlClient
+	archive              string
+	identityMu           sync.Mutex
+	authorID, authorName string
 }
 
 func newYouTubeTarget(cfg *config.Config, httpClient *http.Client, botIdentity bool, persist func(config.YouTube) error) (*youtubeTarget, error) {
@@ -656,10 +658,26 @@ func (y *youtubeTarget) Send(ctx context.Context, message string) error {
 func (y *youtubeTarget) SendMessage(ctx context.Context, message string) (outbound.SentMessage, error) {
 	if y.remote != nil {
 		result, err := y.call(ctx, relay.ControlRequest{Action: "send", Text: message})
-		return outbound.SentMessage{ID: result.MessageID, AuthorDisplayName: "you"}, err
+		return outbound.SentMessage{ID: result.MessageID, AuthorID: result.AuthorID, AuthorDisplayName: result.AuthorDisplayName}, err
 	}
 	id, err := y.client.SendMessage(ctx, message)
 	return outbound.SentMessage{ID: id, AuthorDisplayName: "you"}, err
+}
+
+func (y *youtubeTarget) identity(ctx context.Context) (string, string) {
+	if y == nil || y.client == nil {
+		return "", ""
+	}
+	y.identityMu.Lock()
+	defer y.identityMu.Unlock()
+	if y.authorID != "" {
+		return y.authorID, y.authorName
+	}
+	id, name, err := y.client.CurrentChannel(ctx)
+	if err == nil {
+		y.authorID, y.authorName = id, name
+	}
+	return y.authorID, y.authorName
 }
 func (y *youtubeTarget) title(ctx context.Context, value string) (string, error) {
 	if y.remote != nil {
@@ -785,7 +803,11 @@ func (r *Runtime) RemoteControl(ctx context.Context, request relay.ControlReques
 	switch strings.ToLower(strings.TrimSpace(request.Action)) {
 	case "send":
 		id, err := r.youtube.client.SendMessage(ctx, request.Text)
-		return relay.ControlResponse{MessageID: id, Result: "Sent to YouTube."}, err
+		if err != nil {
+			return relay.ControlResponse{}, err
+		}
+		authorID, authorName := r.youtube.identity(ctx)
+		return relay.ControlResponse{MessageID: id, AuthorID: authorID, AuthorDisplayName: authorName, Result: "Sent to YouTube."}, nil
 	case "status":
 		status := r.youtube.status(ctx)
 		return relay.ControlResponse{Status: status}, nil
@@ -816,7 +838,10 @@ func (r *Runtime) RemoteControl(ctx context.Context, request relay.ControlReques
 		if err != nil {
 			return relay.ControlResponse{}, err
 		}
-		return relay.ControlResponse{Result: prepared.ID, URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(prepared.ID)}, nil
+		return relay.ControlResponse{Result: prepared.ID, URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(prepared.ID), Status: prepared.LifeCycleStatus}, nil
+	case "start-broadcast":
+		err := r.youtube.client.StartBroadcast(ctx, request.BroadcastID)
+		return relay.ControlResponse{Result: request.BroadcastID}, err
 	case "ingest-status":
 		status, err := r.youtube.client.IngestStatus(ctx, r.cfg.YouTube.StreamID)
 		return relay.ControlResponse{Result: status}, err

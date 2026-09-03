@@ -120,7 +120,7 @@ func TestLanguageCommandIsSharedAcrossAllPlatformsAndRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(sender.messages) != 3 || sender.platforms[0] != "twitch" || sender.platforms[1] != "kick" || sender.platforms[2] != "youtube" || sender.messages[0] != languageReply || sender.messages[1] != languageReply || sender.messages[2] != languageReply {
+	if len(sender.messages) != 3 || sender.platforms[0] != "twitch" || sender.platforms[1] != "kick" || sender.platforms[2] != "youtube" || sender.messages[0] != languageReply || sender.messages[1] != languageReply || sender.messages[2] != youtubeLanguageReply {
 		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
 	}
 	if len(commandLog.records) != 3 || commandLog.records[0].Command != "!language" || commandLog.records[1].Command != "!language" || commandLog.records[2].Command != "!language" || !commandLog.records[0].Succeeded || !commandLog.records[1].Succeeded || !commandLog.records[2].Succeeded {

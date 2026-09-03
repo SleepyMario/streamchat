@@ -454,6 +454,50 @@ func (c *Client) IngestStatus(ctx context.Context, streamID string) (string, err
 	return streams.Items[0].Status.StreamStatus, nil
 }
 
+// StartBroadcast transitions a prepared broadcast to live. It is idempotent
+// so relay profile activation can safely retry after YouTube sees the ingest.
+func (c *Client) StartBroadcast(ctx context.Context, broadcastID string) error {
+	broadcastID = strings.TrimSpace(broadcastID)
+	if broadcastID == "" {
+		return errors.New("YouTube broadcast ID is required")
+	}
+	status, err := c.broadcastLifeCycleStatus(ctx, broadcastID)
+	if err != nil {
+		return err
+	}
+	if status == "live" {
+		return nil
+	}
+	err = c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts/transition", url.Values{"part": {"id,status"}, "id": {broadcastID}, "broadcastStatus": {"live"}}, nil, nil)
+	if err == nil {
+		return nil
+	}
+	// Auto-start can win the race between the status request and transition.
+	// YouTube then rejects the redundant transition even though the requested
+	// end state has already been reached.
+	if current, statusErr := c.broadcastLifeCycleStatus(ctx, broadcastID); statusErr == nil && current == "live" {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) broadcastLifeCycleStatus(ctx context.Context, broadcastID string) (string, error) {
+	var listed struct {
+		Items []struct {
+			Status struct {
+				LifeCycleStatus string `json:"lifeCycleStatus"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, "/liveBroadcasts", url.Values{"part": {"status"}, "id": {broadcastID}}, &listed); err != nil {
+		return "", err
+	}
+	if len(listed.Items) == 0 {
+		return "", errors.New("YouTube broadcast was not found")
+	}
+	return listed.Items[0].Status.LifeCycleStatus, nil
+}
+
 type sendResponse struct {
 	ID string `json:"id"`
 }
