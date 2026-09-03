@@ -392,8 +392,7 @@ func (c *Client) PrepareBroadcast(ctx context.Context, streamID, title, privacy 
 	}
 	for _, item := range listed.Items {
 		if item.ContentDetails.BoundStreamID == streamID && item.Status.LifeCycleStatus != "complete" && item.Status.LifeCycleStatus != "revoked" {
-			prepared := Broadcast{ID: item.ID, Title: item.Snippet.Title, LifeCycleStatus: item.Status.LifeCycleStatus}
-			return prepared, c.startPreparedBroadcastWhenIngestActive(ctx, streamID, prepared)
+			return Broadcast{ID: item.ID, Title: item.Snippet.Title, LifeCycleStatus: item.Status.LifeCycleStatus}, nil
 		}
 	}
 
@@ -431,13 +430,13 @@ func (c *Client) PrepareBroadcast(ctx context.Context, streamID, title, privacy 
 	if err := c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts/bind", url.Values{"part": {"id,snippet,status,contentDetails"}, "id": {created.ID}, "streamId": {streamID}}, nil, nil); err != nil {
 		return Broadcast{}, err
 	}
-	prepared := Broadcast{ID: created.ID, Title: created.Snippet.Title, LifeCycleStatus: created.Status.LifeCycleStatus}
-	return prepared, c.startPreparedBroadcastWhenIngestActive(ctx, streamID, prepared)
+	return Broadcast{ID: created.ID, Title: created.Snippet.Title, LifeCycleStatus: created.Status.LifeCycleStatus}, nil
 }
 
-func (c *Client) startPreparedBroadcastWhenIngestActive(ctx context.Context, streamID string, broadcast Broadcast) error {
-	if broadcast.LifeCycleStatus == "live" {
-		return nil
+func (c *Client) IngestStatus(ctx context.Context, streamID string) (string, error) {
+	streamID = strings.TrimSpace(streamID)
+	if streamID == "" {
+		return "", errors.New("YouTube stream ID is required")
 	}
 	var streams struct {
 		Items []struct {
@@ -447,12 +446,12 @@ func (c *Client) startPreparedBroadcastWhenIngestActive(ctx context.Context, str
 		} `json:"items"`
 	}
 	if err := c.request(ctx, "/liveStreams", url.Values{"part": {"status"}, "id": {streamID}}, &streams); err != nil {
-		return err
+		return "", err
 	}
-	if len(streams.Items) == 0 || streams.Items[0].Status.StreamStatus != "active" {
-		return nil
+	if len(streams.Items) == 0 {
+		return "", errors.New("YouTube ingest stream was not found")
 	}
-	return c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts/transition", url.Values{"part": {"id,status"}, "id": {broadcast.ID}, "broadcastStatus": {"live"}}, nil, nil)
+	return streams.Items[0].Status.StreamStatus, nil
 }
 
 type sendResponse struct {

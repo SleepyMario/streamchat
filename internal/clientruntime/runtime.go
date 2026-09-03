@@ -817,6 +817,9 @@ func (r *Runtime) RemoteControl(ctx context.Context, request relay.ControlReques
 			return relay.ControlResponse{}, err
 		}
 		return relay.ControlResponse{Result: prepared.ID, URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(prepared.ID)}, nil
+	case "ingest-status":
+		status, err := r.youtube.client.IngestStatus(ctx, r.cfg.YouTube.StreamID)
+		return relay.ControlResponse{Result: status}, err
 	default:
 		return relay.ControlResponse{}, errors.New("unsupported YouTube control action")
 	}
