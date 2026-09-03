@@ -1,7 +1,7 @@
 Unicode true
 
 !ifndef VERSION
-  !define VERSION "3.2"
+  !define VERSION "3.3"
 !endif
 !ifndef STAGE
   !error "STAGE must name the prepared Windows bundle directory"
@@ -19,7 +19,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "3.2.0.0"
+VIProductVersion "3.3.0.0"
 VIAddVersionKey /LANG=1033 "ProductName" "Streamchat"
 VIAddVersionKey /LANG=1033 "CompanyName" "SleepyMario"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright 2026 SleepyMario"

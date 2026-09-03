@@ -63,26 +63,41 @@ func ColorEnabled(no bool) bool {
 	return e == nil && (st.Mode()&os.ModeCharDevice) != 0
 }
 
-func RenderRoleBadges(roles chat.RoleSet) string {
-	ordered := []struct {
-		role   chat.Role
-		letter string
-	}{
-		{chat.RoleBroadcaster, "B"},
-		{chat.RoleModerator, "M"},
-		{chat.RolePartner, "P"},
-		{chat.RoleVIP, "V"},
-		{chat.RoleOG, "O"},
-		{chat.RoleSubscriber, "S"},
-		{chat.RoleFollower, "F"},
-	}
+type roleBadge struct {
+	role   chat.Role
+	marker string
+}
+
+var genericRoleBadges = []roleBadge{
+	{chat.RoleBroadcaster, "[B]"},
+	{chat.RoleModerator, "[M]"},
+	{chat.RolePartner, "[P]"},
+	{chat.RoleVIP, "[V]"},
+	{chat.RoleOG, "[O]"},
+	{chat.RoleSubscriber, "[S]"},
+	{chat.RoleFollower, "[F]"},
+}
+
+// TwitchRoleBadges deliberately use stable Unicode symbols rather than remote
+// badge artwork. The meanings track Twitch's familiar badge vocabulary while
+// retaining a predictable, fixed-width terminal layout. Raw provider badge IDs
+// remain available on chat.Message for graphical clients.
+var twitchRoleBadges = []roleBadge{
+	{chat.RoleBroadcaster, "🎥"},
+	{chat.RoleModerator, "🗡️"},
+	{chat.RolePartner, "✅"},
+	{chat.RoleVIP, "💎"},
+	{chat.RoleOG, "1️⃣"},
+	{chat.RoleSubscriber, "⭐"},
+	{chat.RoleFollower, "💜"},
+}
+
+func renderRoleBadges(roles chat.RoleSet, available []roleBadge) string {
 	var badges strings.Builder
 	rendered := 0
-	for _, value := range ordered {
-		if roles.Has(value.role) {
-			badges.WriteByte('[')
-			badges.WriteString(value.letter)
-			badges.WriteByte(']')
+	for _, badge := range available {
+		if roles.Has(badge.role) {
+			badges.WriteString(badge.marker)
 			rendered++
 			if rendered == roleSlotCapacity {
 				break
@@ -90,6 +105,17 @@ func RenderRoleBadges(roles chat.RoleSet) string {
 		}
 	}
 	return badges.String()
+}
+
+func RenderRoleBadges(roles chat.RoleSet) string {
+	return renderRoleBadges(roles, genericRoleBadges)
+}
+
+func RenderPlatformRoleBadges(platform chat.Platform, roles chat.RoleSet) string {
+	if platform == chat.PlatformTwitch {
+		return renderRoleBadges(roles, twitchRoleBadges)
+	}
+	return RenderRoleBadges(roles)
 }
 
 func providerLabel(platform chat.Platform) string {
@@ -159,7 +185,7 @@ func (t *Terminal) Format(m chat.Message) emote.Line {
 	if chatterANSI != "" && t.opt.ChatColorMode == chattercolor.ModeUsername {
 		displayAuthor = chatterANSI + author + "\x1b[0m"
 	}
-	badges := RenderRoleBadges(m.Roles)
+	badges := RenderPlatformRoleBadges(m.Platform, m.Roles)
 	body := emote.FormatText(m.Platform, m.Text, m.Emotes, Sanitize, t.opt.Emotes)
 	textPrefix := ""
 	if m.Reply != nil {

@@ -95,7 +95,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "Streamchat 3.2") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
+	if !strings.Contains(out.String(), "Streamchat 3.3") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
 		t.Fatalf("help does not describe stable platform support accurately: %s", out.String())
 	}
 }

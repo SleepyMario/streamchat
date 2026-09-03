@@ -151,7 +151,7 @@ func TestTwitchRolesChatterIDsCJKAndEmoteFallbackRenderTogether(t *testing.T) {
 		Emotes:            []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}},
 	}
 	first := formatter.Format(message)
-	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[Twitch]") || !strings.Contains(Sanitize(first.Text), "[B][M][P][V]") || !strings.Contains(Sanitize(first.Text), "觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
+	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[Twitch]") || !strings.Contains(Sanitize(first.Text), "🎥🗡️✅💎") || !strings.Contains(Sanitize(first.Text), "觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
 		t.Fatalf("first=%q", first.Text)
 	}
 	message.AuthorDisplayName = "renamed"
@@ -414,7 +414,7 @@ func TestProviderBadgeAndNicknameColumnsAlignAcrossPlatforms(t *testing.T) {
 		if !strings.HasPrefix(plain, test.label) {
 			t.Fatalf("platform=%s line=%q", test.platform, plain)
 		}
-		if badges := RenderRoleBadges(test.roles); badges != "" && runewidth.StringWidth(plain[:strings.Index(plain, badges)]) != wantBadgeColumn {
+		if badges := RenderPlatformRoleBadges(test.platform, test.roles); badges != "" && runewidth.StringWidth(plain[:strings.Index(plain, badges)]) != wantBadgeColumn {
 			t.Fatalf("platform=%s badge column line=%q", test.platform, plain)
 		}
 		visibleAuthor := truncateDisplayWidth(test.author, 16)
@@ -453,6 +453,35 @@ func TestRenderRoleBadgesFixedOrderAndUnknownOmitted(t *testing.T) {
 	unknown.Add(chat.Role(99))
 	if got = RenderRoleBadges(unknown); got != "" {
 		t.Fatalf("unknown role rendered: %q", got)
+	}
+}
+
+func TestRenderPlatformRoleBadgesUsesTwitchSymbolsOnlyForTwitch(t *testing.T) {
+	roleSet := roles(chat.RoleFollower, chat.RoleSubscriber, chat.RoleOG, chat.RoleVIP, chat.RolePartner, chat.RoleModerator, chat.RoleBroadcaster)
+	if got := RenderPlatformRoleBadges(chat.PlatformTwitch, roleSet); got != "🎥🗡️✅💎" {
+		t.Fatalf("Twitch badges=%q", got)
+	}
+	for _, platform := range []chat.Platform{chat.PlatformKick, chat.PlatformYouTube, chat.Platform("")} {
+		if got := RenderPlatformRoleBadges(platform, roleSet); got != "[B][M][P][V]" {
+			t.Fatalf("platform=%s badges=%q", platform, got)
+		}
+	}
+	available := []struct {
+		role chat.Role
+		want string
+	}{
+		{chat.RoleBroadcaster, "🎥"},
+		{chat.RoleModerator, "🗡️"},
+		{chat.RolePartner, "✅"},
+		{chat.RoleVIP, "💎"},
+		{chat.RoleOG, "1️⃣"},
+		{chat.RoleSubscriber, "⭐"},
+		{chat.RoleFollower, "💜"},
+	}
+	for _, badge := range available {
+		if got := RenderPlatformRoleBadges(chat.PlatformTwitch, roles(badge.role)); got != badge.want {
+			t.Fatalf("role=%v badge=%q want=%q", badge.role, got, badge.want)
+		}
 	}
 }
 
