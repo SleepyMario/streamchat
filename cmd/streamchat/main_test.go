@@ -95,7 +95,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "Streamchat 3.3") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
+	if !strings.Contains(out.String(), "Streamchat 3.4") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
 		t.Fatalf("help does not describe stable platform support accurately: %s", out.String())
 	}
 }
@@ -185,7 +185,7 @@ func TestPrepareTwitchRejectsReadOnlyAuthorizationForSending(t *testing.T) {
 	}
 }
 
-func TestPrepareTwitchRefreshPreservesChatAuthorizationWithoutManagementScope(t *testing.T) {
+func TestPrepareTwitchRefreshPreservesRuntimeAuthorizationWithoutManagementScope(t *testing.T) {
 	requests := map[string]int{}
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests[r.URL.Path]++
@@ -194,12 +194,12 @@ func TestPrepareTwitchRefreshPreservesChatAuthorizationWithoutManagementScope(t 
 			if err := r.ParseForm(); err != nil || r.Form.Get("refresh_token") != "old-refresh" {
 				t.Fatalf("form=%v err=%v", r.Form, err)
 			}
-			_, _ = w.Write([]byte(`{"access_token":"new-access","expires_in":3600,"scope":["user:read:chat","user:write:chat"]}`))
+			_, _ = w.Write([]byte(`{"access_token":"new-access","expires_in":3600,"scope":["user:read:chat","user:write:chat","moderator:read:followers","channel:read:subscriptions"]}`))
 		case "/validate":
 			if r.Header.Get("Authorization") != "OAuth new-access" {
 				t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
 			}
-			_, _ = w.Write([]byte(`{"client_id":"client","user_id":"sender","login":"sender","scopes":["user:read:chat","user:write:chat"],"expires_in":3600}`))
+			_, _ = w.Write([]byte(`{"client_id":"client","user_id":"sender","login":"sender","scopes":["user:read:chat","user:write:chat","moderator:read:followers","channel:read:subscriptions"],"expires_in":3600}`))
 		case "/users":
 			_, _ = w.Write([]byte(`{"data":[{"id":"broadcaster","login":"channel","display_name":"Channel"}]}`))
 		default:

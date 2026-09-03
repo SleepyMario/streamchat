@@ -19,6 +19,12 @@ function ignoredAuthor(message) {
   return ignoredAuthors.has((message.author_display_name || "").trim().toLowerCase());
 }
 
+function messageText(message) {
+  const text = message.text || message.membership?.level || "";
+  if (message.paid?.display) return text ? `${message.paid.display} · ${text}` : message.paid.display;
+  return text;
+}
+
 function messageNode(message) {
   const row = document.createElement("div");
   row.className = `message ${message.platform || "unknown"} ${message.event_type || "message"} entering`;
@@ -40,7 +46,7 @@ function messageNode(message) {
 
   const text = document.createElement("span");
   text.className = "text";
-  text.textContent = message.text || message.membership?.level || message.paid?.display || "";
+  text.textContent = messageText(message);
 
   identity.append(platform, author);
   row.append(identity, text);

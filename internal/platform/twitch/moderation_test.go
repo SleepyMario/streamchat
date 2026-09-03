@@ -306,7 +306,7 @@ func TestModerationErrorsDoNotLeakCredentials(t *testing.T) {
 }
 
 func TestSetupScopesOrderIsStableAndExact(t *testing.T) {
-	want := []string{ReadChatScope, WriteChatScope, ManageBroadcastScope, ManageBannedUsersScope, ManageChatMessagesScope}
+	want := []string{ReadChatScope, WriteChatScope, ManageBroadcastScope, ManageBannedUsersScope, ManageChatMessagesScope, ReadFollowersScope, ReadSubscriptionsScope}
 	if !reflect.DeepEqual(SetupScopes, want) {
 		t.Fatalf("scopes=%v want=%v", SetupScopes, want)
 	}

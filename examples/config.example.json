@@ -45,7 +45,7 @@
   "bot": {
     "enabled": false,
     "show_chat": false,
-    "commands_reply": "Commands: !commands",
+    "commands_reply": "Commands: !commands, !language",
     "cooldown_seconds": 5,
     "command_log_path": "/var/lib/streamchat/bot-commands.jsonl",
     "disabled_platforms": [],

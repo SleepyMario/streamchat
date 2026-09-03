@@ -49,7 +49,7 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 3.3 combines Kick, Twitch, and YouTube chat.
+const usage = `Streamchat 3.4 combines Kick, Twitch, and YouTube chat.
 All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:
@@ -2011,7 +2011,7 @@ func prepareTwitch(ctx context.Context, c *config.Config, path string) (*twitchR
 				return nil, err
 			}
 		} else {
-			if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredChatScopes...); err != nil {
+			if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredRuntimeScopes...); err != nil {
 				return nil, err
 			}
 		}
@@ -2037,7 +2037,7 @@ func prepareTwitch(ctx context.Context, c *config.Config, path string) (*twitchR
 		if err != nil {
 			return nil, err
 		}
-		if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredChatScopes...); err != nil {
+		if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredRuntimeScopes...); err != nil {
 			return nil, err
 		}
 	}

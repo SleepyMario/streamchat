@@ -2,6 +2,7 @@ package bot
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -46,14 +47,36 @@ type Event struct {
 	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
-// EventFromChat is the first live adapter into the automation architecture.
-// Follow, subscription and alert adapters will use the same Event model.
+// EventFromChat translates the shared chat/alert model into the bot's
+// provider-neutral event model.
 func EventFromChat(message chat.Message) Event {
-	return Event{
+	event := Event{
 		ID: message.ID, Kind: EventChatMessage, Platform: string(message.Platform),
 		ChannelID: message.ChannelID, ActorID: message.AuthorID,
 		Actor: message.AuthorDisplayName, Text: message.Text, OccurredAt: message.Timestamp,
 	}
+	if message.Platform != chat.PlatformTwitch {
+		return event
+	}
+	switch message.SafePlatformMetadata["twitch_event"] {
+	case "channel.follow":
+		event.Kind = EventFollow
+	case "channel.subscribe":
+		event.Kind = EventSubscription
+		if message.Membership != nil && message.Membership.IsGift {
+			event.Kind = EventGiftSubscription
+		}
+	case "channel.subscription.gift":
+		event.Kind = EventGiftSubscription
+		if message.Membership != nil {
+			event.Metadata = map[string]string{"gift_count": fmt.Sprint(message.Membership.GiftCount)}
+		}
+	}
+	if message.EventType == chat.EventPaid && message.Paid != nil {
+		event.Kind = EventDonation
+		event.Metadata = map[string]string{"display": message.Paid.Display}
+	}
+	return event
 }
 
 type ScheduleMode string

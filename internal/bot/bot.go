@@ -15,6 +15,8 @@ type Sender interface {
 	SendTo(context.Context, string, string) error
 }
 
+const languageReply = "You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on me."
+
 type Config struct {
 	Enabled       bool
 	ShowChat      bool
@@ -98,10 +100,32 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	if !cfg.Enabled || cfg.Disabled[event.Platform] {
 		return nil
 	}
-	if event.Kind != EventChatMessage || !strings.EqualFold(strings.TrimSpace(event.Text), "!commands") {
+	if event.Platform == string(chat.PlatformTwitch) {
+		if reply, activity := twitchAlertReply(event); reply != "" {
+			if err := e.sender.SendTo(ctx, event.Platform, reply); err != nil {
+				e.record(event.Platform, activity+" failed", true)
+				return fmt.Errorf("send %s on Twitch: %w", strings.ToLower(activity), err)
+			}
+			e.record(event.Platform, activity, false)
+			return nil
+		}
+	}
+	if event.Kind != EventChatMessage {
 		return nil
 	}
-	if event.Platform != string(chat.PlatformKick) && event.Platform != string(chat.PlatformTwitch) {
+	command := strings.ToLower(strings.TrimSpace(event.Text))
+	reply := ""
+	switch command {
+	case "!commands":
+		if event.Platform == string(chat.PlatformKick) || event.Platform == string(chat.PlatformTwitch) {
+			reply = cfg.CommandsReply
+		}
+	case "!language":
+		if event.Platform == string(chat.PlatformTwitch) {
+			reply = languageReply
+		}
+	}
+	if reply == "" {
 		return nil
 	}
 	key := event.Platform + "\x00" + event.ChannelID
@@ -114,15 +138,45 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	}
 	e.last[key] = now
 	e.mu.Unlock()
-	if err := e.sender.SendTo(ctx, event.Platform, cfg.CommandsReply); err != nil {
-		e.record(event.Platform, "!commands reply failed", true)
-		if logErr := e.recordCommand(event.Platform, "!commands", false); logErr != nil {
-			return errors.Join(fmt.Errorf("answer !commands on %s: %w", event.Platform, err), logErr)
+	if err := e.sender.SendTo(ctx, event.Platform, reply); err != nil {
+		e.record(event.Platform, command+" reply failed", true)
+		if logErr := e.recordCommand(event.Platform, command, false); logErr != nil {
+			return errors.Join(fmt.Errorf("answer %s on %s: %w", command, event.Platform, err), logErr)
 		}
-		return fmt.Errorf("answer !commands on %s: %w", event.Platform, err)
+		return fmt.Errorf("answer %s on %s: %w", command, event.Platform, err)
 	}
-	e.record(event.Platform, "Answered !commands", false)
-	return e.recordCommand(event.Platform, "!commands", true)
+	e.record(event.Platform, "Answered "+command, false)
+	return e.recordCommand(event.Platform, command, true)
+}
+
+func twitchAlertReply(event Event) (string, string) {
+	actor := strings.TrimSpace(event.Actor)
+	if actor == "" {
+		actor = "someone"
+	}
+	switch event.Kind {
+	case EventFollow:
+		return fmt.Sprintf("Thanks for the follow, %s!", actor), "Sent follow thank-you"
+	case EventSubscription:
+		return fmt.Sprintf("Thanks for the subscription, %s!", actor), "Sent subscription thank-you"
+	case EventGiftSubscription:
+		if count := strings.TrimSpace(event.Metadata["gift_count"]); count != "" && count != "0" {
+			unit := "gift subs"
+			if count == "1" {
+				unit = "gift sub"
+			}
+			return fmt.Sprintf("Thanks for giving %s %s, %s!", count, unit, actor), "Sent gift-subscription thank-you"
+		}
+		return fmt.Sprintf("Enjoy the gift subscription, %s!", actor), "Sent gift-subscription message"
+	case EventDonation:
+		amount := strings.TrimSpace(event.Metadata["display"])
+		if amount == "" {
+			amount = "Bits"
+		}
+		return fmt.Sprintf("Thanks for the %s, %s!", amount, actor), "Sent Bits thank-you"
+	default:
+		return "", ""
+	}
 }
 
 func (e *Engine) recordCommand(platform, command string, succeeded bool) error {

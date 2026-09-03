@@ -70,3 +70,63 @@ func TestCommandsCooldownIsPerPlatformAndChannel(t *testing.T) {
 		t.Fatalf("only executed commands should be recorded: %+v", commandLog.records)
 	}
 }
+
+func TestLanguageCommandIsTwitchOnlyAndRecorded(t *testing.T) {
+	sender := &recordingSender{}
+	commandLog := &recordingCommandLog{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second, CommandLog: commandLog})
+	engine.now = func() time.Time { return time.Unix(100, 0) }
+	for _, message := range []chat.Message{
+		{Platform: chat.PlatformTwitch, ChannelID: "twitch", Text: " !LANGUAGE ", EventType: chat.EventMessage},
+		{Platform: chat.PlatformKick, ChannelID: "kick", Text: "!language", EventType: chat.EventMessage},
+		{Platform: chat.PlatformYouTube, ChannelID: "youtube", Text: "!language", EventType: chat.EventMessage},
+	} {
+		if err := engine.handle(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sender.messages) != 1 || sender.platforms[0] != "twitch" || sender.messages[0] != languageReply {
+		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
+	}
+	if len(commandLog.records) != 1 || commandLog.records[0].Command != "!language" || !commandLog.records[0].Succeeded {
+		t.Fatalf("command records=%+v", commandLog.records)
+	}
+}
+
+func TestTwitchAlertsSendSimpleChatAcknowledgements(t *testing.T) {
+	sender := &recordingSender{}
+	commandLog := &recordingCommandLog{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", CommandLog: commandLog})
+	tests := []struct {
+		event Event
+		want  string
+	}{
+		{Event{Kind: EventFollow, Platform: "twitch", Actor: "Follower"}, "Thanks for the follow, Follower!"},
+		{Event{Kind: EventSubscription, Platform: "twitch", Actor: "Subscriber"}, "Thanks for the subscription, Subscriber!"},
+		{Event{Kind: EventGiftSubscription, Platform: "twitch", Actor: "Viewer"}, "Enjoy the gift subscription, Viewer!"},
+		{Event{Kind: EventGiftSubscription, Platform: "twitch", Actor: "Gifter", Metadata: map[string]string{"gift_count": "5"}}, "Thanks for giving 5 gift subs, Gifter!"},
+		{Event{Kind: EventGiftSubscription, Platform: "twitch", Actor: "Gifter", Metadata: map[string]string{"gift_count": "1"}}, "Thanks for giving 1 gift sub, Gifter!"},
+		{Event{Kind: EventDonation, Platform: "twitch", Actor: "Cheerer", Metadata: map[string]string{"display": "100 Bits"}}, "Thanks for the 100 Bits, Cheerer!"},
+	}
+	for _, test := range tests {
+		if err := engine.handleEvent(context.Background(), test.event); err != nil {
+			t.Fatal(err)
+		}
+		if got := sender.messages[len(sender.messages)-1]; got != test.want {
+			t.Fatalf("message=%q want=%q", got, test.want)
+		}
+	}
+	if len(commandLog.records) != 0 {
+		t.Fatalf("alerts must not enter command-only log: %+v", commandLog.records)
+	}
+}
+
+func TestTwitchAlertsRespectPlatformDisableAndIgnoreOtherPlatforms(t *testing.T) {
+	sender := &recordingSender{}
+	engine := New(sender, Config{Enabled: true, Disabled: map[string]bool{"twitch": true}})
+	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "twitch", Actor: "Follower"})
+	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "kick", Actor: "Follower"})
+	if len(sender.messages) != 0 {
+		t.Fatalf("unexpected messages=%v", sender.messages)
+	}
+}

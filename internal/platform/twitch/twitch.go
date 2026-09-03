@@ -17,22 +17,31 @@ import (
 )
 
 const (
-	ReadChatScope           = "user:read:chat"
-	WriteChatScope          = "user:write:chat"
-	ManageBroadcastScope    = "channel:manage:broadcast"
-	ManageBannedUsersScope  = "moderator:manage:banned_users"
-	ManageChatMessagesScope = "moderator:manage:chat_messages"
-	EventType               = "channel.chat.message"
+	ReadChatScope             = "user:read:chat"
+	WriteChatScope            = "user:write:chat"
+	ManageBroadcastScope      = "channel:manage:broadcast"
+	ManageBannedUsersScope    = "moderator:manage:banned_users"
+	ManageChatMessagesScope   = "moderator:manage:chat_messages"
+	ReadFollowersScope        = "moderator:read:followers"
+	ReadSubscriptionsScope    = "channel:read:subscriptions"
+	EventType                 = "channel.chat.message"
+	FollowEventType           = "channel.follow"
+	SubscribeEventType        = "channel.subscribe"
+	GiftSubscriptionEventType = "channel.subscription.gift"
 )
 
 var RequiredChatScopes = []string{ReadChatScope, WriteChatScope}
-var SetupScopes = []string{ReadChatScope, WriteChatScope, ManageBroadcastScope, ManageBannedUsersScope, ManageChatMessagesScope}
+var RequiredAlertScopes = []string{ReadFollowersScope, ReadSubscriptionsScope}
+var RequiredRuntimeScopes = []string{ReadChatScope, WriteChatScope, ReadFollowersScope, ReadSubscriptionsScope}
+var SetupScopes = []string{ReadChatScope, WriteChatScope, ManageBroadcastScope, ManageBannedUsersScope, ManageChatMessagesScope, ReadFollowersScope, ReadSubscriptionsScope}
 
 var (
 	ErrWriteScope         = errors.New("Twitch authorization lacks user:write:chat; run: streamchat setup twitch")
 	ErrManageScope        = errors.New("Twitch authorization lacks channel:manage:broadcast; run: streamchat setup twitch")
 	ErrBannedUsersScope   = errors.New("Twitch authorization lacks moderator:manage:banned_users; run: streamchat setup twitch")
 	ErrChatMessagesScope  = errors.New("Twitch authorization lacks moderator:manage:chat_messages; run: streamchat setup twitch")
+	ErrFollowersScope     = errors.New("Twitch authorization lacks moderator:read:followers; run: streamchat setup twitch")
+	ErrSubscriptionsScope = errors.New("Twitch authorization lacks channel:read:subscriptions; run: streamchat setup twitch")
 	ErrChatAuthentication = errors.New("Twitch chat authorization failed; run: streamchat setup twitch")
 	ErrChatRateLimit      = errors.New("Twitch chat rate limit exceeded; try again shortly")
 	ErrChatRejected       = errors.New("Twitch rejected the chat message")
@@ -143,6 +152,12 @@ func RequireScopes(scopes []string, required ...string) error {
 		if scope == ManageChatMessagesScope {
 			return ErrChatMessagesScope
 		}
+		if scope == ReadFollowersScope {
+			return ErrFollowersScope
+		}
+		if scope == ReadSubscriptionsScope {
+			return ErrSubscriptionsScope
+		}
 		return fmt.Errorf("Twitch authorization lacks %s; run: streamchat setup twitch", scope)
 	}
 	return nil
@@ -181,37 +196,56 @@ func (a *API) User(ctx context.Context, login string) (User, error) {
 	return User(v.Data[0]), nil
 }
 
-func (a *API) Subscribe(ctx context.Context, session, broadcaster, user string) error {
-	body, _ := json.Marshal(map[string]any{"type": EventType, "version": "1", "condition": map[string]string{"broadcaster_user_id": broadcaster, "user_id": user}, "transport": map[string]string{"method": "websocket", "session_id": session}})
-	status, err := a.subscribe(ctx, body)
-	if err != nil {
-		return err
+type eventSubscription struct {
+	Type      string
+	Version   string
+	Condition map[string]string
+}
+
+func twitchSubscriptions(broadcaster, user string) []eventSubscription {
+	return []eventSubscription{
+		{Type: EventType, Version: "1", Condition: map[string]string{"broadcaster_user_id": broadcaster, "user_id": user}},
+		{Type: FollowEventType, Version: "2", Condition: map[string]string{"broadcaster_user_id": broadcaster, "moderator_user_id": user}},
+		{Type: SubscribeEventType, Version: "1", Condition: map[string]string{"broadcaster_user_id": broadcaster}},
+		{Type: GiftSubscriptionEventType, Version: "1", Condition: map[string]string{"broadcaster_user_id": broadcaster}},
 	}
-	if status == http.StatusUnauthorized && a.RefreshToken != "" {
-		tok, e := a.Refresh(ctx, a.RefreshToken)
-		if e != nil {
-			return e
-		}
-		a.AccessToken = tok.AccessToken
-		if tok.RefreshToken != "" {
-			a.RefreshToken = tok.RefreshToken
-		}
-		if a.OnToken != nil {
-			if e = a.OnToken(tok); e != nil {
-				return e
-			}
-		}
-		status, err = a.subscribe(ctx, body)
+}
+
+func (a *API) Subscribe(ctx context.Context, session, broadcaster, user string) error {
+	refreshed := false
+	for _, subscription := range twitchSubscriptions(broadcaster, user) {
+		body, _ := json.Marshal(map[string]any{"type": subscription.Type, "version": subscription.Version, "condition": subscription.Condition, "transport": map[string]string{"method": "websocket", "session_id": session}})
+		status, err := a.subscribe(ctx, body)
 		if err != nil {
 			return err
 		}
-	}
-	if status/100 != 2 {
-		kind := chat.Terminal
-		if status == http.StatusUnauthorized {
-			kind = chat.Authentication
+		if status == http.StatusUnauthorized && !refreshed && a.RefreshToken != "" {
+			tok, refreshErr := a.Refresh(ctx, a.RefreshToken)
+			if refreshErr != nil {
+				return refreshErr
+			}
+			a.AccessToken = tok.AccessToken
+			if tok.RefreshToken != "" {
+				a.RefreshToken = tok.RefreshToken
+			}
+			if a.OnToken != nil {
+				if refreshErr = a.OnToken(tok); refreshErr != nil {
+					return refreshErr
+				}
+			}
+			refreshed = true
+			status, err = a.subscribe(ctx, body)
+			if err != nil {
+				return err
+			}
 		}
-		return &chat.AdapterError{Kind: kind, Op: "Twitch chat subscription", Err: fmt.Errorf("HTTP %d; verify authorization/channel and run: streamchat setup twitch", status)}
+		if status/100 != 2 {
+			kind := chat.Terminal
+			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+				kind = chat.Authentication
+			}
+			return &chat.AdapterError{Kind: kind, Op: "Twitch " + subscription.Type + " subscription", Err: fmt.Errorf("HTTP %d; verify authorization/channel and run: streamchat setup twitch", status)}
+		}
 	}
 	return nil
 }
@@ -412,9 +446,18 @@ type envelope struct {
 type channelEvent struct {
 	BroadcasterID, BroadcasterName, BroadcasterLogin string
 	ChatterID, ChatterName, ChatterLogin             string
+	UserID, UserName, UserLogin                      string
 	MessageID                                        string `json:"message_id"`
 	Color                                            string `json:"color"`
-	Badges                                           []struct {
+	Tier                                             string `json:"tier"`
+	IsGift                                           bool   `json:"is_gift"`
+	Total                                            int    `json:"total"`
+	IsAnonymous                                      bool   `json:"is_anonymous"`
+	FollowedAt                                       string `json:"followed_at"`
+	Cheer                                            *struct {
+		Bits int `json:"bits"`
+	} `json:"cheer"`
+	Badges []struct {
 		SetID string `json:"set_id"`
 		ID    string `json:"id"`
 		Info  string `json:"info"`
@@ -444,6 +487,9 @@ func (e *channelEvent) UnmarshalJSON(b []byte) error {
 		ChatterID        string `json:"chatter_user_id"`
 		ChatterName      string `json:"chatter_user_name"`
 		ChatterLogin     string `json:"chatter_user_login"`
+		UserID           string `json:"user_id"`
+		UserName         string `json:"user_name"`
+		UserLogin        string `json:"user_login"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
@@ -455,6 +501,9 @@ func (e *channelEvent) UnmarshalJSON(b []byte) error {
 	e.ChatterID = v.ChatterID
 	e.ChatterName = v.ChatterName
 	e.ChatterLogin = v.ChatterLogin
+	e.UserID = v.UserID
+	e.UserName = v.UserName
+	e.UserLogin = v.UserLogin
 	return nil
 }
 
@@ -466,15 +515,52 @@ func ParseEvent(b []byte) (envelope, *chat.Message, error) {
 	if v.Metadata.MessageType != "notification" {
 		return v, nil, nil
 	}
-	if v.Metadata.SubscriptionType != EventType {
-		return v, nil, nil
-	}
 	ts, err := time.Parse(time.RFC3339Nano, v.Metadata.MessageTimestamp)
 	if err != nil {
 		return v, nil, err
 	}
 	e := v.Payload.Event
+	if v.Metadata.SubscriptionType == FollowEventType {
+		m := chat.Message{ID: v.Metadata.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: e.UserID, AuthorDisplayName: e.UserName, Roles: chat.NewRoleSet(chat.RoleFollower), Text: "Followed the channel.", EventType: chat.EventOther, SafePlatformMetadata: map[string]string{"twitch_login": e.UserLogin, "twitch_broadcaster_login": e.BroadcasterLogin, "twitch_event": FollowEventType}}
+		if err = m.Validate(); err != nil {
+			return v, nil, err
+		}
+		return v, &m, nil
+	}
+	if v.Metadata.SubscriptionType == SubscribeEventType {
+		level := twitchTierName(e.Tier)
+		text := "Subscribed"
+		if e.IsGift {
+			text = "Received a gift subscription"
+		}
+		if level != "" {
+			text += " at " + level
+		}
+		m := chat.Message{ID: v.Metadata.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: e.UserID, AuthorDisplayName: e.UserName, Roles: chat.NewRoleSet(chat.RoleSubscriber), Text: text + ".", EventType: chat.EventMembership, Membership: &chat.Membership{Level: level, IsGift: e.IsGift}, SafePlatformMetadata: map[string]string{"twitch_login": e.UserLogin, "twitch_broadcaster_login": e.BroadcasterLogin, "twitch_event": SubscribeEventType}}
+		if err = m.Validate(); err != nil {
+			return v, nil, err
+		}
+		return v, &m, nil
+	}
+	if v.Metadata.SubscriptionType == GiftSubscriptionEventType {
+		actorID, actorName, actorLogin := e.UserID, e.UserName, e.UserLogin
+		if e.IsAnonymous {
+			actorID, actorName, actorLogin = "", "anonymous viewer", ""
+		}
+		m := chat.Message{ID: v.Metadata.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: actorID, AuthorDisplayName: actorName, Text: fmt.Sprintf("Gifted %d subscriptions.", e.Total), EventType: chat.EventMembership, Membership: &chat.Membership{Level: twitchTierName(e.Tier), GiftCount: e.Total, IsGift: true}, SafePlatformMetadata: map[string]string{"twitch_login": actorLogin, "twitch_broadcaster_login": e.BroadcasterLogin, "twitch_event": GiftSubscriptionEventType}}
+		if err = m.Validate(); err != nil {
+			return v, nil, err
+		}
+		return v, &m, nil
+	}
+	if v.Metadata.SubscriptionType != EventType {
+		return v, nil, nil
+	}
 	m := chat.Message{ID: e.MessageID, Platform: chat.PlatformTwitch, ChannelID: e.BroadcasterID, ChannelDisplayName: e.BroadcasterName, Timestamp: ts, AuthorID: e.ChatterID, AuthorDisplayName: e.ChatterName, AuthorColor: e.Color, Text: e.Message.Text, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"twitch_login": e.ChatterLogin, "twitch_broadcaster_login": e.BroadcasterLogin}}
+	if e.Cheer != nil && e.Cheer.Bits > 0 {
+		m.EventType = chat.EventPaid
+		m.Paid = &chat.Paid{Display: fmt.Sprintf("%d Bits", e.Cheer.Bits)}
+	}
 	pos := 0
 	for _, f := range e.Message.Fragments {
 		if f.Type == "emote" && f.Emote != nil {
@@ -504,6 +590,19 @@ func ParseEvent(b []byte) (envelope, *chat.Message, error) {
 		return v, nil, err
 	}
 	return v, &m, nil
+}
+
+func twitchTierName(tier string) string {
+	switch strings.TrimSpace(tier) {
+	case "1000":
+		return "Tier 1"
+	case "2000":
+		return "Tier 2"
+	case "3000":
+		return "Tier 3"
+	default:
+		return strings.TrimSpace(tier)
+	}
 }
 
 const twitchEmoteCDNBase = "https://static-cdn.jtvnw.net/emoticons/v2"

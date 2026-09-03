@@ -29,6 +29,69 @@ func TestParseEventNormalizesMessageBadgesAndEmotes(t *testing.T) {
 	}
 }
 
+func TestParseEventNormalizesFollowSubscriptionAndBitsAlerts(t *testing.T) {
+	follow := []byte(`{"metadata":{"message_id":"follow-delivery","message_type":"notification","message_timestamp":"2026-01-01T00:01:00Z","subscription_type":"channel.follow","subscription_version":"2"},"payload":{"event":{"user_id":"201","user_login":"newviewer","user_name":"NewViewer","broadcaster_user_id":"100","broadcaster_user_login":"channel","broadcaster_user_name":"Channel","followed_at":"2026-01-01T00:00:59Z"}}}`)
+	_, message, err := ParseEvent(follow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message == nil || message.ID != "follow-delivery" || message.EventType != chat.EventOther || message.AuthorID != "201" || message.AuthorDisplayName != "NewViewer" || message.Text != "Followed the channel." || !message.Roles.Has(chat.RoleFollower) || message.SafePlatformMetadata["twitch_event"] != FollowEventType {
+		t.Fatalf("follow=%+v", message)
+	}
+
+	subscription := []byte(`{"metadata":{"message_id":"subscribe-delivery","message_type":"notification","message_timestamp":"2026-01-01T00:02:00Z","subscription_type":"channel.subscribe","subscription_version":"1"},"payload":{"event":{"user_id":"202","user_login":"newsubscriber","user_name":"NewSubscriber","broadcaster_user_id":"100","broadcaster_user_login":"channel","broadcaster_user_name":"Channel","tier":"2000","is_gift":false}}}`)
+	_, message, err = ParseEvent(subscription)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message == nil || message.ID != "subscribe-delivery" || message.EventType != chat.EventMembership || message.Text != "Subscribed at Tier 2." || message.Membership == nil || message.Membership.Level != "Tier 2" || message.Membership.IsGift || !message.Roles.Has(chat.RoleSubscriber) || message.SafePlatformMetadata["twitch_event"] != SubscribeEventType {
+		t.Fatalf("subscription=%+v", message)
+	}
+
+	gift := strings.Replace(string(subscription), `"message_id":"subscribe-delivery"`, `"message_id":"gift-delivery"`, 1)
+	gift = strings.Replace(gift, `"tier":"2000","is_gift":false`, `"tier":"1000","is_gift":true`, 1)
+	_, message, err = ParseEvent([]byte(gift))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message == nil || message.Text != "Received a gift subscription at Tier 1." || message.Membership == nil || !message.Membership.IsGift {
+		t.Fatalf("gift=%+v", message)
+	}
+
+	giftBatch := []byte(`{"metadata":{"message_id":"gift-batch-delivery","message_type":"notification","message_timestamp":"2026-01-01T00:03:00Z","subscription_type":"channel.subscription.gift","subscription_version":"1"},"payload":{"event":{"user_id":"203","user_login":"gifter","user_name":"Gifter","broadcaster_user_id":"100","broadcaster_user_login":"channel","broadcaster_user_name":"Channel","total":5,"tier":"1000","is_anonymous":false}}}`)
+	_, message, err = ParseEvent(giftBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message == nil || message.AuthorDisplayName != "Gifter" || message.Text != "Gifted 5 subscriptions." || message.Membership == nil || message.Membership.GiftCount != 5 || message.Membership.Level != "Tier 1" || message.SafePlatformMetadata["twitch_event"] != GiftSubscriptionEventType {
+		t.Fatalf("gift batch=%+v", message)
+	}
+
+	anonymousGift := strings.Replace(string(giftBatch), `"user_id":"203","user_login":"gifter","user_name":"Gifter"`, `"user_id":null,"user_login":null,"user_name":null`, 1)
+	anonymousGift = strings.Replace(anonymousGift, `"is_anonymous":false`, `"is_anonymous":true`, 1)
+	_, message, err = ParseEvent([]byte(anonymousGift))
+	if err != nil || message == nil || message.AuthorID != "" || message.AuthorDisplayName != "anonymous viewer" {
+		t.Fatalf("anonymous gift=%+v err=%v", message, err)
+	}
+
+	bits := strings.Replace(notification, `"color":"#123456"`, `"color":"#123456","cheer":{"bits":250}`, 1)
+	_, message, err = ParseEvent([]byte(bits))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message == nil || message.EventType != chat.EventPaid || message.Paid == nil || message.Paid.Display != "250 Bits" || message.Text != "Hi Kappa" {
+		t.Fatalf("bits=%+v", message)
+	}
+}
+
+func TestParseEventIgnoresUnknownTwitchNotification(t *testing.T) {
+	payload := strings.Replace(notification, `"subscription_type":"channel.chat.message"`, `"subscription_type":"channel.raid"`, 1)
+	_, message, err := ParseEvent([]byte(payload))
+	if err != nil || message != nil {
+		t.Fatalf("message=%+v err=%v", message, err)
+	}
+}
+
 func twitchFragmentNotification(text string, fragments []map[string]any) []byte {
 	payload := map[string]any{
 		"metadata": map[string]any{"message_id": "delivery-emotes", "message_type": "notification", "message_timestamp": "2026-01-01T00:00:00Z", "subscription_type": EventType, "subscription_version": "1"},
@@ -247,6 +310,7 @@ func (f *fakeWS) SetReadDeadline(time.Time) error { f.deadlines++; return nil }
 
 func TestReconnectAndDuplicateDelivery(t *testing.T) {
 	var subscribed int
+	var subscriptions []eventSubscription
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/eventsub/subscriptions" {
 			t.Fatalf("path %s", r.URL.Path)
@@ -260,9 +324,10 @@ func TestReconnectAndDuplicateDelivery(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Type != EventType || request.Version != "1" || request.Condition["broadcaster_user_id"] != "100" || request.Condition["user_id"] != "reader" || request.Transport["method"] != "websocket" || request.Transport["session_id"] != "session" {
+		if request.Condition["broadcaster_user_id"] != "100" || request.Transport["method"] != "websocket" || request.Transport["session_id"] != "session" {
 			t.Fatalf("subscription=%+v", request)
 		}
+		subscriptions = append(subscriptions, eventSubscription{Type: request.Type, Version: request.Version, Condition: request.Condition})
 		subscribed++
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -278,8 +343,9 @@ func TestReconnectAndDuplicateDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next != "wss://new.example/ws" || subscribed != 1 || len(out) != 1 || f.deadlines < 4 {
-		t.Fatalf("next=%q subscribed=%d messages=%d deadlines=%d", next, subscribed, len(out), f.deadlines)
+	wantSubscriptions := twitchSubscriptions("100", "reader")
+	if next != "wss://new.example/ws" || subscribed != 4 || !reflect.DeepEqual(subscriptions, wantSubscriptions) || len(out) != 1 || f.deadlines < 4 {
+		t.Fatalf("next=%q subscribed=%d subscriptions=%+v messages=%d deadlines=%d", next, subscribed, subscriptions, len(out), f.deadlines)
 	}
 }
 
@@ -359,7 +425,7 @@ func TestReconnectContinuesReadingOldSocketUntilReplacementWelcome(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("client did not stop")
 	}
-	if !reflect.DeepEqual(dialed, []string{"wss://initial.example/ws", "wss://replacement.example/ws"}) || subscribed != 1 {
+	if !reflect.DeepEqual(dialed, []string{"wss://initial.example/ws", "wss://replacement.example/ws"}) || subscribed != 4 {
 		t.Fatalf("dialed=%v subscriptions=%d", dialed, subscribed)
 	}
 }
@@ -462,7 +528,7 @@ func TestSubscriptionRefreshesExpiredToken(t *testing.T) {
 	if err := a.Subscribe(context.Background(), "session", "broadcaster", "reader"); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 2 || !updated || a.RefreshToken != "new-refresh" {
+	if requests != 5 || !updated || a.RefreshToken != "new-refresh" {
 		t.Fatalf("requests=%d updated=%v refresh=%q", requests, updated, a.RefreshToken)
 	}
 }

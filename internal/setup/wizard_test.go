@@ -114,7 +114,7 @@ func TestKickOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 }
 
 func TestTwitchOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
-	want := []string{twitch.ReadChatScope, twitch.WriteChatScope, twitch.ManageBroadcastScope, twitch.ManageBannedUsersScope, twitch.ManageChatMessagesScope}
+	want := []string{twitch.ReadChatScope, twitch.WriteChatScope, twitch.ManageBroadcastScope, twitch.ManageBannedUsersScope, twitch.ManageChatMessagesScope, twitch.ReadFollowersScope, twitch.ReadSubscriptionsScope}
 	if !reflect.DeepEqual(twitch.SetupScopes, want) {
 		t.Fatalf("scopes=%v want=%v", twitch.SetupScopes, want)
 	}
@@ -131,10 +131,11 @@ func TestTwitchInstructionsExplainFeatureScopedReauthorization(t *testing.T) {
 	text := twitchInstructions(config.Defaults())
 	for _, want := range []string{
 		"http://localhost:8790/oauth/twitch/callback",
-		"exactly user:read:chat, user:write:chat, channel:manage:broadcast, moderator:manage:banned_users, and moderator:manage:chat_messages",
+		"exactly user:read:chat, user:write:chat, channel:manage:broadcast, moderator:manage:banned_users, moderator:manage:chat_messages, moderator:read:followers, and channel:read:subscriptions",
+		"receive chat, follow, subscription and Bits activity",
 		"ban or timeout users when the account is a channel moderator",
 		"clear or delete Twitch chat messages",
-		"Existing authorizations continue to work for the features covered by their current scopes",
+		"Authorizations created before Streamchat 3.4 must be renewed once",
 		"streamchat setup twitch",
 	} {
 		if !strings.Contains(text, want) {
