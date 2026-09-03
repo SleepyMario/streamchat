@@ -19,6 +19,7 @@ import (
 
 var ErrChatEnded = errors.New("YouTube live chat ended")
 var ErrNoActiveBroadcast = errors.New("YouTube account has no active broadcast")
+var ErrResourceNotFound = errors.New("YouTube resource not found")
 
 const (
 	ForceSSLScope = "https://www.googleapis.com/auth/youtube.force-ssl"
@@ -226,6 +227,9 @@ func (c *Client) requestAttempt(ctx context.Context, method, path string, q url.
 		}
 		if reason == "liveChatEnded" {
 			return ErrChatEnded
+		}
+		if r.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%w (HTTP %d, %s)", ErrResourceNotFound, r.StatusCode, reason)
 		}
 		kind := chat.Terminal
 		if r.StatusCode == 429 || r.StatusCode >= 500 || reason == "rateLimitExceeded" {
@@ -877,7 +881,11 @@ func (c *Client) run(ctx context.Context, out chan<- chat.Message, streaming boo
 		}
 		e = c.request(ctx, path, q, &v)
 		if e != nil {
-			if errors.Is(e, ErrChatEnded) {
+			// YouTube returns 404 when the active broadcast or its live-chat
+			// resource is deleted while streamList is connected. Treat that as
+			// the end of this chat session so RunServer can rediscover a future
+			// broadcast without taking the relay or other platforms down.
+			if errors.Is(e, ErrChatEnded) || errors.Is(e, ErrResourceNotFound) {
 				return nil
 			}
 			var ae *chat.AdapterError

@@ -136,6 +136,47 @@ func TestServerDiscoveryStreamReconnectAndTokenRefresh(t *testing.T) {
 	}
 }
 
+func TestRunServerRediscoversAfterDeletedLiveChat(t *testing.T) {
+	var discoveryCalls int
+	var streamCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/liveBroadcasts":
+			discoveryCalls++
+			if discoveryCalls == 1 {
+				w.Write([]byte(`{"items":[{"id":"deleted-broadcast","snippet":{"liveChatId":"deleted-chat"}}]}`))
+				return
+			}
+			w.Write([]byte(`{"items":[]}`))
+		case "/liveChat/messages/stream":
+			streamCalls++
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":{"errors":[{"reason":"unknown"}]}}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := New(server.Client(), server.URL, "", "access-token", "")
+	c.RetryDelay = time.Millisecond
+	c.Sleep = func(_ context.Context, d time.Duration) error {
+		if d == c.RetryDelay && discoveryCalls >= 2 {
+			cancel()
+			return context.Canceled
+		}
+		return nil
+	}
+
+	if err := c.RunServer(ctx, make(chan chat.Message)); err != nil {
+		t.Fatalf("deleted live chat stopped server ingestion: %v", err)
+	}
+	if discoveryCalls != 2 || streamCalls != 1 {
+		t.Fatalf("discovery calls=%d stream calls=%d", discoveryCalls, streamCalls)
+	}
+}
+
 func TestOAuthErrorRedactsCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
