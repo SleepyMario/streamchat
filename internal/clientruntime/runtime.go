@@ -811,6 +811,12 @@ func (r *Runtime) RemoteControl(ctx context.Context, request relay.ControlReques
 	case "open":
 		value, err := r.youtube.open(ctx)
 		return relay.ControlResponse{URL: value}, err
+	case "prepare-broadcast":
+		prepared, err := r.youtube.client.PrepareBroadcast(ctx, r.cfg.YouTube.StreamID, request.Title, request.Privacy)
+		if err != nil {
+			return relay.ControlResponse{}, err
+		}
+		return relay.ControlResponse{Result: prepared.ID, URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(prepared.ID)}, nil
 	default:
 		return relay.ControlResponse{}, errors.New("unsupported YouTube control action")
 	}

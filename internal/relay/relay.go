@@ -197,6 +197,7 @@ type ControlRequest struct {
 	Duration string `json:"duration,omitempty"`
 	Title    string `json:"title,omitempty"`
 	Category string `json:"category,omitempty"`
+	Privacy  string `json:"privacy,omitempty"`
 	Days     int    `json:"days,omitempty"`
 }
 

@@ -43,6 +43,9 @@ type YouTube struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	TokenExpiry  time.Time `json:"token_expiry,omitempty"`
 	RedirectURI  string    `json:"redirect_uri,omitempty"`
+	// StreamID identifies the reusable YouTube ingest stream used when preparing
+	// a new broadcast for an encoder session.
+	StreamID string `json:"stream_id,omitempty"`
 	// VideoID is retained for compatibility, but is normally a per-run target.
 	VideoID string `json:"video_id,omitempty"`
 	BaseURL string `json:"-"`

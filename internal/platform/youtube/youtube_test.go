@@ -256,6 +256,58 @@ func TestWriteStatusAndChannelControls(t *testing.T) {
 	}
 }
 
+func TestPrepareBroadcastCreatesAndBindsOnce(t *testing.T) {
+	var inserts, binds int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/liveBroadcasts":
+			if r.URL.Query().Get("mine") != "true" || r.URL.Query().Get("broadcastStatus") != "" {
+				t.Fatalf("unexpected list query: %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/liveBroadcasts":
+			inserts++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["snippet"].(map[string]any)["title"] != "Relay test" || body["status"].(map[string]any)["privacyStatus"] != "unlisted" {
+				t.Fatalf("unexpected body: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"id":"broadcast-1","snippet":{"title":"Relay test"},"status":{"lifeCycleStatus":"ready"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/liveBroadcasts/bind":
+			binds++
+			if r.URL.Query().Get("id") != "broadcast-1" || r.URL.Query().Get("streamId") != "stream-1" {
+				t.Fatalf("unexpected bind query: %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`{"id":"broadcast-1"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	c := New(server.Client(), server.URL, "", "token", "")
+	got, err := c.PrepareBroadcast(context.Background(), "stream-1", "Relay test", "unlisted")
+	if err != nil || got.ID != "broadcast-1" || inserts != 1 || binds != 1 {
+		t.Fatalf("got=%+v err=%v inserts=%d binds=%d", got, err, inserts, binds)
+	}
+}
+
+func TestPrepareBroadcastReusesBoundUnfinishedBroadcast(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/liveBroadcasts" {
+			t.Fatalf("unexpected mutation: %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"items":[{"id":"existing","snippet":{"title":"Existing"},"status":{"lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}`))
+	}))
+	defer server.Close()
+	c := New(server.Client(), server.URL, "", "token", "")
+	got, err := c.PrepareBroadcast(context.Background(), "stream-1", "Relay test", "unlisted")
+	if err != nil || got.ID != "existing" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
 func TestCurrentChannelUsesAuthorizedIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/channels" || r.URL.Query().Get("mine") != "true" || r.URL.Query().Get("part") != "id,snippet" {

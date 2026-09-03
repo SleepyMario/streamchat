@@ -351,6 +351,88 @@ type StreamStatus struct {
 	Live                                             bool
 }
 
+type Broadcast struct {
+	ID, Title, LifeCycleStatus string
+}
+
+// PrepareBroadcast returns an existing unfinished broadcast bound to streamID,
+// or creates and binds one. Auto-start/auto-stop then follow the encoder feed.
+func (c *Client) PrepareBroadcast(ctx context.Context, streamID, title, privacy string) (Broadcast, error) {
+	streamID = strings.TrimSpace(streamID)
+	title = strings.TrimSpace(title)
+	privacy = strings.ToLower(strings.TrimSpace(privacy))
+	if streamID == "" {
+		return Broadcast{}, errors.New("YouTube stream ID is required")
+	}
+	if title == "" {
+		return Broadcast{}, errors.New("YouTube broadcast title is required")
+	}
+	switch privacy {
+	case "public", "private", "unlisted":
+	default:
+		return Broadcast{}, errors.New("YouTube privacy must be public, private, or unlisted")
+	}
+
+	var listed struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Snippet struct {
+				Title string `json:"title"`
+			} `json:"snippet"`
+			Status struct {
+				LifeCycleStatus string `json:"lifeCycleStatus"`
+			} `json:"status"`
+			ContentDetails struct {
+				BoundStreamID string `json:"boundStreamId"`
+			} `json:"contentDetails"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, "/liveBroadcasts", url.Values{"part": {"id,snippet,status,contentDetails"}, "mine": {"true"}, "broadcastType": {"all"}, "maxResults": {"50"}}, &listed); err != nil {
+		return Broadcast{}, err
+	}
+	for _, item := range listed.Items {
+		if item.ContentDetails.BoundStreamID == streamID && item.Status.LifeCycleStatus != "complete" && item.Status.LifeCycleStatus != "revoked" {
+			return Broadcast{ID: item.ID, Title: item.Snippet.Title, LifeCycleStatus: item.Status.LifeCycleStatus}, nil
+		}
+	}
+
+	body := map[string]any{
+		"snippet": map[string]any{
+			"title":              title,
+			"scheduledStartTime": time.Now().UTC().Add(10 * time.Second).Format(time.RFC3339),
+		},
+		"status": map[string]any{
+			"privacyStatus":           privacy,
+			"selfDeclaredMadeForKids": false,
+		},
+		"contentDetails": map[string]any{
+			"enableAutoStart": true,
+			"enableAutoStop":  true,
+			"enableDvr":       true,
+			"recordFromStart": true,
+		},
+	}
+	var created struct {
+		ID      string `json:"id"`
+		Snippet struct {
+			Title string `json:"title"`
+		} `json:"snippet"`
+		Status struct {
+			LifeCycleStatus string `json:"lifeCycleStatus"`
+		} `json:"status"`
+	}
+	if err := c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts", url.Values{"part": {"id,snippet,status,contentDetails"}}, body, &created); err != nil {
+		return Broadcast{}, err
+	}
+	if created.ID == "" {
+		return Broadcast{}, errors.New("YouTube created a broadcast without an ID")
+	}
+	if err := c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts/bind", url.Values{"part": {"id,snippet,status,contentDetails"}, "id": {created.ID}, "streamId": {streamID}}, nil, nil); err != nil {
+		return Broadcast{}, err
+	}
+	return Broadcast{ID: created.ID, Title: created.Snippet.Title, LifeCycleStatus: created.Status.LifeCycleStatus}, nil
+}
+
 type sendResponse struct {
 	ID string `json:"id"`
 }
