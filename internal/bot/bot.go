@@ -15,7 +15,7 @@ type Sender interface {
 	SendTo(context.Context, string, string) error
 }
 
-const languageReply = "You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on the fat streamer."
+const languageReply = "You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on that fat Sleepy dude."
 
 type Config struct {
 	Enabled       bool
