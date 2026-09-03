@@ -8,7 +8,7 @@ if [[ -z "${GOROOT:-}" && -d /ucrt64/lib/go ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-version="${VERSION:-3.1}"
+version="${VERSION:-3.2}"
 build_dir="${repo_root}/build/windows-ucrt64"
 stage_dir="${repo_root}/packaging/windows/stage"
 dist_dir="${repo_root}/dist"

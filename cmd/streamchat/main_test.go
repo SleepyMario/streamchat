@@ -95,7 +95,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "Streamchat 3.1") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
+	if !strings.Contains(out.String(), "Streamchat 3.2") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
 		t.Fatalf("help does not describe stable platform support accurately: %s", out.String())
 	}
 }
@@ -290,6 +290,13 @@ func TestRetiredKickAliasIsRejectedAfterRestoredSelection(t *testing.T) {
 func TestSetupArgumentsAcceptConfigAfterPlatform(t *testing.T) {
 	selected, path, err := setupArguments([]string{"youtube-server", "--config", "/etc/streamchat/config.json"})
 	if err != nil || len(selected) != 1 || selected[0] != "youtube-server" || path != "/etc/streamchat/config.json" {
+		t.Fatalf("selected=%v path=%q err=%v", selected, path, err)
+	}
+}
+
+func TestSetupArgumentsAcceptDedicatedTwitchBot(t *testing.T) {
+	selected, path, err := setupArguments([]string{"twitch-bot", "--config=/tmp/streamchat.json"})
+	if err != nil || len(selected) != 1 || selected[0] != "twitch-bot" || path != "/tmp/streamchat.json" {
 		t.Fatalf("selected=%v path=%q err=%v", selected, path, err)
 	}
 }
@@ -1653,6 +1660,23 @@ func TestEmptyConfigCheck(t *testing.T) {
 	var out, err bytes.Buffer
 	if c := run([]string{"config", "check"}, &out, &err); c != 0 || !strings.Contains(out.String(), "configuration valid") {
 		t.Fatalf("%d %s", c, err.String())
+	}
+}
+
+func TestConfigCheckReportsDedicatedTwitchBotIdentity(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	c := config.Defaults()
+	c.Bot.Twitch.AccessToken = "private-token"
+	c.Bot.Twitch.UserLogin = "comradekip"
+	if err := config.Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := run([]string{"config", "check", "--config", p}, &out, &errw); code != 0 {
+		t.Fatalf("%d %s", code, errw.String())
+	}
+	if !strings.Contains(out.String(), "Twitch bot:") || !strings.Contains(out.String(), "configured as comradekip") || strings.Contains(out.String(), "private-token") {
+		t.Fatalf("unexpected config check output:\n%s", out.String())
 	}
 }
 

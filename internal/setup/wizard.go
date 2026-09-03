@@ -152,6 +152,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 			err = w.kick(ctx, &c)
 		case "twitch":
 			err = w.twitch(ctx, &c)
+		case "twitch-bot":
+			err = w.twitchBot(ctx, &c)
 		default:
 			err = fmt.Errorf("unknown platform %q", name)
 		}
@@ -164,6 +166,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 		display := strings.ToUpper(name[:1]) + name[1:]
 		if name == "youtube-server" {
 			display = "YouTube server"
+		} else if name == "twitch-bot" {
+			display = "Twitch bot"
 		}
 		fmt.Fprintf(w.Out, "%s configuration saved to %s.\n", display, pathOrDefault(w.Path))
 	}
@@ -367,6 +371,67 @@ func (w *Wizard) twitch(ctx context.Context, c *config.Config) error {
 	return err
 }
 
+func (w *Wizard) twitchBot(ctx context.Context, c *config.Config) error {
+	fmt.Fprintln(w.Out, twitchBotInstructions(*c))
+	account := c.Bot.Twitch
+	if account.ClientID == "" {
+		account.ClientID = c.Twitch.ClientID
+	}
+	if account.ClientSecret == "" {
+		account.ClientSecret = c.Twitch.ClientSecret
+	}
+	var err error
+	account.ClientID, err = w.value("Twitch bot Client ID", account.ClientID, false)
+	if err != nil {
+		return err
+	}
+	account.ClientSecret, err = w.value("Twitch bot Client Secret", account.ClientSecret, true)
+	if err != nil {
+		return err
+	}
+	res, err := w.Authorize(ctx, oauthpkg.Request{
+		AuthorizeURL: strings.TrimRight(c.Twitch.OAuthBaseURL, "/") + "/authorize",
+		ClientID:     account.ClientID,
+		RedirectURI:  c.Twitch.RedirectURI,
+		Scopes:       twitch.RequiredChatScopes,
+	}, w.Out, w.OpenBrowser)
+	if err != nil {
+		return err
+	}
+	api := &twitch.API{
+		HTTP: w.HTTP, APIBaseURL: c.Twitch.APIBaseURL, OAuthBaseURL: c.Twitch.OAuthBaseURL,
+		ClientID: account.ClientID, ClientSecret: account.ClientSecret,
+	}
+	tok, err := api.Exchange(ctx, res.Code, c.Twitch.RedirectURI)
+	if err != nil {
+		return err
+	}
+	api.AccessToken = tok.AccessToken
+	identity, err := api.ValidateToken(ctx)
+	if err != nil {
+		return err
+	}
+	if err = twitch.RequireScopes(identity.Scopes, twitch.RequiredChatScopes...); err != nil {
+		return err
+	}
+	if sameTwitchIdentity(c.Twitch, identity) {
+		return fmt.Errorf("Twitch authorized the primary account %s, not a separate bot account; switch the browser to the intended bot account and rerun: streamchat setup twitch-bot", identity.Login)
+	}
+	account.AccessToken = tok.AccessToken
+	account.RefreshToken = tok.RefreshToken
+	account.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	account.UserID = identity.UserID
+	account.UserLogin = identity.Login
+	c.Bot.Twitch = account
+	fmt.Fprintf(w.Out, "Authorized dedicated Twitch bot account %s for channel %s.\n", identity.Login, c.Twitch.Channel)
+	return nil
+}
+
+func sameTwitchIdentity(primary config.Twitch, candidate twitch.Identity) bool {
+	return primary.UserID != "" && primary.UserID == candidate.UserID ||
+		primary.UserLogin != "" && strings.EqualFold(primary.UserLogin, candidate.Login)
+}
+
 func twitchInstructions(c config.Config) string {
 	return `Twitch chat uses the official EventSub WebSocket API; no public webhook is needed.
 
@@ -379,6 +444,18 @@ func twitchInstructions(c config.Config) string {
 The Twitch account you authorize is the identity Streamchat reads and sends chat as and the moderator identity used by moderation APIs. Channel names are resolved to numeric IDs automatically. Existing authorizations continue to work for the features covered by their current scopes; only a command missing its required scope asks you to rerun streamchat setup twitch.`
 }
 
+func twitchBotInstructions(c config.Config) string {
+	return `This authorizes a separate Twitch identity for Streamchat's bot replies.
+
+1. Keep the broadcaster account and channel configuration unchanged.
+2. Before approving the browser prompt, make sure Twitch is signed in as the intended bot account.
+3. Streamchat requests only user:read:chat and user:write:chat for that bot identity.
+4. The bot authorization uses this loopback redirect URI:
+   ` + c.Twitch.RedirectURI + `
+
+The existing Twitch application may be reused. The bot's OAuth tokens and resolved account identity are stored under bot.twitch; the primary twitch account remains untouched.`
+}
+
 func ParsePlatforms(args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
@@ -387,7 +464,7 @@ func ParsePlatforms(args []string) ([]string, error) {
 		return nil, errors.New("setup accepts at most one platform")
 	}
 	switch args[0] {
-	case "youtube", "youtube-server", "kick", "twitch":
+	case "youtube", "youtube-server", "kick", "twitch", "twitch-bot":
 		return []string{args[0]}, nil
 	default:
 		return nil, fmt.Errorf("unknown platform %q", args[0])

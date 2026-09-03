@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat 3.1 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, and opening the active stream. Streamchat uses only documented official platform APIs.
+Streamchat 3.2 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, and opening the active stream. Streamchat uses only documented official platform APIs.
 
 ## Start here
 
@@ -32,6 +32,8 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 | YouTube | A restricted API key for local public-chat mode, or a Desktop-app OAuth client for unattended server mode | [Google Cloud projects](https://console.cloud.google.com/projectcreate), [API library](https://console.cloud.google.com/apis/library/youtube.googleapis.com), and [Credentials](https://console.cloud.google.com/apis/credentials) | `streamchat setup youtube` or `streamchat setup youtube-server` |
 | Kick | A Kick app Client ID and Client Secret, a browser-created user access/refresh token with `user:read events:subscribe chat:write channel:write`, and a public HTTPS webhook configured in the developer portal and mirrored in `kick.webhook_url` | [Kick Developer settings](https://kick.com/settings/developer), [Kick app setup](https://docs.kick.com/getting-started/kick-apps-setup), and [Kick OAuth 2.1](https://docs.kick.com/getting-started/generating-tokens-oauth2-flow) | `streamchat setup kick` |
 | Twitch | A Twitch app Client ID and Client Secret, a browser-created user access/refresh token with exactly `user:read:chat user:write:chat channel:manage:broadcast moderator:manage:banned_users moderator:manage:chat_messages`, and a channel name or URL | [Twitch Developer Console](https://dev.twitch.tv/console/apps), [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/), and [Twitch moderation](https://dev.twitch.tv/docs/chat/moderation/) | `streamchat setup twitch` |
+
+To make bot replies come from a separate Twitch account, run `streamchat setup twitch-bot`. Sign in to Twitch as that bot account before approving the browser prompt. This second authorization requests only `user:read:chat` and `user:write:chat`, stores the resolved identity under `bot.twitch`, and leaves the broadcaster's `twitch` configuration unchanged. The same Twitch developer application can be reused.
 
 No real-looking credentials are included in this repository.
 
@@ -439,21 +441,21 @@ Ubuntu 24.04 is the canonical Debian-package build and validation target. A move
 Build all three Ubuntu/Debian packages with the locally installed Go toolchain, Qt 6 development files, and `dpkg-deb`:
 
 ```sh
-VERSION=3.1 make deb
+VERSION=3.2 make deb
 sudo apt install \
-  ./dist/streamchat-cli_3.1_amd64.deb \
-  ./dist/streamchat-server_3.1_amd64.deb \
-  ./dist/streamchat-gui_3.1_amd64.deb
+  ./dist/streamchat-cli_3.2_amd64.deb \
+  ./dist/streamchat-server_3.2_amd64.deb \
+  ./dist/streamchat-gui_3.2_amd64.deb
 ```
 
-Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. The package builds inject the upstream version into the binaries, so this release reports `streamchat 3.1`.
+Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. The package builds inject the upstream version into the binaries, so this release reports `streamchat 3.2`.
 
 `streamchat-cli` owns the statically linked shared runtime and `/usr/bin/streamchat`. It explicitly replaces the legacy combined `streamchat` package during upgrades. `streamchat-server` depends on the exact same CLI version and owns `streamchat-server.service`. `streamchat-gui` depends on the exact same CLI version and provides the native Qt application. Install a headless server with these two local artifacts:
 
 ```sh
 sudo apt install \
-  ./dist/streamchat-cli_3.1_amd64.deb \
-  ./dist/streamchat-server_3.1_amd64.deb
+  ./dist/streamchat-cli_3.2_amd64.deb \
+  ./dist/streamchat-server_3.2_amd64.deb
 ```
 
 The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:

@@ -49,7 +49,7 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 3.1 combines Kick, Twitch, and YouTube chat.
+const usage = `Streamchat 3.2 combines Kick, Twitch, and YouTube chat.
 All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:
@@ -100,6 +100,7 @@ On a terminal, the alternate screen keeps Kick status at top and input at bottom
 Useful commands:
   streamchat version
   streamchat setup youtube|kick|twitch [--config PATH]
+  streamchat setup twitch-bot       Authorize a dedicated Twitch bot identity
   streamchat setup youtube-server  Authorize unattended server ingestion
   streamchat run --youtube-video URL_OR_ID
   streamchat run --twitch-channel CHANNEL_OR_URL
@@ -539,7 +540,17 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 				fmt.Fprintf(out, "Streamchat bot: %s\n", safeError(err))
 			})
 			if c.Bot.Enabled {
-				fmt.Fprintln(out, "Streamchat bot enabled for Kick and Twitch (!commands).")
+				enabledPlatforms := make([]string, 0, 2)
+				for _, platform := range []string{"Kick", "Twitch"} {
+					if !disabled[strings.ToLower(platform)] {
+						enabledPlatforms = append(enabledPlatforms, platform)
+					}
+				}
+				if len(enabledPlatforms) == 0 {
+					fmt.Fprintln(out, "Streamchat bot enabled, but all chat platforms are disabled.")
+				} else {
+					fmt.Fprintf(out, "Streamchat bot enabled for %s (!commands).\n", strings.Join(enabledPlatforms, " and "))
+				}
 			}
 			if c.Bot.GUIListen != "" {
 				var subtitleManager *subtitles.Manager
@@ -1886,6 +1897,14 @@ func check(args []string, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "%-16s %s\n", "Discord bot:", discordStatus)
+	twitchBotStatus := "not configured — run: streamchat setup twitch-bot"
+	if c.Bot.Twitch.AccessToken != "" || c.Bot.Twitch.RefreshToken != "" {
+		twitchBotStatus = "configured"
+		if c.Bot.Twitch.UserLogin != "" {
+			twitchBotStatus += " as " + c.Bot.Twitch.UserLogin
+		}
+	}
+	fmt.Fprintf(out, "%-16s %s\n", "Twitch bot:", twitchBotStatus)
 	fmt.Fprintf(out, "%-16s %s\n", "SQLite archive:", c.Storage.SQLitePath)
 	relayStatus := "not configured"
 	if c.Client.ServerURL != "" && c.RelayAuthToken != "" {
