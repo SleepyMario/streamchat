@@ -106,7 +106,7 @@ func TestDuplicateCommandMayAnswerAfterFourInterveningMessages(t *testing.T) {
 	}
 }
 
-func TestLanguageCommandIsTwitchOnlyAndRecorded(t *testing.T) {
+func TestLanguageCommandIsKickAndTwitchOnlyAndRecorded(t *testing.T) {
 	sender := &recordingSender{}
 	commandLog := &recordingCommandLog{}
 	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", Cooldown: 5 * time.Second, CommandLog: commandLog})
@@ -120,10 +120,10 @@ func TestLanguageCommandIsTwitchOnlyAndRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(sender.messages) != 1 || sender.platforms[0] != "twitch" || sender.messages[0] != languageReply {
+	if len(sender.messages) != 2 || sender.platforms[0] != "twitch" || sender.platforms[1] != "kick" || sender.messages[0] != languageReply || sender.messages[1] != languageReply {
 		t.Fatalf("platforms=%v messages=%v", sender.platforms, sender.messages)
 	}
-	if len(commandLog.records) != 1 || commandLog.records[0].Command != "!language" || !commandLog.records[0].Succeeded {
+	if len(commandLog.records) != 2 || commandLog.records[0].Command != "!language" || commandLog.records[1].Command != "!language" || !commandLog.records[0].Succeeded || !commandLog.records[1].Succeeded {
 		t.Fatalf("command records=%+v", commandLog.records)
 	}
 }

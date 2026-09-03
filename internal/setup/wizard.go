@@ -150,6 +150,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 			err = w.youtubeServer(ctx, &c)
 		case "kick":
 			err = w.kick(ctx, &c)
+		case "kick-bot":
+			err = w.kickBot(ctx, &c)
 		case "twitch":
 			err = w.twitch(ctx, &c)
 		case "twitch-bot":
@@ -166,6 +168,8 @@ func (w *Wizard) Run(ctx context.Context, only []string) error {
 		display := strings.ToUpper(name[:1]) + name[1:]
 		if name == "youtube-server" {
 			display = "YouTube server"
+		} else if name == "kick-bot" {
+			display = "Kick bot"
 		} else if name == "twitch-bot" {
 			display = "Twitch bot"
 		}
@@ -257,6 +261,7 @@ Streamchat requests public videos.list and liveChatMessages.list data. No OAuth 
 }
 
 var kickOAuthScopes = []string{"user:read", "events:subscribe", kick.ChatWriteScope, kick.ChannelWriteScope, kick.ChannelReadScope, kick.ModerationBanScope, kick.ChatMessageManageScope}
+var kickBotOAuthScopes = []string{"user:read", kick.ChatWriteScope}
 
 func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	fmt.Fprintln(w.Out, kickInstructions(*c))
@@ -302,6 +307,63 @@ func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	}
 	fmt.Fprintln(w.Out, "Kick event subscription created. Delivery uses the webhook URL in the Kick developer portal; the local kick.webhook_url value was not sent.")
 	return nil
+}
+
+func (w *Wizard) kickBot(ctx context.Context, c *config.Config) error {
+	fmt.Fprintln(w.Out, kickBotInstructions(*c))
+	account := c.Bot.Kick
+	if account.ClientID == "" {
+		account.ClientID = c.Kick.ClientID
+	}
+	if account.ClientSecret == "" {
+		account.ClientSecret = c.Kick.ClientSecret
+	}
+	var err error
+	account.ClientID, err = w.value("Kick bot Client ID", strings.TrimSpace(account.ClientID), false)
+	if err != nil {
+		return err
+	}
+	account.ClientSecret, err = w.value("Kick bot Client Secret", strings.TrimSpace(account.ClientSecret), true)
+	if err != nil {
+		return err
+	}
+	res, err := w.Authorize(ctx, oauthpkg.Request{
+		AuthorizeURL: strings.TrimRight(c.Kick.OAuthBaseURL, "/") + "/oauth/authorize",
+		ClientID:     account.ClientID,
+		RedirectURI:  c.Kick.RedirectURI,
+		Scopes:       kickBotOAuthScopes,
+		UsePKCE:      true,
+	}, w.Out, w.OpenBrowser)
+	if err != nil {
+		return err
+	}
+	oc := kick.OAuthClient{
+		HTTP: w.HTTP, OAuthBaseURL: c.Kick.OAuthBaseURL, APIBaseURL: c.Kick.APIBaseURL,
+		ClientID: account.ClientID, ClientSecret: account.ClientSecret,
+	}
+	tok, err := oc.Exchange(ctx, res.Code, c.Kick.RedirectURI, res.Verifier)
+	if err != nil {
+		return err
+	}
+	id, name, err := oc.CurrentUser(ctx, tok.AccessToken)
+	if err != nil {
+		return err
+	}
+	if sameKickIdentity(c.Kick, id) {
+		return fmt.Errorf("Kick authorized the primary account %s, not a separate bot account; switch the browser to the intended bot account and rerun: streamchat setup kick-bot", name)
+	}
+	account.AccessToken = tok.AccessToken
+	account.RefreshToken = tok.RefreshToken
+	account.TokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	account.UserID = id
+	account.UserLogin = name
+	c.Bot.Kick = account
+	fmt.Fprintf(w.Out, "Authorized dedicated Kick bot account %s for broadcaster user ID %s.\n", name, c.Kick.BroadcasterID)
+	return nil
+}
+
+func sameKickIdentity(primary config.Kick, candidateUserID string) bool {
+	return primary.BroadcasterID != "" && primary.BroadcasterID == candidateUserID
 }
 
 func kickInstructions(c config.Config) string {
@@ -456,6 +518,18 @@ func twitchBotInstructions(c config.Config) string {
 The existing Twitch application may be reused. The bot's OAuth tokens and resolved account identity are stored under bot.twitch; the primary twitch account remains untouched.`
 }
 
+func kickBotInstructions(c config.Config) string {
+	return `This authorizes a separate Kick identity for Streamchat's bot replies.
+
+1. Keep the broadcaster account, broadcaster user ID and webhook configuration unchanged.
+2. Before approving the browser prompt, make sure Kick is signed in as the intended bot account.
+3. Streamchat requests only user:read and chat:write for that bot identity.
+4. The bot authorization uses this loopback redirect URI:
+   ` + c.Kick.RedirectURI + `
+
+The existing Kick application may be reused. The bot's OAuth tokens and resolved account identity are stored under bot.kick; the primary kick account and event subscriptions remain untouched.`
+}
+
 func ParsePlatforms(args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
@@ -464,7 +538,7 @@ func ParsePlatforms(args []string) ([]string, error) {
 		return nil, errors.New("setup accepts at most one platform")
 	}
 	switch args[0] {
-	case "youtube", "youtube-server", "kick", "twitch", "twitch-bot":
+	case "youtube", "youtube-server", "kick", "kick-bot", "twitch", "twitch-bot":
 		return []string{args[0]}, nil
 	default:
 		return nil, fmt.Errorf("unknown platform %q", args[0])

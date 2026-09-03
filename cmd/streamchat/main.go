@@ -49,7 +49,7 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 3.4 combines Kick, Twitch, and YouTube chat.
+const usage = `Streamchat 3.5 combines Kick, Twitch, and YouTube chat.
 All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:
@@ -100,6 +100,7 @@ On a terminal, the alternate screen keeps Kick status at top and input at bottom
 Useful commands:
   streamchat version
   streamchat setup youtube|kick|twitch [--config PATH]
+  streamchat setup kick-bot         Authorize a dedicated Kick bot identity
   streamchat setup twitch-bot       Authorize a dedicated Twitch bot identity
   streamchat setup youtube-server  Authorize unattended server ingestion
   streamchat run --youtube-video URL_OR_ID
@@ -549,7 +550,7 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 				if len(enabledPlatforms) == 0 {
 					fmt.Fprintln(out, "Streamchat bot enabled, but all chat platforms are disabled.")
 				} else {
-					fmt.Fprintf(out, "Streamchat bot enabled for %s (!commands).\n", strings.Join(enabledPlatforms, " and "))
+					fmt.Fprintf(out, "Streamchat bot enabled for %s (!commands, !language).\n", strings.Join(enabledPlatforms, " and "))
 				}
 			}
 			if c.Bot.GUIListen != "" {
@@ -586,6 +587,9 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 						accounts := map[string]string{"kick": "Uses primary account", "twitch": "Uses primary account"}
 						if c.Bot.Kick.AccessToken != "" || c.Bot.Kick.RefreshToken != "" {
 							accounts["kick"] = "Dedicated bot account configured"
+							if c.Bot.Kick.UserLogin != "" {
+								accounts["kick"] = "Dedicated: " + c.Bot.Kick.UserLogin
+							}
 						}
 						if c.Bot.Twitch.AccessToken != "" || c.Bot.Twitch.RefreshToken != "" {
 							accounts["twitch"] = "Dedicated bot account configured"
@@ -1897,6 +1901,14 @@ func check(args []string, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "%-16s %s\n", "Discord bot:", discordStatus)
+	kickBotStatus := "not configured — run: streamchat setup kick-bot"
+	if c.Bot.Kick.AccessToken != "" || c.Bot.Kick.RefreshToken != "" {
+		kickBotStatus = "configured"
+		if c.Bot.Kick.UserLogin != "" {
+			kickBotStatus += " as " + c.Bot.Kick.UserLogin
+		}
+	}
+	fmt.Fprintf(out, "%-16s %s\n", "Kick bot:", kickBotStatus)
 	twitchBotStatus := "not configured — run: streamchat setup twitch-bot"
 	if c.Bot.Twitch.AccessToken != "" || c.Bot.Twitch.RefreshToken != "" {
 		twitchBotStatus = "configured"

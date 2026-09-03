@@ -113,6 +113,13 @@ func TestKickOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestKickBotOAuthScopesIncludeOnlyIdentityAndChat(t *testing.T) {
+	want := []string{"user:read", kick.ChatWriteScope}
+	if !reflect.DeepEqual(kickBotOAuthScopes, want) {
+		t.Fatalf("scopes=%v want=%v", kickBotOAuthScopes, want)
+	}
+}
+
 func TestTwitchOAuthScopesIncludeOnlyRequiredCapabilities(t *testing.T) {
 	want := []string{twitch.ReadChatScope, twitch.WriteChatScope, twitch.ManageBroadcastScope, twitch.ManageBannedUsersScope, twitch.ManageChatMessagesScope, twitch.ReadFollowersScope, twitch.ReadSubscriptionsScope}
 	if !reflect.DeepEqual(twitch.SetupScopes, want) {
@@ -227,6 +234,84 @@ func TestTwitchBotSetupRejectsPrimaryIdentity(t *testing.T) {
 		t.Fatal("same primary login was accepted as a bot")
 	}
 	if sameTwitchIdentity(primary, twitch.Identity{UserID: "bot-user", Login: "comradekip"}) {
+		t.Fatal("dedicated bot identity was rejected")
+	}
+}
+
+func TestKickBotInstructionsDescribeDedicatedMinimalAuthorization(t *testing.T) {
+	text := kickBotInstructions(config.Defaults())
+	for _, want := range []string{
+		"separate Kick identity",
+		"signed in as the intended bot account",
+		"only user:read and chat:write",
+		"http://localhost:8789/oauth/kick/callback",
+		"primary kick account and event subscriptions remain untouched",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Kick bot instructions missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestKickBotSetupUsesMinimalScopesAndPreservesPrimaryIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Form.Get("client_id") != "shared-client" || r.Form.Get("client_secret") != "shared-secret" || r.Form.Get("code") != "bot-code" || r.Form.Get("code_verifier") != "bot-verifier" {
+				t.Fatalf("unexpected token exchange: %v", r.Form)
+			}
+			_, _ = io.WriteString(w, `{"access_token":"bot-access","refresh_token":"bot-refresh","expires_in":3600,"scope":"user:read chat:write"}`)
+		case "/users":
+			if r.Header.Get("Authorization") != "Bearer bot-access" {
+				t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
+			}
+			_, _ = io.WriteString(w, `{"data":[{"user_id":2002,"name":"ComradeKip"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := config.Defaults()
+	c.Kick.ClientID = "shared-client"
+	c.Kick.ClientSecret = "shared-secret"
+	c.Kick.AccessToken = "owner-access"
+	c.Kick.RefreshToken = "owner-refresh"
+	c.Kick.BroadcasterID = "1001"
+	c.Kick.OAuthBaseURL = server.URL
+	c.Kick.APIBaseURL = server.URL
+	var out bytes.Buffer
+	wizard := New(strings.NewReader("y\ny\n"), &out, "")
+	wizard.HTTP = server.Client()
+	wizard.Authorize = func(_ context.Context, request oauthpkg.Request, _ io.Writer, _ func(string) error) (oauthpkg.Result, error) {
+		if !reflect.DeepEqual(request.Scopes, kickBotOAuthScopes) || !request.UsePKCE {
+			t.Fatalf("authorization request=%+v", request)
+		}
+		return oauthpkg.Result{Code: "bot-code", Verifier: "bot-verifier"}, nil
+	}
+	if err := wizard.kickBot(context.Background(), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Kick.AccessToken != "owner-access" || c.Kick.RefreshToken != "owner-refresh" || c.Kick.BroadcasterID != "1001" {
+		t.Fatalf("primary identity changed: %+v", c.Kick)
+	}
+	if c.Bot.Kick.ClientID != "shared-client" || c.Bot.Kick.AccessToken != "bot-access" || c.Bot.Kick.RefreshToken != "bot-refresh" || c.Bot.Kick.UserID != "2002" || c.Bot.Kick.UserLogin != "ComradeKip" {
+		t.Fatalf("bot identity not saved: %+v", c.Bot.Kick)
+	}
+	if strings.Contains(out.String(), "shared-secret") || strings.Contains(out.String(), "bot-access") || strings.Contains(out.String(), "bot-refresh") {
+		t.Fatalf("secret appeared in output: %s", out.String())
+	}
+}
+
+func TestKickBotSetupRejectsPrimaryIdentity(t *testing.T) {
+	primary := config.Kick{BroadcasterID: "1001"}
+	if !sameKickIdentity(primary, "1001") {
+		t.Fatal("same primary user ID was accepted as a bot")
+	}
+	if sameKickIdentity(primary, "2002") {
 		t.Fatal("dedicated bot identity was rejected")
 	}
 }

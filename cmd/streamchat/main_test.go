@@ -95,7 +95,7 @@ func TestDemoOfflineAndHelp(t *testing.T) {
 	if strings.Contains(out.String(), "/kk") {
 		t.Fatal(out.String())
 	}
-	if !strings.Contains(out.String(), "Streamchat 3.4") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
+	if !strings.Contains(out.String(), "Streamchat 3.5") || !strings.Contains(out.String(), "All three platforms support reading, sending") {
 		t.Fatalf("help does not describe stable platform support accurately: %s", out.String())
 	}
 }
@@ -297,6 +297,13 @@ func TestSetupArgumentsAcceptConfigAfterPlatform(t *testing.T) {
 func TestSetupArgumentsAcceptDedicatedTwitchBot(t *testing.T) {
 	selected, path, err := setupArguments([]string{"twitch-bot", "--config=/tmp/streamchat.json"})
 	if err != nil || len(selected) != 1 || selected[0] != "twitch-bot" || path != "/tmp/streamchat.json" {
+		t.Fatalf("selected=%v path=%q err=%v", selected, path, err)
+	}
+}
+
+func TestSetupArgumentsAcceptDedicatedKickBot(t *testing.T) {
+	selected, path, err := setupArguments([]string{"kick-bot", "--config=/tmp/streamchat.json"})
+	if err != nil || len(selected) != 1 || selected[0] != "kick-bot" || path != "/tmp/streamchat.json" {
 		t.Fatalf("selected=%v path=%q err=%v", selected, path, err)
 	}
 }
@@ -1676,6 +1683,23 @@ func TestConfigCheckReportsDedicatedTwitchBotIdentity(t *testing.T) {
 		t.Fatalf("%d %s", code, errw.String())
 	}
 	if !strings.Contains(out.String(), "Twitch bot:") || !strings.Contains(out.String(), "configured as comradekip") || strings.Contains(out.String(), "private-token") {
+		t.Fatalf("unexpected config check output:\n%s", out.String())
+	}
+}
+
+func TestConfigCheckReportsDedicatedKickBotIdentity(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	c := config.Defaults()
+	c.Bot.Kick.AccessToken = "private-token"
+	c.Bot.Kick.UserLogin = "ComradeKip"
+	if err := config.Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := run([]string{"config", "check", "--config", p}, &out, &errw); code != 0 {
+		t.Fatalf("%d %s", code, errw.String())
+	}
+	if !strings.Contains(out.String(), "Kick bot:") || !strings.Contains(out.String(), "configured as ComradeKip") || strings.Contains(out.String(), "private-token") {
 		t.Fatalf("unexpected config check output:\n%s", out.String())
 	}
 }

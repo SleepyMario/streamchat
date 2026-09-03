@@ -128,7 +128,7 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 			reply = cfg.CommandsReply
 		}
 	case "!language":
-		if event.Platform == string(chat.PlatformTwitch) {
+		if event.Platform == string(chat.PlatformKick) || event.Platform == string(chat.PlatformTwitch) {
 			reply = languageReply
 		}
 	}
