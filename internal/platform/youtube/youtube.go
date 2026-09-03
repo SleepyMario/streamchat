@@ -406,10 +406,11 @@ func (c *Client) PrepareBroadcast(ctx context.Context, streamID, title, privacy 
 			"selfDeclaredMadeForKids": false,
 		},
 		"contentDetails": map[string]any{
-			"enableAutoStart": true,
-			"enableAutoStop":  true,
-			"enableDvr":       true,
-			"recordFromStart": true,
+			"enableAutoStart":   true,
+			"enableAutoStop":    true,
+			"enableDvr":         true,
+			"recordFromStart":   true,
+			"latencyPreference": "low",
 		},
 	}
 	var created struct {

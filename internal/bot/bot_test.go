@@ -128,6 +128,27 @@ func TestLanguageCommandIsSharedAcrossAllPlatformsAndRecorded(t *testing.T) {
 	}
 }
 
+func TestYouTubeSerializesDifferentRepliesAcrossCooldownWindow(t *testing.T) {
+	sender := &recordingSender{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands, !language", Cooldown: time.Minute})
+	now := time.Unix(100, 0)
+	engine.now = func() time.Time { return now }
+	var waited time.Duration
+	engine.sleep = func(_ context.Context, duration time.Duration) error {
+		waited = duration
+		now = now.Add(duration)
+		return nil
+	}
+	for _, command := range []string{"!commands", "!language"} {
+		if err := engine.handle(context.Background(), chat.Message{Platform: chat.PlatformYouTube, ChannelID: "video", Text: command, EventType: chat.EventMessage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if waited != time.Minute || len(sender.messages) != 2 || sender.messages[1] != youtubeLanguageReply {
+		t.Fatalf("waited=%s messages=%v", waited, sender.messages)
+	}
+}
+
 type recordingChannelSender struct {
 	platform string
 	channel  string

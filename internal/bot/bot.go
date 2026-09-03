@@ -59,16 +59,18 @@ type Engine struct {
 	now        func() time.Time
 	mu         sync.Mutex
 	last       map[string]commandReplyState
+	lastSent   map[string]time.Time
 	sequences  map[string]uint64
 	activity   []Activity
 	commandLog CommandRecorder
+	sleep      func(context.Context, time.Duration) error
 }
 
 func New(sender Sender, cfg Config) *Engine {
 	if cfg.QueueSize < 1 {
 		cfg.QueueSize = 32
 	}
-	return &Engine{sender: sender, cfg: cfg, queue: make(chan Event, cfg.QueueSize), now: time.Now, last: make(map[string]commandReplyState), sequences: make(map[string]uint64), commandLog: cfg.CommandLog}
+	return &Engine{sender: sender, cfg: cfg, queue: make(chan Event, cfg.QueueSize), now: time.Now, last: make(map[string]commandReplyState), lastSent: make(map[string]time.Time), sequences: make(map[string]uint64), commandLog: cfg.CommandLog, sleep: sleep}
 }
 
 // Enqueue is deliberately non-blocking: bot traffic may never stall chat relay.
@@ -177,10 +179,39 @@ func supportedCommandPlatform(platform string) bool {
 }
 
 func (e *Engine) sendReply(ctx context.Context, event Event, reply string) error {
-	if sender, ok := e.sender.(channelSender); ok {
-		return sender.SendToChannel(ctx, event.Platform, event.ChannelID, reply)
+	if event.Platform == string(chat.PlatformYouTube) {
+		e.mu.Lock()
+		lastSent, cooldown, now := e.lastSent[event.Platform], e.cfg.Cooldown, e.now()
+		e.mu.Unlock()
+		if wait := cooldown - now.Sub(lastSent); !lastSent.IsZero() && wait > 0 {
+			if err := e.sleep(ctx, wait); err != nil {
+				return err
+			}
+		}
 	}
-	return e.sender.SendTo(ctx, event.Platform, reply)
+	var err error
+	if sender, ok := e.sender.(channelSender); ok {
+		err = sender.SendToChannel(ctx, event.Platform, event.ChannelID, reply)
+	} else {
+		err = e.sender.SendTo(ctx, event.Platform, reply)
+	}
+	if err == nil && event.Platform == string(chat.PlatformYouTube) {
+		e.mu.Lock()
+		e.lastSent[event.Platform] = e.now()
+		e.mu.Unlock()
+	}
+	return err
+}
+
+func sleep(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func platformAlertReply(event Event) (string, string) {
