@@ -281,6 +281,16 @@ func TestPrepareBroadcastCreatesAndBindsOnce(t *testing.T) {
 				t.Fatalf("unexpected bind query: %v", r.URL.Query())
 			}
 			_, _ = w.Write([]byte(`{"id":"broadcast-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/liveStreams":
+			if r.URL.Query().Get("id") != "stream-1" {
+				t.Fatalf("unexpected stream query: %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`{"items":[{"status":{"streamStatus":"active"}}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/liveBroadcasts/transition":
+			if r.URL.Query().Get("id") != "broadcast-1" || r.URL.Query().Get("broadcastStatus") != "live" {
+				t.Fatalf("unexpected transition query: %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`{"id":"broadcast-1","status":{"lifeCycleStatus":"live"}}`))
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -295,10 +305,14 @@ func TestPrepareBroadcastCreatesAndBindsOnce(t *testing.T) {
 
 func TestPrepareBroadcastReusesBoundUnfinishedBroadcast(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/liveBroadcasts" {
-			t.Fatalf("unexpected mutation: %s %s", r.Method, r.URL.String())
+		switch r.URL.Path {
+		case "/liveBroadcasts":
+			_, _ = w.Write([]byte(`{"items":[{"id":"existing","snippet":{"title":"Existing"},"status":{"lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}`))
+		case "/liveStreams":
+			_, _ = w.Write([]byte(`{"items":[{"status":{"streamStatus":"inactive"}}]}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
-		_, _ = w.Write([]byte(`{"items":[{"id":"existing","snippet":{"title":"Existing"},"status":{"lifeCycleStatus":"ready"},"contentDetails":{"boundStreamId":"stream-1"}}]}`))
 	}))
 	defer server.Close()
 	c := New(server.Client(), server.URL, "", "token", "")

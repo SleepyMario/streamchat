@@ -392,7 +392,8 @@ func (c *Client) PrepareBroadcast(ctx context.Context, streamID, title, privacy 
 	}
 	for _, item := range listed.Items {
 		if item.ContentDetails.BoundStreamID == streamID && item.Status.LifeCycleStatus != "complete" && item.Status.LifeCycleStatus != "revoked" {
-			return Broadcast{ID: item.ID, Title: item.Snippet.Title, LifeCycleStatus: item.Status.LifeCycleStatus}, nil
+			prepared := Broadcast{ID: item.ID, Title: item.Snippet.Title, LifeCycleStatus: item.Status.LifeCycleStatus}
+			return prepared, c.startPreparedBroadcastWhenIngestActive(ctx, streamID, prepared)
 		}
 	}
 
@@ -430,7 +431,28 @@ func (c *Client) PrepareBroadcast(ctx context.Context, streamID, title, privacy 
 	if err := c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts/bind", url.Values{"part": {"id,snippet,status,contentDetails"}, "id": {created.ID}, "streamId": {streamID}}, nil, nil); err != nil {
 		return Broadcast{}, err
 	}
-	return Broadcast{ID: created.ID, Title: created.Snippet.Title, LifeCycleStatus: created.Status.LifeCycleStatus}, nil
+	prepared := Broadcast{ID: created.ID, Title: created.Snippet.Title, LifeCycleStatus: created.Status.LifeCycleStatus}
+	return prepared, c.startPreparedBroadcastWhenIngestActive(ctx, streamID, prepared)
+}
+
+func (c *Client) startPreparedBroadcastWhenIngestActive(ctx context.Context, streamID string, broadcast Broadcast) error {
+	if broadcast.LifeCycleStatus == "live" {
+		return nil
+	}
+	var streams struct {
+		Items []struct {
+			Status struct {
+				StreamStatus string `json:"streamStatus"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, "/liveStreams", url.Values{"part": {"status"}, "id": {streamID}}, &streams); err != nil {
+		return err
+	}
+	if len(streams.Items) == 0 || streams.Items[0].Status.StreamStatus != "active" {
+		return nil
+	}
+	return c.requestJSON(ctx, http.MethodPost, "/liveBroadcasts/transition", url.Values{"part": {"id,status"}, "id": {broadcast.ID}, "broadcastStatus": {"live"}}, nil, nil)
 }
 
 type sendResponse struct {
