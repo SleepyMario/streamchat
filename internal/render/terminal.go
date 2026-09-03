@@ -106,6 +106,20 @@ var kickRoleBadges = []roleBadge{
 	{chat.RoleFollower, "💚"},
 }
 
+// YouTubeRoleBadges mirror the roles visible in YouTube live chat. The green
+// broadcaster marker is the deliberate exception agreed for Streamchat;
+// moderator and member markers follow YouTube's familiar wrench
+// and membership-star vocabulary.
+var youtubeRoleBadges = []roleBadge{
+	{chat.RoleBroadcaster, "🟢"},
+	{chat.RoleModerator, "🔧"},
+	{chat.RolePartner, "✅"},
+	{chat.RoleVIP, "💎"},
+	{chat.RoleOG, "🏆"},
+	{chat.RoleSubscriber, "⭐"},
+	{chat.RoleFollower, "❤️"},
+}
+
 func renderRoleBadges(roles chat.RoleSet, available []roleBadge) string {
 	var badges strings.Builder
 	rendered := 0
@@ -131,6 +145,8 @@ func RenderPlatformRoleBadges(platform chat.Platform, roles chat.RoleSet) string
 		return renderRoleBadges(roles, twitchRoleBadges)
 	case chat.PlatformKick:
 		return renderRoleBadges(roles, kickRoleBadges)
+	case chat.PlatformYouTube:
+		return renderRoleBadges(roles, youtubeRoleBadges)
 	default:
 		return RenderRoleBadges(roles)
 	}
