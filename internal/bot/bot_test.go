@@ -71,6 +71,41 @@ func TestCommandsCooldownIsPerPlatformAndChannel(t *testing.T) {
 	}
 }
 
+func TestDifferentCommandsDoNotShareCooldown(t *testing.T) {
+	sender := &recordingSender{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands, !language", Cooldown: time.Minute})
+	engine.now = func() time.Time { return time.Unix(100, 0) }
+	for _, command := range []string{"!commands", "!language"} {
+		if err := engine.handle(context.Background(), chat.Message{Platform: chat.PlatformTwitch, ChannelID: "twitch", Text: command, EventType: chat.EventMessage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sender.messages) != 2 {
+		t.Fatalf("different commands must both answer immediately: %v", sender.messages)
+	}
+}
+
+func TestDuplicateCommandMayAnswerAfterFourInterveningMessages(t *testing.T) {
+	sender := &recordingSender{}
+	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands, !language", Cooldown: time.Minute})
+	engine.now = func() time.Time { return time.Unix(100, 0) }
+	command := chat.Message{Platform: chat.PlatformTwitch, ChannelID: "twitch", Text: "!commands", EventType: chat.EventMessage}
+	_ = engine.handle(context.Background(), command)
+	_ = engine.handle(context.Background(), command)
+	for range 3 {
+		_ = engine.handle(context.Background(), chat.Message{Platform: chat.PlatformTwitch, ChannelID: "twitch", Text: "ordinary chat", EventType: chat.EventMessage})
+	}
+	_ = engine.handle(context.Background(), command)
+	if len(sender.messages) != 1 {
+		t.Fatalf("three intervening messages must still suppress the duplicate: %v", sender.messages)
+	}
+	_ = engine.handle(context.Background(), chat.Message{Platform: chat.PlatformTwitch, ChannelID: "twitch", Text: "fourth ordinary message", EventType: chat.EventMessage})
+	_ = engine.handle(context.Background(), command)
+	if len(sender.messages) != 2 {
+		t.Fatalf("four intervening messages must allow the duplicate: %v", sender.messages)
+	}
+}
+
 func TestLanguageCommandIsTwitchOnlyAndRecorded(t *testing.T) {
 	sender := &recordingSender{}
 	commandLog := &recordingCommandLog{}

@@ -42,13 +42,19 @@ type Activity struct {
 	Error    bool      `json:"error"`
 }
 
+type commandReplyState struct {
+	at       time.Time
+	sequence uint64
+}
+
 type Engine struct {
 	sender     Sender
 	cfg        Config
 	queue      chan Event
 	now        func() time.Time
 	mu         sync.Mutex
-	last       map[string]time.Time
+	last       map[string]commandReplyState
+	sequences  map[string]uint64
 	activity   []Activity
 	commandLog CommandRecorder
 }
@@ -57,7 +63,7 @@ func New(sender Sender, cfg Config) *Engine {
 	if cfg.QueueSize < 1 {
 		cfg.QueueSize = 32
 	}
-	return &Engine{sender: sender, cfg: cfg, queue: make(chan Event, cfg.QueueSize), now: time.Now, last: make(map[string]time.Time), commandLog: cfg.CommandLog}
+	return &Engine{sender: sender, cfg: cfg, queue: make(chan Event, cfg.QueueSize), now: time.Now, last: make(map[string]commandReplyState), sequences: make(map[string]uint64), commandLog: cfg.CommandLog}
 }
 
 // Enqueue is deliberately non-blocking: bot traffic may never stall chat relay.
@@ -113,6 +119,7 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	if event.Kind != EventChatMessage {
 		return nil
 	}
+	channelKey := event.Platform + "\x00" + event.ChannelID
 	command := strings.ToLower(strings.TrimSpace(event.Text))
 	reply := ""
 	switch command {
@@ -126,17 +133,25 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 		}
 	}
 	if reply == "" {
-		return nil
-	}
-	key := event.Platform + "\x00" + event.ChannelID
-	now := e.now()
-	e.mu.Lock()
-	last := e.last[key]
-	if !last.IsZero() && now.Sub(last) < cfg.Cooldown {
+		e.mu.Lock()
+		e.sequences[channelKey]++
 		e.mu.Unlock()
 		return nil
 	}
-	e.last[key] = now
+	key := channelKey + "\x00" + command
+	now := e.now()
+	e.mu.Lock()
+	sequence := e.sequences[channelKey]
+	last := e.last[key]
+	messagesBetween := uint64(0)
+	if sequence > last.sequence {
+		messagesBetween = sequence - last.sequence
+	}
+	if !last.at.IsZero() && now.Sub(last.at) < cfg.Cooldown && messagesBetween < 4 {
+		e.mu.Unlock()
+		return nil
+	}
+	e.last[key] = commandReplyState{at: now, sequence: sequence}
 	e.mu.Unlock()
 	if err := e.sender.SendTo(ctx, event.Platform, reply); err != nil {
 		e.record(event.Platform, command+" reply failed", true)
