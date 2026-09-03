@@ -46,6 +46,10 @@ const body = `{"message_id":"m1","replies_to":{"message_id":"old","content":"par
 const botBody = `{"message_id":"bot-message","broadcaster":{"user_id":1,"username":"channel","channel_slug":"chan"},"sender":{"user_id":22,"username":"BotRix","identity":{"username_color":"#53fc18","badges":[{"text":"Bot","type":"bot","count":1},{"text":"Moderator","type":"moderator","count":1}]}},"content":"Automated hello","created_at":"2026-01-01T00:00:00Z"}`
 
 func request(t *testing.T, s *Server, p *rsa.PrivateKey, b []byte, stamp string) *httptest.ResponseRecorder {
+	return requestEvent(t, s, p, b, stamp, ChatMessageEventType)
+}
+
+func requestEvent(t *testing.T, s *Server, p *rsa.PrivateKey, b []byte, stamp, eventType string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/webhooks/kick", bytes.NewReader(b))
 	id := "01TEST"
@@ -53,7 +57,7 @@ func request(t *testing.T, s *Server, p *rsa.PrivateKey, b []byte, stamp string)
 	r.Header.Set("Kick-Event-Subscription-Id", "01SUB")
 	r.Header.Set("Kick-Event-Signature", sign(t, p, id, stamp, b))
 	r.Header.Set("Kick-Event-Message-Timestamp", stamp)
-	r.Header.Set("Kick-Event-Type", "chat.message.sent")
+	r.Header.Set("Kick-Event-Type", eventType)
 	r.Header.Set("Kick-Event-Version", "1")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
@@ -102,6 +106,98 @@ func TestParseKickBotPreservesAuthorBadgesAndRoles(t *testing.T) {
 	}
 	if m.SafePlatformMetadata["kick_event_id"] != "bot-event" {
 		t.Fatalf("event metadata changed: %+v", m.SafePlatformMetadata)
+	}
+}
+
+func TestParseEventNormalizesKickAlerts(t *testing.T) {
+	receivedAt := time.Date(2026, 1, 14, 16, 8, 7, 0, time.UTC)
+	tests := []struct {
+		name, eventType string
+		body            string
+		check           func(t *testing.T, message chat.Message)
+	}{
+		{
+			name: "follow", eventType: FollowEventType,
+			body: `{"broadcaster":{"user_id":100,"username":"Channel","channel_slug":"channel"},"follower":{"user_id":201,"username":"Follower"}}`,
+			check: func(t *testing.T, message chat.Message) {
+				if message.EventType != chat.EventOther || message.AuthorID != "201" || message.AuthorDisplayName != "Follower" || message.Text != "Followed the channel." || !message.Roles.Has(chat.RoleFollower) || !message.Timestamp.Equal(receivedAt) {
+					t.Fatalf("follow=%+v", message)
+				}
+			},
+		},
+		{
+			name: "new subscription", eventType: SubscriptionNewEventType,
+			body: `{"broadcaster":{"user_id":100,"username":"Channel"},"subscriber":{"user_id":202,"username":"Subscriber"},"duration":1,"created_at":"2026-01-14T16:08:06Z"}`,
+			check: func(t *testing.T, message chat.Message) {
+				if message.EventType != chat.EventMembership || message.Text != "Subscribed." || message.Membership == nil || message.Membership.Months != 1 || !message.Roles.Has(chat.RoleSubscriber) {
+					t.Fatalf("subscription=%+v", message)
+				}
+			},
+		},
+		{
+			name: "renewal", eventType: SubscriptionRenewalEventType,
+			body: `{"broadcaster":{"user_id":100,"username":"Channel"},"subscriber":{"user_id":203,"username":"ReturningViewer"},"duration":3,"created_at":"2026-01-14T16:08:06Z"}`,
+			check: func(t *testing.T, message chat.Message) {
+				if message.Text != "Renewed the subscription." || message.Membership == nil || message.Membership.Months != 3 {
+					t.Fatalf("renewal=%+v", message)
+				}
+			},
+		},
+		{
+			name: "gift subscriptions", eventType: GiftSubscriptionEventType,
+			body: `{"broadcaster":{"user_id":100,"username":"Channel"},"gifter":{"user_id":204,"username":"Gifter"},"giftees":[{"user_id":301,"username":"One"},{"user_id":302,"username":"Two"}],"created_at":"2026-01-14T16:08:06Z"}`,
+			check: func(t *testing.T, message chat.Message) {
+				if message.AuthorDisplayName != "Gifter" || message.Text != "Gifted 2 subscriptions." || message.Membership == nil || !message.Membership.IsGift || message.Membership.GiftCount != 2 {
+					t.Fatalf("gifts=%+v", message)
+				}
+			},
+		},
+		{
+			name: "anonymous gift subscriptions", eventType: GiftSubscriptionEventType,
+			body: `{"broadcaster":{"user_id":100,"username":"Channel"},"gifter":{"is_anonymous":true,"user_id":null,"username":null},"giftees":[{"user_id":301,"username":"One"}],"created_at":"2026-01-14T16:08:06Z"}`,
+			check: func(t *testing.T, message chat.Message) {
+				if message.AuthorID != "" || message.AuthorDisplayName != "anonymous viewer" || message.Membership == nil || message.Membership.GiftCount != 1 {
+					t.Fatalf("anonymous gifts=%+v", message)
+				}
+			},
+		},
+		{
+			name: "kicks gifted", eventType: KicksGiftedEventType,
+			body: `{"broadcaster":{"user_id":100,"username":"Channel"},"sender":{"user_id":205,"username":"Supporter"},"gift":{"amount":500,"name":"Rage Quit","type":"LEVEL_UP","tier":"MID","message":"w","pinned_time_seconds":600},"created_at":"2026-01-14T16:08:06Z"}`,
+			check: func(t *testing.T, message chat.Message) {
+				if message.EventType != chat.EventPaid || message.Paid == nil || message.Paid.Display != "500 KICKs" || message.Text != "Gifted 500 KICKs." || message.SafePlatformMetadata["kick_gift_name"] != "Rage Quit" {
+					t.Fatalf("KICKs=%+v", message)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message, err := ParseEvent([]byte(test.body), "delivery", test.eventType, receivedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message.ID != "delivery" || message.Platform != chat.PlatformKick || message.ChannelID != "100" || message.SafePlatformMetadata["kick_event"] != test.eventType || message.SafePlatformMetadata["kick_event_id"] != "delivery" {
+				t.Fatalf("common fields=%+v", message)
+			}
+			test.check(t, message)
+		})
+	}
+}
+
+func TestWebhookAcceptsSignedKickAlert(t *testing.T) {
+	privateKey, publicKey := fixture(t)
+	out := make(chan chat.Message, 1)
+	now := time.Date(2026, 1, 14, 16, 8, 7, 0, time.UTC)
+	server := NewServer("127.0.0.1:0", publicKey, out)
+	server.Now = func() time.Time { return now }
+	payload := []byte(`{"broadcaster":{"user_id":100,"username":"Channel"},"follower":{"user_id":201,"username":"Follower"}}`)
+	if response := requestEvent(t, server, privateKey, payload, now.Format(time.RFC3339), FollowEventType); response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	message := <-out
+	if message.SafePlatformMetadata["kick_event"] != FollowEventType || message.AuthorDisplayName != "Follower" {
+		t.Fatalf("message=%+v", message)
 	}
 }
 
@@ -274,13 +370,25 @@ func TestGracefulShutdown(t *testing.T) {
 }
 
 func TestSubscriptionUsesPortalWebhookWithoutSendingLocalURL(t *testing.T) {
+	postCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/events/subscriptions" {
+		if r.URL.Path != "/events/subscriptions" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer access-token" {
 			t.Fatalf("unexpected authorization header")
 		}
+		if r.Method == http.MethodGet {
+			if r.URL.Query().Get("broadcaster_user_id") != "123" {
+				t.Fatalf("unexpected broadcaster query: %s", r.URL.RawQuery)
+			}
+			_, _ = io.WriteString(w, `{"data":[{"event":"chat.message.sent","method":"webhook","version":1}]}`)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		postCount++
 		payload, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -291,6 +399,26 @@ func TestSubscriptionUsesPortalWebhookWithoutSendingLocalURL(t *testing.T) {
 		}
 		if body["method"] != "webhook" || body["broadcaster_user_id"] != float64(123) {
 			t.Fatalf("unexpected subscription body: %s", payload)
+		}
+		rawEvents, ok := body["events"].([]any)
+		if !ok || len(rawEvents) != len(subscriptionEventTypes)-1 {
+			t.Fatalf("unexpected event subscriptions: %s", payload)
+		}
+		seen := make(map[string]bool, len(rawEvents))
+		for _, rawEvent := range rawEvents {
+			event, ok := rawEvent.(map[string]any)
+			if !ok || event["version"] != float64(1) {
+				t.Fatalf("invalid event subscription: %#v", rawEvent)
+			}
+			seen[event["name"].(string)] = true
+		}
+		for _, eventType := range subscriptionEventTypes[1:] {
+			if !seen[eventType] {
+				t.Fatalf("missing %s in subscription body: %s", eventType, payload)
+			}
+		}
+		if seen[ChatMessageEventType] {
+			t.Fatalf("existing chat subscription was requested again: %s", payload)
 		}
 		for key := range body {
 			if strings.Contains(strings.ToLower(key), "url") || strings.Contains(strings.ToLower(key), "callback") {
@@ -304,6 +432,36 @@ func TestSubscriptionUsesPortalWebhookWithoutSendingLocalURL(t *testing.T) {
 	client := SubscriptionClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
 	if _, err := client.Do(context.Background(), http.MethodPost, "123"); err != nil {
 		t.Fatal(err)
+	}
+	if postCount != 1 {
+		t.Fatalf("got %d subscription writes, want 1", postCount)
+	}
+}
+
+func TestSubscriptionDoesNotDuplicateExistingEvents(t *testing.T) {
+	postCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			postCount++
+			t.Fatalf("all required subscriptions already exist; unexpected POST")
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/events/subscriptions" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		entries := make([]map[string]any, 0, len(subscriptionEventTypes))
+		for _, eventType := range subscriptionEventTypes {
+			entries = append(entries, map[string]any{"event": eventType, "method": "webhook", "version": 1})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": entries})
+	}))
+	defer server.Close()
+	client := SubscriptionClient{HTTP: server.Client(), BaseURL: server.URL, AccessToken: "access-token"}
+	body, err := client.Do(context.Background(), http.MethodPost, "123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postCount != 0 || !strings.Contains(string(body), "already exist") {
+		t.Fatalf("unexpected result: posts=%d body=%s", postCount, body)
 	}
 }
 

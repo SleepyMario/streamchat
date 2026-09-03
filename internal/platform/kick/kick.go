@@ -34,6 +34,24 @@ var (
 
 const ChatWriteScope = "chat:write"
 
+const (
+	ChatMessageEventType         = "chat.message.sent"
+	FollowEventType              = "channel.followed"
+	SubscriptionRenewalEventType = "channel.subscription.renewal"
+	GiftSubscriptionEventType    = "channel.subscription.gifts"
+	SubscriptionNewEventType     = "channel.subscription.new"
+	KicksGiftedEventType         = "kicks.gifted"
+)
+
+var subscriptionEventTypes = []string{
+	ChatMessageEventType,
+	FollowEventType,
+	SubscriptionRenewalEventType,
+	GiftSubscriptionEventType,
+	SubscriptionNewEventType,
+	KicksGiftedEventType,
+}
+
 const OfficialPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq/+l1WnlRrGSolDMA+A8
 6rAhMbQGmQ2SapVcGM3zq8ANXjnhDWocMqfWcTd95btDydITa10kDvHzw9WQOqp2
@@ -116,7 +134,7 @@ func Parse(body []byte, eventID string) (chat.Message, error) {
 	if e != nil {
 		return chat.Message{}, errors.New("invalid Kick created_at")
 	}
-	m := chat.Message{ID: v.MessageID, Platform: chat.PlatformKick, ChannelID: strconv.FormatInt(v.Broadcaster.UserID, 10), ChannelDisplayName: v.Broadcaster.Username, Timestamp: ts, AuthorID: strconv.FormatInt(v.Sender.UserID, 10), AuthorDisplayName: v.Sender.Username, Text: v.Content, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"kick_event_id": eventID, "channel_slug": v.Broadcaster.ChannelSlug}}
+	m := chat.Message{ID: v.MessageID, Platform: chat.PlatformKick, ChannelID: strconv.FormatInt(v.Broadcaster.UserID, 10), ChannelDisplayName: v.Broadcaster.Username, Timestamp: ts, AuthorID: strconv.FormatInt(v.Sender.UserID, 10), AuthorDisplayName: v.Sender.Username, Text: v.Content, EventType: chat.EventMessage, SafePlatformMetadata: map[string]string{"kick_event": ChatMessageEventType, "kick_event_id": eventID, "channel_slug": v.Broadcaster.ChannelSlug}}
 	if v.Sender.UserID > 0 && v.Sender.UserID == v.Broadcaster.UserID {
 		m.Roles.Add(chat.RoleBroadcaster)
 	}
@@ -145,6 +163,154 @@ func Parse(body []byte, eventID string) (chat.Message, error) {
 		m.Reply = &chat.Reply{MessageID: v.RepliesTo.MessageID, AuthorID: strconv.FormatInt(v.RepliesTo.Sender.UserID, 10), AuthorDisplayName: v.RepliesTo.Sender.Username, Text: v.RepliesTo.Content}
 	}
 	return m, nil
+}
+
+type channelFollowEvent struct {
+	Broadcaster user `json:"broadcaster"`
+	Follower    user `json:"follower"`
+}
+
+type channelSubscriptionEvent struct {
+	Broadcaster user   `json:"broadcaster"`
+	Subscriber  user   `json:"subscriber"`
+	Duration    int    `json:"duration"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type channelSubscriptionGiftEvent struct {
+	Broadcaster user   `json:"broadcaster"`
+	Gifter      user   `json:"gifter"`
+	Giftees     []user `json:"giftees"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type kicksGiftedEvent struct {
+	Broadcaster user `json:"broadcaster"`
+	Sender      user `json:"sender"`
+	Gift        struct {
+		Amount            int    `json:"amount"`
+		Name              string `json:"name"`
+		Type              string `json:"type"`
+		Tier              string `json:"tier"`
+		Message           string `json:"message"`
+		PinnedTimeSeconds int    `json:"pinned_time_seconds"`
+	} `json:"gift"`
+	CreatedAt string `json:"created_at"`
+}
+
+func ParseEvent(body []byte, eventID, eventType string, receivedAt time.Time) (chat.Message, error) {
+	if strings.TrimSpace(eventID) == "" {
+		return chat.Message{}, errors.New("Kick event ID is required")
+	}
+	if eventType == ChatMessageEventType {
+		return Parse(body, eventID)
+	}
+	base := func(broadcaster, actor user, timestamp time.Time, kind chat.EventType, text string) (chat.Message, error) {
+		if broadcaster.UserID <= 0 {
+			return chat.Message{}, errors.New("Kick broadcaster user ID is required")
+		}
+		if timestamp.IsZero() {
+			return chat.Message{}, errors.New("Kick event timestamp is required")
+		}
+		authorID := ""
+		if actor.UserID > 0 {
+			authorID = strconv.FormatInt(actor.UserID, 10)
+		}
+		author := actor.Username
+		if actor.IsAnonymous && strings.TrimSpace(author) == "" {
+			author = "anonymous viewer"
+		}
+		return chat.Message{
+			ID: eventID, Platform: chat.PlatformKick,
+			ChannelID: strconv.FormatInt(broadcaster.UserID, 10), ChannelDisplayName: broadcaster.Username,
+			Timestamp: timestamp, AuthorID: authorID, AuthorDisplayName: author, Text: text, EventType: kind,
+			SafePlatformMetadata: map[string]string{"kick_event": eventType, "kick_event_id": eventID, "channel_slug": broadcaster.ChannelSlug},
+		}, nil
+	}
+
+	switch eventType {
+	case FollowEventType:
+		var payload channelFollowEvent
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return chat.Message{}, err
+		}
+		message, err := base(payload.Broadcaster, payload.Follower, receivedAt, chat.EventOther, "Followed the channel.")
+		if err == nil {
+			message.Roles.Add(chat.RoleFollower)
+		}
+		return message, err
+	case SubscriptionNewEventType, SubscriptionRenewalEventType:
+		var payload channelSubscriptionEvent
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return chat.Message{}, err
+		}
+		timestamp, err := kickEventTime(payload.CreatedAt, receivedAt)
+		if err != nil {
+			return chat.Message{}, err
+		}
+		text := "Subscribed."
+		if eventType == SubscriptionRenewalEventType {
+			text = "Renewed the subscription."
+		}
+		message, err := base(payload.Broadcaster, payload.Subscriber, timestamp, chat.EventMembership, text)
+		if err == nil {
+			message.Roles.Add(chat.RoleSubscriber)
+			message.Membership = &chat.Membership{Months: payload.Duration}
+		}
+		return message, err
+	case GiftSubscriptionEventType:
+		var payload channelSubscriptionGiftEvent
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return chat.Message{}, err
+		}
+		timestamp, err := kickEventTime(payload.CreatedAt, receivedAt)
+		if err != nil {
+			return chat.Message{}, err
+		}
+		count := len(payload.Giftees)
+		if count == 0 {
+			return chat.Message{}, errors.New("Kick gift subscription event contains no recipients")
+		}
+		message, err := base(payload.Broadcaster, payload.Gifter, timestamp, chat.EventMembership, fmt.Sprintf("Gifted %d subscriptions.", count))
+		if err == nil {
+			message.Membership = &chat.Membership{GiftCount: count, IsGift: true}
+		}
+		return message, err
+	case KicksGiftedEventType:
+		var payload kicksGiftedEvent
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return chat.Message{}, err
+		}
+		if payload.Gift.Amount <= 0 {
+			return chat.Message{}, errors.New("Kick gift amount must be positive")
+		}
+		timestamp, err := kickEventTime(payload.CreatedAt, receivedAt)
+		if err != nil {
+			return chat.Message{}, err
+		}
+		display := fmt.Sprintf("%d KICKs", payload.Gift.Amount)
+		message, err := base(payload.Broadcaster, payload.Sender, timestamp, chat.EventPaid, "Gifted "+display+".")
+		if err == nil {
+			message.SafePlatformMetadata["kick_gift_name"] = payload.Gift.Name
+			message.SafePlatformMetadata["kick_gift_type"] = payload.Gift.Type
+			message.SafePlatformMetadata["kick_gift_tier"] = payload.Gift.Tier
+			message.Paid = &chat.Paid{Display: display}
+		}
+		return message, err
+	default:
+		return chat.Message{}, errors.New("unsupported Kick event")
+	}
+}
+
+func kickEventTime(value string, fallback time.Time) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, errors.New("invalid Kick event created_at")
+	}
+	return timestamp, nil
 }
 
 func normalizeKickEmotes(content string, provider []eventEmote) []chat.Emote {
@@ -269,7 +435,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid webhook", 400)
 		return
 	}
-	if typ != "chat.message.sent" || ver != "1" {
+	if !supportedEventType(typ) || ver != "1" {
 		http.Error(w, "unsupported event", 400)
 		return
 	}
@@ -288,7 +454,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
-	m, e := Parse(body, id)
+	m, e := ParseEvent(body, id, typ, ts)
 	if e != nil {
 		http.Error(w, "invalid webhook", 400)
 		return
@@ -315,6 +481,16 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy", 503)
 	}
 }
+
+func supportedEventType(eventType string) bool {
+	for _, candidate := range subscriptionEventTypes {
+		if eventType == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func dabs(d time.Duration) time.Duration {
 	if d < 0 {
 		return -d
@@ -345,6 +521,11 @@ func (s *Server) Run(ctx context.Context, out chan<- chat.Message) error {
 type SubscriptionClient struct {
 	HTTP                 *http.Client
 	BaseURL, AccessToken string
+}
+
+type subscriptionSpec struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
 }
 
 type ChatClient struct {
@@ -572,18 +753,62 @@ func (c SubscriptionClient) Do(ctx context.Context, method, broadcaster string) 
 	if c.AccessToken == "" {
 		return nil, errors.New("Kick OAuth access token with events:subscribe scope is required")
 	}
-	if n, err := strconv.ParseInt(broadcaster, 10, 64); err != nil || n <= 0 {
+	broadcasterID, err := strconv.ParseInt(broadcaster, 10, 64)
+	if err != nil || broadcasterID <= 0 {
 		return nil, errors.New("Kick broadcaster user ID must be a positive integer")
 	}
-	var body io.Reader
-	if method == http.MethodPost {
-		body = strings.NewReader(fmt.Sprintf(`{"broadcaster_user_id":%s,"events":[{"name":"chat.message.sent","version":1}],"method":"webhook"}`, broadcaster))
+	endpoint := strings.TrimRight(c.BaseURL, "/") + "/events/subscriptions"
+	listEndpoint := endpoint + "?broadcaster_user_id=" + url.QueryEscape(broadcaster)
+	if method == http.MethodGet {
+		return c.requestSubscriptions(ctx, http.MethodGet, listEndpoint, nil)
 	}
-	u := strings.TrimRight(c.BaseURL, "/") + "/events/subscriptions"
-	if method == http.MethodGet && broadcaster != "" {
-		u += "?broadcaster_user_id=" + broadcaster
+	if method != http.MethodPost {
+		return nil, errors.New("Kick subscriptions API supports only GET and POST here")
 	}
-	req, e := http.NewRequestWithContext(ctx, method, u, body)
+
+	existingBody, err := c.requestSubscriptions(ctx, http.MethodGet, listEndpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("inspect existing Kick event subscriptions: %w", err)
+	}
+	var existing struct {
+		Data []struct {
+			Event   string `json:"event"`
+			Method  string `json:"method"`
+			Version int    `json:"version"`
+		} `json:"data"`
+	}
+	if err = json.Unmarshal(existingBody, &existing); err != nil {
+		return nil, errors.New("Kick subscriptions API returned an invalid subscription list")
+	}
+	present := make(map[string]bool, len(existing.Data))
+	for _, subscription := range existing.Data {
+		if subscription.Method == "webhook" && subscription.Version == 1 {
+			present[subscription.Event] = true
+		}
+	}
+	events := make([]subscriptionSpec, 0, len(subscriptionEventTypes))
+	for _, eventType := range subscriptionEventTypes {
+		if !present[eventType] {
+			events = append(events, subscriptionSpec{Name: eventType, Version: 1})
+		}
+	}
+	if len(events) == 0 {
+		return []byte(`{"message":"all required Kick event subscriptions already exist"}`), nil
+	}
+
+	payload, err := json.Marshal(struct {
+		BroadcasterUserID int64              `json:"broadcaster_user_id"`
+		Events            []subscriptionSpec `json:"events"`
+		Method            string             `json:"method"`
+	}{BroadcasterUserID: broadcasterID, Events: events, Method: "webhook"})
+	if err != nil {
+		return nil, err
+	}
+	return c.requestSubscriptions(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+}
+
+func (c SubscriptionClient) requestSubscriptions(ctx context.Context, method, endpoint string, body io.Reader) ([]byte, error) {
+	req, e := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if e != nil {
 		return nil, e
 	}

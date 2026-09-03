@@ -128,7 +128,7 @@ func TestLanguageCommandIsKickAndTwitchOnlyAndRecorded(t *testing.T) {
 	}
 }
 
-func TestTwitchAlertsSendSimpleChatAcknowledgements(t *testing.T) {
+func TestPlatformAlertsSendSimpleChatAcknowledgements(t *testing.T) {
 	sender := &recordingSender{}
 	commandLog := &recordingCommandLog{}
 	engine := New(sender, Config{Enabled: true, CommandsReply: "Commands: !commands", CommandLog: commandLog})
@@ -142,6 +142,10 @@ func TestTwitchAlertsSendSimpleChatAcknowledgements(t *testing.T) {
 		{Event{Kind: EventGiftSubscription, Platform: "twitch", Actor: "Gifter", Metadata: map[string]string{"gift_count": "5"}}, "Thanks for giving 5 gift subs, Gifter!"},
 		{Event{Kind: EventGiftSubscription, Platform: "twitch", Actor: "Gifter", Metadata: map[string]string{"gift_count": "1"}}, "Thanks for giving 1 gift sub, Gifter!"},
 		{Event{Kind: EventDonation, Platform: "twitch", Actor: "Cheerer", Metadata: map[string]string{"display": "100 Bits"}}, "Thanks for the 100 Bits, Cheerer!"},
+		{Event{Kind: EventFollow, Platform: "kick", Actor: "Follower"}, "Thanks for the follow, Follower!"},
+		{Event{Kind: EventSubscription, Platform: "kick", Actor: "Subscriber"}, "Thanks for the subscription, Subscriber!"},
+		{Event{Kind: EventGiftSubscription, Platform: "kick", Actor: "Gifter", Metadata: map[string]string{"gift_count": "5"}}, "Thanks for giving 5 gift subs, Gifter!"},
+		{Event{Kind: EventDonation, Platform: "kick", Actor: "Supporter", Metadata: map[string]string{"display": "500 KICKs"}}, "Thanks for the 500 KICKs, Supporter!"},
 	}
 	for _, test := range tests {
 		if err := engine.handleEvent(context.Background(), test.event); err != nil {
@@ -156,11 +160,12 @@ func TestTwitchAlertsSendSimpleChatAcknowledgements(t *testing.T) {
 	}
 }
 
-func TestTwitchAlertsRespectPlatformDisableAndIgnoreOtherPlatforms(t *testing.T) {
+func TestPlatformAlertsRespectPlatformDisableAndIgnoreYouTube(t *testing.T) {
 	sender := &recordingSender{}
-	engine := New(sender, Config{Enabled: true, Disabled: map[string]bool{"twitch": true}})
+	engine := New(sender, Config{Enabled: true, Disabled: map[string]bool{"twitch": true, "kick": true}})
 	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "twitch", Actor: "Follower"})
 	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "kick", Actor: "Follower"})
+	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "youtube", Actor: "Follower"})
 	if len(sender.messages) != 0 {
 		t.Fatalf("unexpected messages=%v", sender.messages)
 	}

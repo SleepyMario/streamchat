@@ -305,7 +305,7 @@ func (w *Wizard) kick(ctx context.Context, c *config.Config) error {
 	if _, err = cl.Do(ctx, http.MethodPost, id); err != nil {
 		return err
 	}
-	fmt.Fprintln(w.Out, "Kick event subscription created. Delivery uses the webhook URL in the Kick developer portal; the local kick.webhook_url value was not sent.")
+	fmt.Fprintln(w.Out, "Kick chat, follow, subscription, gift-subscription and KICKs event subscriptions created. Delivery uses the webhook URL in the Kick developer portal; the local kick.webhook_url value was not sent.")
 	return nil
 }
 
@@ -367,7 +367,7 @@ func sameKickIdentity(primary config.Kick, candidateUserID string) bool {
 }
 
 func kickInstructions(c config.Config) string {
-	return `Kick delivers official chat.message.sent events to a verified webhook.
+	return `Kick delivers official chat, follow, subscription, gift-subscription and KICKs events to a verified webhook.
 
 1. Sign in to Kick, enable 2FA, and create an app at https://kick.com/settings/developer
 2. A Client ID identifies the app. A Client Secret authenticates it and must remain private.

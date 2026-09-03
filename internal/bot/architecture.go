@@ -55,21 +55,38 @@ func EventFromChat(message chat.Message) Event {
 		ChannelID: message.ChannelID, ActorID: message.AuthorID,
 		Actor: message.AuthorDisplayName, Text: message.Text, OccurredAt: message.Timestamp,
 	}
-	if message.Platform != chat.PlatformTwitch {
-		return event
-	}
-	switch message.SafePlatformMetadata["twitch_event"] {
-	case "channel.follow":
-		event.Kind = EventFollow
-	case "channel.subscribe":
-		event.Kind = EventSubscription
-		if message.Membership != nil && message.Membership.IsGift {
+	switch message.Platform {
+	case chat.PlatformTwitch:
+		switch message.SafePlatformMetadata["twitch_event"] {
+		case "channel.follow":
+			event.Kind = EventFollow
+		case "channel.subscribe":
+			event.Kind = EventSubscription
+			if message.Membership != nil && message.Membership.IsGift {
+				event.Kind = EventGiftSubscription
+			}
+		case "channel.subscription.gift":
 			event.Kind = EventGiftSubscription
+			if message.Membership != nil {
+				event.Metadata = map[string]string{"gift_count": fmt.Sprint(message.Membership.GiftCount)}
+			}
 		}
-	case "channel.subscription.gift":
-		event.Kind = EventGiftSubscription
-		if message.Membership != nil {
-			event.Metadata = map[string]string{"gift_count": fmt.Sprint(message.Membership.GiftCount)}
+	case chat.PlatformKick:
+		switch message.SafePlatformMetadata["kick_event"] {
+		case "channel.followed":
+			event.Kind = EventFollow
+		case "channel.subscription.new", "channel.subscription.renewal":
+			event.Kind = EventSubscription
+		case "channel.subscription.gifts":
+			event.Kind = EventGiftSubscription
+			if message.Membership != nil {
+				event.Metadata = map[string]string{"gift_count": fmt.Sprint(message.Membership.GiftCount)}
+			}
+		case "kicks.gifted":
+			event.Kind = EventDonation
+			if message.Paid != nil {
+				event.Metadata = map[string]string{"display": message.Paid.Display}
+			}
 		}
 	}
 	if message.EventType == chat.EventPaid && message.Paid != nil {

@@ -41,6 +41,30 @@ func TestEventFromChatMapsTwitchAlerts(t *testing.T) {
 	}
 }
 
+func TestEventFromChatMapsKickAlerts(t *testing.T) {
+	tests := []struct {
+		name      string
+		message   chat.Message
+		want      EventKind
+		display   string
+		giftCount string
+	}{
+		{"follow", chat.Message{Platform: chat.PlatformKick, SafePlatformMetadata: map[string]string{"kick_event": "channel.followed"}}, EventFollow, "", ""},
+		{"new subscription", chat.Message{Platform: chat.PlatformKick, SafePlatformMetadata: map[string]string{"kick_event": "channel.subscription.new"}, Membership: &chat.Membership{}}, EventSubscription, "", ""},
+		{"renewal", chat.Message{Platform: chat.PlatformKick, SafePlatformMetadata: map[string]string{"kick_event": "channel.subscription.renewal"}, Membership: &chat.Membership{}}, EventSubscription, "", ""},
+		{"gift subscriptions", chat.Message{Platform: chat.PlatformKick, SafePlatformMetadata: map[string]string{"kick_event": "channel.subscription.gifts"}, Membership: &chat.Membership{GiftCount: 5, IsGift: true}}, EventGiftSubscription, "", "5"},
+		{"kicks", chat.Message{Platform: chat.PlatformKick, SafePlatformMetadata: map[string]string{"kick_event": "kicks.gifted"}, EventType: chat.EventPaid, Paid: &chat.Paid{Display: "500 KICKs"}}, EventDonation, "500 KICKs", ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := EventFromChat(test.message)
+			if event.Kind != test.want || event.Metadata["display"] != test.display || event.Metadata["gift_count"] != test.giftCount {
+				t.Fatalf("event=%+v", event)
+			}
+		})
+	}
+}
+
 func TestRuleValidationKeepsPlaceholdersOutOfRuntime(t *testing.T) {
 	valid := Rule{ID: "commands", Name: "Commands", Enabled: true, Trigger: Trigger{Kind: EventChatMessage, Command: "!commands"}, Actions: []Action{{Kind: ActionSendMessage, Message: "Commands: !commands"}}}
 	if err := valid.Validate(); err != nil {

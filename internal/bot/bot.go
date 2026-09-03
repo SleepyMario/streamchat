@@ -106,11 +106,11 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	if !cfg.Enabled || cfg.Disabled[event.Platform] {
 		return nil
 	}
-	if event.Platform == string(chat.PlatformTwitch) {
-		if reply, activity := twitchAlertReply(event); reply != "" {
+	if event.Platform == string(chat.PlatformTwitch) || event.Platform == string(chat.PlatformKick) {
+		if reply, activity := platformAlertReply(event); reply != "" {
 			if err := e.sender.SendTo(ctx, event.Platform, reply); err != nil {
 				e.record(event.Platform, activity+" failed", true)
-				return fmt.Errorf("send %s on Twitch: %w", strings.ToLower(activity), err)
+				return fmt.Errorf("send %s on %s: %w", strings.ToLower(activity), event.Platform, err)
 			}
 			e.record(event.Platform, activity, false)
 			return nil
@@ -164,7 +164,7 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	return e.recordCommand(event.Platform, command, true)
 }
 
-func twitchAlertReply(event Event) (string, string) {
+func platformAlertReply(event Event) (string, string) {
 	actor := strings.TrimSpace(event.Actor)
 	if actor == "" {
 		actor = "someone"
@@ -188,7 +188,7 @@ func twitchAlertReply(event Event) (string, string) {
 		if amount == "" {
 			amount = "Bits"
 		}
-		return fmt.Sprintf("Thanks for the %s, %s!", amount, actor), "Sent Bits thank-you"
+		return fmt.Sprintf("Thanks for the %s, %s!", amount, actor), "Sent donation thank-you"
 	default:
 		return "", ""
 	}
