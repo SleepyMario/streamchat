@@ -88,6 +88,16 @@ func EventFromChat(message chat.Message) Event {
 				event.Metadata = map[string]string{"display": message.Paid.Display}
 			}
 		}
+	case chat.PlatformYouTube:
+		switch message.SafePlatformMetadata["youtube_type"] {
+		case "newSponsorEvent":
+			event.Kind = EventSubscription
+		case "membershipGiftingEvent":
+			event.Kind = EventGiftSubscription
+			if message.Membership != nil {
+				event.Metadata = map[string]string{"gift_count": fmt.Sprint(message.Membership.GiftCount)}
+			}
+		}
 	}
 	if message.EventType == chat.EventPaid && message.Paid != nil {
 		event.Kind = EventDonation

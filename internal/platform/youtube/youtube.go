@@ -742,10 +742,34 @@ type apiMessage struct {
 			AmountMicros                               string `json:"amountMicros"`
 			Currency, AmountDisplayString, UserComment string
 		} `json:"superChatDetails"`
+		SuperSticker *struct {
+			AmountMicros        string `json:"amountMicros"`
+			Currency            string `json:"currency"`
+			AmountDisplayString string `json:"amountDisplayString"`
+			Metadata            struct {
+				StickerID string `json:"stickerId"`
+				AltText   string `json:"altText"`
+				Language  string `json:"language"`
+			} `json:"superStickerMetadata"`
+		} `json:"superStickerDetails"`
+		NewSponsor *struct {
+			MemberLevelName string `json:"memberLevelName"`
+			IsUpgrade       bool   `json:"isUpgrade"`
+		} `json:"newSponsorDetails"`
 		Member *struct {
 			MemberLevelName string `json:"memberLevelName"`
 			UserComment     string `json:"userComment"`
+			MemberMonth     int    `json:"memberMonth"`
 		} `json:"memberMilestoneChatDetails"`
+		MembershipGifting *struct {
+			GiftMembershipsCount     int    `json:"giftMembershipsCount"`
+			GiftMembershipsLevelName string `json:"giftMembershipsLevelName"`
+		} `json:"membershipGiftingDetails"`
+		GiftMembershipReceived *struct {
+			MemberLevelName     string `json:"memberLevelName"`
+			GifterChannelID     string `json:"gifterChannelId"`
+			AssociatedMessageID string `json:"associatedMembershipGiftingMessageId"`
+		} `json:"giftMembershipReceivedDetails"`
 	} `json:"snippet"`
 	Author struct {
 		ChannelID, DisplayName                      string
@@ -762,7 +786,7 @@ func ParseMessage(v apiMessage, channelID, channelName string) (chat.Message, er
 	switch v.Snippet.Type {
 	case "textMessageEvent":
 		m.EventType = chat.EventMessage
-	case "superChatEvent", "superStickerEvent":
+	case "superChatEvent":
 		m.EventType = chat.EventPaid
 		if v.Snippet.SuperChat != nil {
 			n, _ := strconv.ParseInt(v.Snippet.SuperChat.AmountMicros, 10, 64)
@@ -771,14 +795,46 @@ func ParseMessage(v apiMessage, channelID, channelName string) (chat.Message, er
 				m.Text = v.Snippet.SuperChat.UserComment
 			}
 		}
-	case "newSponsorEvent", "memberMilestoneChatEvent", "membershipGiftingEvent", "giftMembershipReceivedEvent":
+	case "superStickerEvent":
+		m.EventType = chat.EventPaid
+		if v.Snippet.SuperSticker != nil {
+			n, _ := strconv.ParseInt(v.Snippet.SuperSticker.AmountMicros, 10, 64)
+			m.Paid = &chat.Paid{AmountMicros: n, Currency: v.Snippet.SuperSticker.Currency, Display: v.Snippet.SuperSticker.AmountDisplayString}
+			if v.Snippet.SuperSticker.Metadata.AltText != "" {
+				m.Text = v.Snippet.SuperSticker.Metadata.AltText
+			}
+		}
+	case "newSponsorEvent":
+		m.EventType = chat.EventMembership
+		m.Membership = &chat.Membership{}
+		if v.Snippet.NewSponsor != nil {
+			m.Membership.Level = v.Snippet.NewSponsor.MemberLevelName
+			m.SafePlatformMetadata["youtube_membership_upgrade"] = strconv.FormatBool(v.Snippet.NewSponsor.IsUpgrade)
+		}
+	case "memberMilestoneChatEvent":
 		m.EventType = chat.EventMembership
 		m.Membership = &chat.Membership{}
 		if v.Snippet.Member != nil {
 			m.Membership.Level = v.Snippet.Member.MemberLevelName
+			m.SafePlatformMetadata["youtube_member_month"] = strconv.Itoa(v.Snippet.Member.MemberMonth)
 			if v.Snippet.Member.UserComment != "" {
 				m.Text = v.Snippet.Member.UserComment
 			}
+		}
+	case "membershipGiftingEvent":
+		m.EventType = chat.EventMembership
+		m.Membership = &chat.Membership{IsGift: true}
+		if v.Snippet.MembershipGifting != nil {
+			m.Membership.Level = v.Snippet.MembershipGifting.GiftMembershipsLevelName
+			m.Membership.GiftCount = v.Snippet.MembershipGifting.GiftMembershipsCount
+		}
+	case "giftMembershipReceivedEvent":
+		m.EventType = chat.EventMembership
+		m.Membership = &chat.Membership{IsGift: true}
+		if v.Snippet.GiftMembershipReceived != nil {
+			m.Membership.Level = v.Snippet.GiftMembershipReceived.MemberLevelName
+			m.SafePlatformMetadata["youtube_gifter_channel_id"] = v.Snippet.GiftMembershipReceived.GifterChannelID
+			m.SafePlatformMetadata["youtube_gifting_message_id"] = v.Snippet.GiftMembershipReceived.AssociatedMessageID
 		}
 	case "userBannedEvent", "messageDeletedEvent", "tombstone":
 		m.EventType = chat.EventModeration

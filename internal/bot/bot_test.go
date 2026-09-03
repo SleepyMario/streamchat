@@ -203,6 +203,18 @@ func TestYouTubeCommandRepliesToOriginatingBroadcast(t *testing.T) {
 	}
 }
 
+func TestYouTubeAlertRepliesToOriginatingBroadcast(t *testing.T) {
+	sender := &recordingChannelSender{}
+	engine := New(sender, Config{Enabled: true})
+	err := engine.handleEvent(context.Background(), Event{Kind: EventGiftSubscription, Platform: "youtube", ChannelID: "youtube-video-id", Actor: "Gifter", Metadata: map[string]string{"gift_count": "5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sender.platform != "youtube" || sender.channel != "youtube-video-id" || sender.message != "Thanks for giving 5 gift subs, Gifter!" {
+		t.Fatalf("platform=%q channel=%q message=%q", sender.platform, sender.channel, sender.message)
+	}
+}
+
 func TestPlatformAlertsSendSimpleChatAcknowledgements(t *testing.T) {
 	sender := &recordingSender{}
 	commandLog := &recordingCommandLog{}
@@ -221,6 +233,9 @@ func TestPlatformAlertsSendSimpleChatAcknowledgements(t *testing.T) {
 		{Event{Kind: EventSubscription, Platform: "kick", Actor: "Subscriber"}, "Thanks for the subscription, Subscriber!"},
 		{Event{Kind: EventGiftSubscription, Platform: "kick", Actor: "Gifter", Metadata: map[string]string{"gift_count": "5"}}, "Thanks for giving 5 gift subs, Gifter!"},
 		{Event{Kind: EventDonation, Platform: "kick", Actor: "Supporter", Metadata: map[string]string{"display": "500 KICKs"}}, "Thanks for the 500 KICKs, Supporter!"},
+		{Event{Kind: EventSubscription, Platform: "youtube", ChannelID: "video", Actor: "Member"}, "Thanks for the subscription, Member!"},
+		{Event{Kind: EventGiftSubscription, Platform: "youtube", ChannelID: "video", Actor: "Gifter", Metadata: map[string]string{"gift_count": "5"}}, "Thanks for giving 5 gift subs, Gifter!"},
+		{Event{Kind: EventDonation, Platform: "youtube", ChannelID: "video", Actor: "Supporter", Metadata: map[string]string{"display": "$5.00"}}, "Thanks for the $5.00, Supporter!"},
 	}
 	for _, test := range tests {
 		if err := engine.handleEvent(context.Background(), test.event); err != nil {
@@ -235,9 +250,9 @@ func TestPlatformAlertsSendSimpleChatAcknowledgements(t *testing.T) {
 	}
 }
 
-func TestPlatformAlertsRespectPlatformDisableAndIgnoreYouTube(t *testing.T) {
+func TestPlatformAlertsRespectPlatformDisable(t *testing.T) {
 	sender := &recordingSender{}
-	engine := New(sender, Config{Enabled: true, Disabled: map[string]bool{"twitch": true, "kick": true}})
+	engine := New(sender, Config{Enabled: true, Disabled: map[string]bool{"twitch": true, "kick": true, "youtube": true}})
 	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "twitch", Actor: "Follower"})
 	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "kick", Actor: "Follower"})
 	_ = engine.handleEvent(context.Background(), Event{Kind: EventFollow, Platform: "youtube", Actor: "Follower"})

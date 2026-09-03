@@ -65,6 +65,29 @@ func TestEventFromChatMapsKickAlerts(t *testing.T) {
 	}
 }
 
+func TestEventFromChatMapsYouTubeAlerts(t *testing.T) {
+	tests := []struct {
+		name      string
+		message   chat.Message
+		want      EventKind
+		display   string
+		giftCount string
+	}{
+		{"new membership", chat.Message{Platform: chat.PlatformYouTube, SafePlatformMetadata: map[string]string{"youtube_type": "newSponsorEvent"}, Membership: &chat.Membership{}}, EventSubscription, "", ""},
+		{"gift memberships", chat.Message{Platform: chat.PlatformYouTube, SafePlatformMetadata: map[string]string{"youtube_type": "membershipGiftingEvent"}, Membership: &chat.Membership{GiftCount: 5, IsGift: true}}, EventGiftSubscription, "", "5"},
+		{"super chat", chat.Message{Platform: chat.PlatformYouTube, SafePlatformMetadata: map[string]string{"youtube_type": "superChatEvent"}, EventType: chat.EventPaid, Paid: &chat.Paid{Display: "$5.00"}}, EventDonation, "$5.00", ""},
+		{"super sticker", chat.Message{Platform: chat.PlatformYouTube, SafePlatformMetadata: map[string]string{"youtube_type": "superStickerEvent"}, EventType: chat.EventPaid, Paid: &chat.Paid{Display: "NT$75.00"}}, EventDonation, "NT$75.00", ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := EventFromChat(test.message)
+			if event.Kind != test.want || event.Metadata["display"] != test.display || event.Metadata["gift_count"] != test.giftCount {
+				t.Fatalf("event=%+v", event)
+			}
+		})
+	}
+}
+
 func TestRuleValidationKeepsPlaceholdersOutOfRuntime(t *testing.T) {
 	valid := Rule{ID: "commands", Name: "Commands", Enabled: true, Trigger: Trigger{Kind: EventChatMessage, Command: "!commands"}, Actions: []Action{{Kind: ActionSendMessage, Message: "Commands: !commands"}}}
 	if err := valid.Validate(); err != nil {

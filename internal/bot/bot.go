@@ -114,9 +114,9 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) error {
 	if !cfg.Enabled || cfg.Disabled[event.Platform] {
 		return nil
 	}
-	if event.Platform == string(chat.PlatformTwitch) || event.Platform == string(chat.PlatformKick) {
+	if supportedCommandPlatform(event.Platform) {
 		if reply, activity := platformAlertReply(event); reply != "" {
-			if err := e.sender.SendTo(ctx, event.Platform, reply); err != nil {
+			if err := e.sendReply(ctx, event, reply); err != nil {
 				e.record(event.Platform, activity+" failed", true)
 				return fmt.Errorf("send %s on %s: %w", strings.ToLower(activity), event.Platform, err)
 			}

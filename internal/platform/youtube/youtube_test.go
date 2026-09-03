@@ -182,6 +182,71 @@ func TestParseVideoID(t *testing.T) {
 	}
 }
 
+func TestParseMessagePreservesYouTubePaidAndMembershipDetails(t *testing.T) {
+	tests := []struct {
+		name      string
+		payload   string
+		eventType chat.EventType
+		paid      string
+		level     string
+		giftCount int
+		isGift    bool
+		metadata  map[string]string
+		text      string
+	}{
+		{
+			name: "super chat", eventType: chat.EventPaid, paid: "$5.00", text: "Great stream",
+			payload: `{"id":"paid","snippet":{"type":"superChatEvent","publishedAt":"2026-09-03T00:00:00Z","displayMessage":"paid","superChatDetails":{"amountMicros":"5000000","currency":"USD","amountDisplayString":"$5.00","userComment":"Great stream"}},"authorDetails":{"channelId":"supporter","displayName":"Supporter"}}`,
+		},
+		{
+			name: "super sticker", eventType: chat.EventPaid, paid: "NT$75.00", text: "Party popper",
+			payload: `{"id":"sticker","snippet":{"type":"superStickerEvent","publishedAt":"2026-09-03T00:00:00Z","displayMessage":"sticker","superStickerDetails":{"amountMicros":"75000000","currency":"TWD","amountDisplayString":"NT$75.00","superStickerMetadata":{"stickerId":"1","altText":"Party popper","language":"en"}}},"authorDetails":{"channelId":"supporter","displayName":"Supporter"}}`,
+		},
+		{
+			name: "new membership", eventType: chat.EventMembership, level: "Sleepy", metadata: map[string]string{"youtube_membership_upgrade": "false"},
+			payload: `{"id":"member","snippet":{"type":"newSponsorEvent","publishedAt":"2026-09-03T00:00:00Z","displayMessage":"New member","newSponsorDetails":{"memberLevelName":"Sleepy","isUpgrade":false}},"authorDetails":{"channelId":"member","displayName":"Member"}}`,
+		},
+		{
+			name: "membership milestone", eventType: chat.EventMembership, level: "Sleepy", text: "One year", metadata: map[string]string{"youtube_member_month": "12"},
+			payload: `{"id":"milestone","snippet":{"type":"memberMilestoneChatEvent","publishedAt":"2026-09-03T00:00:00Z","displayMessage":"Milestone","memberMilestoneChatDetails":{"memberLevelName":"Sleepy","memberMonth":12,"userComment":"One year"}},"authorDetails":{"channelId":"member","displayName":"Member"}}`,
+		},
+		{
+			name: "gift membership batch", eventType: chat.EventMembership, level: "Sleepy", giftCount: 5, isGift: true,
+			payload: `{"id":"gift-batch","snippet":{"type":"membershipGiftingEvent","publishedAt":"2026-09-03T00:00:00Z","displayMessage":"Gifted memberships","membershipGiftingDetails":{"giftMembershipsCount":5,"giftMembershipsLevelName":"Sleepy"}},"authorDetails":{"channelId":"gifter","displayName":"Gifter"}}`,
+		},
+		{
+			name: "gift membership recipient", eventType: chat.EventMembership, level: "Sleepy", isGift: true, metadata: map[string]string{"youtube_gifter_channel_id": "gifter", "youtube_gifting_message_id": "gift-batch"},
+			payload: `{"id":"gift-received","snippet":{"type":"giftMembershipReceivedEvent","publishedAt":"2026-09-03T00:00:00Z","displayMessage":"Received membership","giftMembershipReceivedDetails":{"memberLevelName":"Sleepy","gifterChannelId":"gifter","associatedMembershipGiftingMessageId":"gift-batch"}},"authorDetails":{"channelId":"recipient","displayName":"Recipient"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var api apiMessage
+			if err := json.Unmarshal([]byte(test.payload), &api); err != nil {
+				t.Fatal(err)
+			}
+			message, err := ParseMessage(api, "video", "Channel")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message.EventType != test.eventType || message.Text != test.text && test.text != "" {
+				t.Fatalf("message=%+v", message)
+			}
+			if test.paid != "" && (message.Paid == nil || message.Paid.Display != test.paid) {
+				t.Fatalf("paid=%+v", message.Paid)
+			}
+			if test.level != "" && (message.Membership == nil || message.Membership.Level != test.level || message.Membership.GiftCount != test.giftCount || message.Membership.IsGift != test.isGift) {
+				t.Fatalf("membership=%+v", message.Membership)
+			}
+			for key, want := range test.metadata {
+				if message.SafePlatformMetadata[key] != want {
+					t.Fatalf("metadata[%q]=%q want=%q", key, message.SafePlatformMetadata[key], want)
+				}
+			}
+		})
+	}
+}
+
 func TestAPIKeyUsesHeaderNotURL(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.String(), "secret-key") {

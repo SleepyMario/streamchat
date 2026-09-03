@@ -1,0 +1,25 @@
+FROM golang:1.24-bookworm AS go
+
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      cmake \
+      dpkg-dev \
+      git \
+      ninja-build \
+      qt6-base-dev \
+      qt6-declarative-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=go /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOCACHE=/tmp/streamchat-go-cache
+ENV GOMODCACHE=/tmp/streamchat-go-mod-cache
+
+WORKDIR /src
+ENTRYPOINT ["./scripts/build-deb.sh"]
