@@ -20,6 +20,7 @@ import (
 var ErrChatEnded = errors.New("YouTube live chat ended")
 var ErrNoActiveBroadcast = errors.New("YouTube account has no active broadcast")
 var ErrResourceNotFound = errors.New("YouTube resource not found")
+var ErrQuotaExceeded = errors.New("YouTube API quota exceeded")
 
 const (
 	ForceSSLScope = "https://www.googleapis.com/auth/youtube.force-ssl"
@@ -91,13 +92,14 @@ type Client struct {
 	Sleep                                 func(context.Context, time.Duration) error
 	Rand                                  *rand.Rand
 	RetryDelay                            time.Duration
+	QuotaRetryDelay                       time.Duration
 }
 
 func New(httpc *http.Client, base, key, token, video string) *Client {
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{HTTP: httpc, BaseURL: strings.TrimRight(base, "/"), APIKey: key, AccessToken: token, VideoID: video, TokenURL: TokenURL, Sleep: sleep, Rand: rand.New(rand.NewSource(time.Now().UnixNano())), RetryDelay: 15 * time.Second}
+	return &Client{HTTP: httpc, BaseURL: strings.TrimRight(base, "/"), APIKey: key, AccessToken: token, VideoID: video, TokenURL: TokenURL, Sleep: sleep, Rand: rand.New(rand.NewSource(time.Now().UnixNano())), RetryDelay: 15 * time.Second, QuotaRetryDelay: 5 * time.Minute}
 }
 
 // ParseVideoID accepts the identifiers and URL forms users commonly copy from
@@ -230,6 +232,9 @@ func (c *Client) requestAttempt(ctx context.Context, method, path string, q url.
 		}
 		if r.StatusCode == http.StatusNotFound {
 			return fmt.Errorf("%w (HTTP %d, %s)", ErrResourceNotFound, r.StatusCode, reason)
+		}
+		if reason == "quotaExceeded" {
+			return &chat.AdapterError{Kind: chat.Recoverable, Op: "YouTube API", Err: fmt.Errorf("%w (HTTP %d)", ErrQuotaExceeded, r.StatusCode)}
 		}
 		kind := chat.Terminal
 		if r.StatusCode == 429 || r.StatusCode >= 500 || reason == "rateLimitExceeded" {
@@ -888,6 +893,9 @@ func (c *Client) run(ctx context.Context, out chan<- chat.Message, streaming boo
 			if errors.Is(e, ErrChatEnded) || errors.Is(e, ErrResourceNotFound) {
 				return nil
 			}
+			if errors.Is(e, ErrQuotaExceeded) {
+				return e
+			}
 			var ae *chat.AdapterError
 			if errors.As(e, &ae) && ae.Kind == chat.Recoverable {
 				j := time.Duration(c.Rand.Int63n(int64(backoff/2 + 1)))
@@ -948,6 +956,12 @@ func (c *Client) RunServer(ctx context.Context, out chan<- chat.Message) error {
 		err := c.run(ctx, out, true)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if errors.Is(err, ErrQuotaExceeded) {
+			if c.Sleep(ctx, c.QuotaRetryDelay) != nil {
+				return nil
+			}
+			continue
 		}
 		if err != nil && !errors.Is(err, ErrNoActiveBroadcast) {
 			var ae *chat.AdapterError

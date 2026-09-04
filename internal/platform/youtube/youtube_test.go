@@ -177,6 +177,33 @@ func TestRunServerRediscoversAfterDeletedLiveChat(t *testing.T) {
 	}
 }
 
+func TestRunServerWaitsWithoutExitingWhenQuotaIsExhausted(t *testing.T) {
+	var discoveryCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		discoveryCalls++
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":{"errors":[{"reason":"quotaExceeded"}]}}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := New(server.Client(), server.URL, "", "access-token", "")
+	c.QuotaRetryDelay = 5 * time.Minute
+	var waited time.Duration
+	c.Sleep = func(_ context.Context, d time.Duration) error {
+		waited = d
+		cancel()
+		return context.Canceled
+	}
+
+	if err := c.RunServer(ctx, make(chan chat.Message)); err != nil {
+		t.Fatalf("quota exhaustion stopped server ingestion: %v", err)
+	}
+	if discoveryCalls != 1 || waited != c.QuotaRetryDelay {
+		t.Fatalf("discovery calls=%d wait=%s", discoveryCalls, waited)
+	}
+}
+
 func TestOAuthErrorRedactsCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
