@@ -8,7 +8,10 @@ if [[ -z "${GOROOT:-}" && -d /ucrt64/lib/go ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-version="${VERSION:-4.0}"
+version="${VERSION:-4.0.1}"
+version_core="${version%%[-+]*}"
+IFS=. read -r version_major version_minor version_patch version_build <<<"${version_core}"
+version_windows="${version_major:-0}.${version_minor:-0}.${version_patch:-0}.${version_build:-0}"
 build_dir="${repo_root}/build/windows-ucrt64"
 stage_dir="${repo_root}/packaging/windows/stage"
 dist_dir="${repo_root}/dist"
@@ -44,6 +47,7 @@ windeployqt6 --release --no-translations \
 
 makensis \
     -DVERSION="${version}" \
+	-DVERSION_WINDOWS="${version_windows}" \
     -DSTAGE="$(cygpath -w "${stage_dir}")" \
     -DOUTPUT="$(cygpath -w "${dist_dir}/Streamchat-${version}-windows-x86_64.exe")" \
     "$(cygpath -w "${repo_root}/packaging/windows/Streamchat.nsi")"

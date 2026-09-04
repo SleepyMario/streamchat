@@ -2,6 +2,8 @@
 
 Streamchat 4.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, opening the active stream, dedicated bot replies, and platform-aware role markers. Streamchat uses only documented official platform APIs. Version 4.0 completes the basic YouTube alert path with named new-member acknowledgements, aggregate membership-gift counts, Super Chats, and Super Stickers.
 
+Version 4.0.1 is a maintenance release that keeps the server, relay, and non-YouTube platforms running when the active YouTube live-chat resource disappears or the YouTube API quota is exhausted. Quota exhaustion pauses YouTube ingestion for five minutes between retries instead of restarting the complete service.
+
 ## Start here
 
 ```sh
