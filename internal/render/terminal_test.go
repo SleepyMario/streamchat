@@ -462,7 +462,7 @@ func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 	if got := RenderPlatformRoleBadges(chat.PlatformTwitch, roleSet); got != "🔴🗡️✅💎" {
 		t.Fatalf("Twitch badges=%q", got)
 	}
-	if got := RenderPlatformRoleBadges(chat.PlatformKick, roleSet); got != "🔴🛡️✅💎" {
+	if got := RenderPlatformRoleBadges(chat.PlatformKick, roleSet); got != "🔴⭐🛡️✅💎" {
 		t.Fatalf("Kick badges=%q", got)
 	}
 	if got := RenderPlatformRoleBadges(chat.PlatformYouTube, roleSet); got != "🔴🔧✅💎" {
@@ -492,7 +492,7 @@ func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 		role chat.Role
 		want string
 	}{
-		{chat.RoleBroadcaster, "🔴"},
+		{chat.RoleBroadcaster, "🔴⭐"},
 		{chat.RoleModerator, "🛡️"},
 		{chat.RolePartner, "✅"},
 		{chat.RoleVIP, "💎"},
@@ -504,6 +504,9 @@ func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 		if got := RenderPlatformRoleBadges(chat.PlatformKick, roles(badge.role)); got != badge.want {
 			t.Fatalf("Kick role=%v badge=%q want=%q", badge.role, got, badge.want)
 		}
+	}
+	if got := RenderPlatformRoleBadges(chat.PlatformKick, roles(chat.RoleBroadcaster, chat.RoleSubscriber)); got != "🔴⭐" {
+		t.Fatalf("Kick broadcaster/subscriber badges=%q", got)
 	}
 	youtubeAvailable := []struct {
 		role chat.Role

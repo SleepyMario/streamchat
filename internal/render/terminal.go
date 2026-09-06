@@ -93,9 +93,11 @@ var twitchRoleBadges = []roleBadge{
 }
 
 // KickRoleBadges use the same stable terminal-safe approach as Twitch's
-// markers. Broadcasters deliberately share Twitch's red live marker; the
-// remaining roles follow Kick's channel-role vocabulary. Provider artwork and
-// custom subscriber images remain preserved in chat.Message.Badges for
+// markers. Kick broadcasters deliberately use the combined red live marker
+// and yellow star even when Kick does not report a subscriber role; an actual
+// subscriber role is suppressed for broadcasters so the star is not repeated.
+// The remaining roles follow Kick's channel-role vocabulary. Provider artwork
+// and custom subscriber images remain preserved in chat.Message.Badges for
 // graphical clients.
 var kickRoleBadges = []roleBadge{
 	{chat.RoleBroadcaster, "🔴"},
@@ -135,6 +137,29 @@ func renderRoleBadges(roles chat.RoleSet, available []roleBadge) string {
 	return badges.String()
 }
 
+func renderKickRoleBadges(roles chat.RoleSet) string {
+	if !roles.Has(chat.RoleBroadcaster) {
+		return renderRoleBadges(roles, kickRoleBadges)
+	}
+
+	var badges strings.Builder
+	badges.WriteString("🔴⭐")
+	rendered := 1
+	for _, badge := range kickRoleBadges {
+		if badge.role == chat.RoleBroadcaster || badge.role == chat.RoleSubscriber {
+			continue
+		}
+		if roles.Has(badge.role) {
+			badges.WriteString(badge.marker)
+			rendered++
+			if rendered == roleSlotCapacity {
+				break
+			}
+		}
+	}
+	return badges.String()
+}
+
 func RenderRoleBadges(roles chat.RoleSet) string {
 	return renderRoleBadges(roles, genericRoleBadges)
 }
@@ -144,7 +169,7 @@ func RenderPlatformRoleBadges(platform chat.Platform, roles chat.RoleSet) string
 	case chat.PlatformTwitch:
 		return renderRoleBadges(roles, twitchRoleBadges)
 	case chat.PlatformKick:
-		return renderRoleBadges(roles, kickRoleBadges)
+		return renderKickRoleBadges(roles)
 	case chat.PlatformYouTube:
 		return renderRoleBadges(roles, youtubeRoleBadges)
 	default:
