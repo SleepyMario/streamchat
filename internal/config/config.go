@@ -46,6 +46,12 @@ type YouTube struct {
 	// StreamID identifies the reusable YouTube ingest stream used when preparing
 	// a new broadcast for an encoder session.
 	StreamID string `json:"stream_id,omitempty"`
+	// AutoBroadcast prepares, binds and starts one broadcast for every newly
+	// confirmed MediaMTX input session. Profiles that do not send to YouTube
+	// must leave this disabled.
+	AutoBroadcast    bool   `json:"auto_broadcast,omitempty"`
+	BroadcastTitle   string `json:"broadcast_title,omitempty"`
+	BroadcastPrivacy string `json:"broadcast_privacy,omitempty"`
 	// VideoID is retained for compatibility, but is normally a per-run target.
 	VideoID string `json:"video_id,omitempty"`
 	BaseURL string `json:"-"`
@@ -476,6 +482,25 @@ func (c Config) Validate(mode string) error {
 		}
 		if c.Bot.Discord.Confirmations < 1 || c.Bot.Discord.Confirmations > 5 {
 			return errors.New("bot.discord.confirmations must be between 1 and 5")
+		}
+	}
+	if c.YouTube.AutoBroadcast {
+		if strings.TrimSpace(c.YouTube.ClientID) == "" || strings.TrimSpace(c.YouTube.ClientSecret) == "" || strings.TrimSpace(c.YouTube.RefreshToken) == "" {
+			return errors.New("youtube client_id, client_secret, and refresh_token are required when auto_broadcast is enabled")
+		}
+		if strings.TrimSpace(c.YouTube.StreamID) == "" {
+			return errors.New("youtube.stream_id is required when auto_broadcast is enabled")
+		}
+		if strings.TrimSpace(c.YouTube.BroadcastTitle) == "" {
+			return errors.New("youtube.broadcast_title is required when auto_broadcast is enabled")
+		}
+		switch strings.ToLower(strings.TrimSpace(c.YouTube.BroadcastPrivacy)) {
+		case "public", "private", "unlisted":
+		default:
+			return errors.New("youtube.broadcast_privacy must be public, private, or unlisted")
+		}
+		if strings.TrimSpace(c.Bot.Discord.MediaHookTokenEnv) == "" || strings.ContainsAny(c.Bot.Discord.MediaHookTokenEnv, " \t\r\n=") {
+			return errors.New("bot.discord.media_hook_token_env must name one environment variable when YouTube auto-broadcast is enabled")
 		}
 	}
 	if c.Bot.Subtitles.Enabled {

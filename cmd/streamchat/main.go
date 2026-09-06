@@ -28,6 +28,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/config"
 	"github.com/SleepyMario/streamchat/internal/discordnotify"
 	"github.com/SleepyMario/streamchat/internal/emote"
+	"github.com/SleepyMario/streamchat/internal/inputtrigger"
 	"github.com/SleepyMario/streamchat/internal/launcher"
 	"github.com/SleepyMario/streamchat/internal/logging"
 	"github.com/SleepyMario/streamchat/internal/outbound"
@@ -493,19 +494,69 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	server.Status = func() any { return statusService.Snapshot() }
 	server.Control = statusRuntime.RemoteControl
 	server.Observe = statusService.Observe
-	if c.Bot.Discord.Enabled {
-		token := os.Getenv(c.Bot.Discord.TokenEnv)
+	var mediaSignal *discordnotify.Signal
+	if c.Bot.Discord.Enabled || c.YouTube.AutoBroadcast {
 		mediaHookToken := os.Getenv(c.Bot.Discord.MediaHookTokenEnv)
 		if len(mediaHookToken) < 32 {
-			return fmt.Errorf("initialize Discord live notification: %s must contain at least 32 characters", c.Bot.Discord.MediaHookTokenEnv)
+			return fmt.Errorf("initialize stream-input lifecycle: %s must contain at least 32 characters", c.Bot.Discord.MediaHookTokenEnv)
 		}
+		mediaSignal = &discordnotify.Signal{}
+		server.InputHookToken = mediaHookToken
+		server.InputReady = mediaSignal.Set
+	}
+	if c.YouTube.AutoBroadcast {
+		go (inputtrigger.Watcher{
+			State:        mediaSignal.State,
+			PollInterval: 250 * time.Millisecond,
+			OnOnline: func(actionCtx context.Context) error {
+				prepared, prepareErr := statusRuntime.RemoteControl(actionCtx, relay.ControlRequest{
+					Platform: "youtube", Action: "prepare-broadcast",
+					Title: c.YouTube.BroadcastTitle, Privacy: c.YouTube.BroadcastPrivacy,
+				})
+				if prepareErr != nil {
+					return fmt.Errorf("prepare broadcast: %w", prepareErr)
+				}
+				if prepared.Status != "live" {
+					deadline := time.NewTimer(2 * time.Minute)
+					defer deadline.Stop()
+					poll := time.NewTicker(2 * time.Second)
+					defer poll.Stop()
+					for {
+						if !mediaSignal.State().Online {
+							return errors.New("input ended before YouTube ingest became active")
+						}
+						ingest, ingestErr := statusRuntime.RemoteControl(actionCtx, relay.ControlRequest{Platform: "youtube", Action: "ingest-status"})
+						if ingestErr != nil {
+							return fmt.Errorf("check ingest: %w", ingestErr)
+						}
+						if ingest.Result == "active" {
+							break
+						}
+						select {
+						case <-actionCtx.Done():
+							return actionCtx.Err()
+						case <-deadline.C:
+							return fmt.Errorf("YouTube ingest stayed %q for two minutes", ingest.Result)
+						case <-poll.C:
+						}
+					}
+					if _, startErr := statusRuntime.RemoteControl(actionCtx, relay.ControlRequest{Platform: "youtube", Action: "start-broadcast", BroadcastID: prepared.Result}); startErr != nil {
+						return fmt.Errorf("start broadcast: %w", startErr)
+					}
+				}
+				fmt.Fprintf(out, "YouTube automatic broadcast ready: %s\n", prepared.URL)
+				return nil
+			},
+			OnError: func(err error) { fmt.Fprintf(out, "YouTube automatic broadcast: %s\n", safeError(err)) },
+		}).Run(serverCtx)
+		fmt.Fprintln(out, "YouTube automatic broadcast enabled.")
+	}
+	if c.Bot.Discord.Enabled {
+		token := os.Getenv(c.Bot.Discord.TokenEnv)
 		discordClient, discordErr := discordnotify.New(c.Bot.Discord.ChannelID, token)
 		if discordErr != nil {
 			return fmt.Errorf("initialize Discord live notification: %w", discordErr)
 		}
-		mediaSignal := &discordnotify.Signal{}
-		server.InputHookToken = mediaHookToken
-		server.InputReady = mediaSignal.Set
 		go (discordnotify.Watcher{
 			Sender: discordClient, State: mediaSignal.State,
 			BuildMessage:  (discordnotify.Announcement{Source: statusRuntime}).Build,

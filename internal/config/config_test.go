@@ -151,6 +151,33 @@ func TestSubtitleBotDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestYouTubeAutoBroadcastValidation(t *testing.T) {
+	c := Defaults()
+	c.YouTube.AutoBroadcast = true
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "client_id") {
+		t.Fatalf("missing primary credentials accepted: %v", err)
+	}
+	c.YouTube.ClientID = "client"
+	c.YouTube.ClientSecret = "secret"
+	c.YouTube.RefreshToken = "refresh"
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "stream_id") {
+		t.Fatalf("missing stream ID accepted: %v", err)
+	}
+	c.YouTube.StreamID = "stream-1"
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "broadcast_title") {
+		t.Fatalf("missing title accepted: %v", err)
+	}
+	c.YouTube.BroadcastTitle = "Live stream"
+	c.YouTube.BroadcastPrivacy = "friends"
+	if err := c.Validate("check"); err == nil || !strings.Contains(err.Error(), "broadcast_privacy") {
+		t.Fatalf("invalid privacy accepted: %v", err)
+	}
+	c.YouTube.BroadcastPrivacy = "public"
+	if err := c.Validate("check"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckFileModeRejectsGroupReadableSecrets(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(p, []byte("{}"), 0644); err != nil {

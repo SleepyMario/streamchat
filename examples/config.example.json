@@ -6,6 +6,10 @@
     "access_token": "",
     "refresh_token": "",
     "redirect_uri": "http://127.0.0.1:8791",
+    "stream_id": "",
+    "auto_broadcast": false,
+    "broadcast_title": "SleepyMario is live",
+    "broadcast_privacy": "public",
     "video_id": ""
   },
   "kick": {
