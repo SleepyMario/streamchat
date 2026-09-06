@@ -83,7 +83,7 @@ var genericRoleBadges = []roleBadge{
 // retaining a predictable, fixed-width terminal layout. Raw provider badge IDs
 // remain available on chat.Message for graphical clients.
 var twitchRoleBadges = []roleBadge{
-	{chat.RoleBroadcaster, "🟢"},
+	{chat.RoleBroadcaster, "🔴"},
 	{chat.RoleModerator, "🗡️"},
 	{chat.RolePartner, "✅"},
 	{chat.RoleVIP, "💎"},
@@ -93,11 +93,12 @@ var twitchRoleBadges = []roleBadge{
 }
 
 // KickRoleBadges use the same stable terminal-safe approach as Twitch's
-// markers, but follow Kick's green visual identity and its channel-role
-// vocabulary. Provider artwork and custom subscriber images remain preserved
-// in chat.Message.Badges for graphical clients.
+// markers. Broadcasters deliberately share Twitch's red live marker; the
+// remaining roles follow Kick's channel-role vocabulary. Provider artwork and
+// custom subscriber images remain preserved in chat.Message.Badges for
+// graphical clients.
 var kickRoleBadges = []roleBadge{
-	{chat.RoleBroadcaster, "🟢"},
+	{chat.RoleBroadcaster, "🔴"},
 	{chat.RoleModerator, "🛡️"},
 	{chat.RolePartner, "✅"},
 	{chat.RoleVIP, "💎"},
@@ -106,12 +107,11 @@ var kickRoleBadges = []roleBadge{
 	{chat.RoleFollower, "💚"},
 }
 
-// YouTubeRoleBadges mirror the roles visible in YouTube live chat. The green
-// broadcaster marker is the deliberate exception agreed for Streamchat;
-// moderator and member markers follow YouTube's familiar wrench
-// and membership-star vocabulary.
+// YouTubeRoleBadges mirror the roles visible in YouTube live chat. Broadcasters
+// deliberately share Twitch's red live marker; moderator and member markers
+// follow YouTube's familiar wrench and membership-star vocabulary.
 var youtubeRoleBadges = []roleBadge{
-	{chat.RoleBroadcaster, "🟢"},
+	{chat.RoleBroadcaster, "🔴"},
 	{chat.RoleModerator, "🔧"},
 	{chat.RolePartner, "✅"},
 	{chat.RoleVIP, "💎"},

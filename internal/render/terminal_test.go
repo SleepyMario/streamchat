@@ -151,7 +151,7 @@ func TestTwitchRolesChatterIDsCJKAndEmoteFallbackRenderTogether(t *testing.T) {
 		Emotes:            []chat.Emote{{ID: "25", Name: "Kappa", Start: 3, End: 7}},
 	}
 	first := formatter.Format(message)
-	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[Twitch]") || !strings.Contains(Sanitize(first.Text), "🟢🗡️✅💎") || !strings.Contains(Sanitize(first.Text), "觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
+	if !strings.HasPrefix(first.Text, chattercolor.Palette()[0].ANSI) || !strings.Contains(Sanitize(first.Text), "[Twitch]") || !strings.Contains(Sanitize(first.Text), "🔴🗡️✅💎") || !strings.Contains(Sanitize(first.Text), "觀眾") || !strings.Contains(Sanitize(first.Text), "你好 Kappa") {
 		t.Fatalf("first=%q", first.Text)
 	}
 	message.AuthorDisplayName = "renamed"
@@ -459,13 +459,13 @@ func TestRenderRoleBadgesFixedOrderAndUnknownOmitted(t *testing.T) {
 
 func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 	roleSet := roles(chat.RoleFollower, chat.RoleSubscriber, chat.RoleOG, chat.RoleVIP, chat.RolePartner, chat.RoleModerator, chat.RoleBroadcaster)
-	if got := RenderPlatformRoleBadges(chat.PlatformTwitch, roleSet); got != "🟢🗡️✅💎" {
+	if got := RenderPlatformRoleBadges(chat.PlatformTwitch, roleSet); got != "🔴🗡️✅💎" {
 		t.Fatalf("Twitch badges=%q", got)
 	}
-	if got := RenderPlatformRoleBadges(chat.PlatformKick, roleSet); got != "🟢🛡️✅💎" {
+	if got := RenderPlatformRoleBadges(chat.PlatformKick, roleSet); got != "🔴🛡️✅💎" {
 		t.Fatalf("Kick badges=%q", got)
 	}
-	if got := RenderPlatformRoleBadges(chat.PlatformYouTube, roleSet); got != "🟢🔧✅💎" {
+	if got := RenderPlatformRoleBadges(chat.PlatformYouTube, roleSet); got != "🔴🔧✅💎" {
 		t.Fatalf("YouTube badges=%q", got)
 	}
 	if got := RenderPlatformRoleBadges(chat.Platform(""), roleSet); got != "[B][M][P][V]" {
@@ -475,7 +475,7 @@ func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 		role chat.Role
 		want string
 	}{
-		{chat.RoleBroadcaster, "🟢"},
+		{chat.RoleBroadcaster, "🔴"},
 		{chat.RoleModerator, "🗡️"},
 		{chat.RolePartner, "✅"},
 		{chat.RoleVIP, "💎"},
@@ -492,7 +492,7 @@ func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 		role chat.Role
 		want string
 	}{
-		{chat.RoleBroadcaster, "🟢"},
+		{chat.RoleBroadcaster, "🔴"},
 		{chat.RoleModerator, "🛡️"},
 		{chat.RolePartner, "✅"},
 		{chat.RoleVIP, "💎"},
@@ -509,7 +509,7 @@ func TestRenderPlatformRoleBadgesUsesProviderSymbols(t *testing.T) {
 		role chat.Role
 		want string
 	}{
-		{chat.RoleBroadcaster, "🟢"},
+		{chat.RoleBroadcaster, "🔴"},
 		{chat.RoleModerator, "🔧"},
 		{chat.RolePartner, "✅"},
 		{chat.RoleVIP, "💎"},
