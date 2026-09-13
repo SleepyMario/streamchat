@@ -202,3 +202,35 @@ func TestWorkerAbovePriceCeilingIsDeleted(t *testing.T) {
 		t.Fatalf("expensive worker was not deleted: %v", provider.deletes)
 	}
 }
+
+func TestCleanupAbsentPodClearsSessionButOtherErrorsRemainBlocked(t *testing.T) {
+	for _, code := range []int{http.StatusNoContent, http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			cfg := testConfig(t)
+			provider := RESTProvider{BaseURL: cfg.APIBaseURL, Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodDelete || r.URL.Path != "/v2/pods/old-pod" {
+					t.Fatalf("unexpected cleanup request: %s %s", r.Method, r.URL.Path)
+				}
+				return jsonResponse(code, ""), nil
+			})}}
+			m := &Manager{cfg: cfg, provider: provider, current: &persisted{Status: Status{State: "error", PodID: "old-pod"}}}
+			if err := m.saveLocked(); err != nil {
+				t.Fatal(err)
+			}
+			err := m.Stop(context.Background())
+			if code == http.StatusNoContent || code == http.StatusNotFound {
+				if err != nil || m.current != nil {
+					t.Fatalf("absent/deleted pod retained: %v", err)
+				}
+				restored := &Manager{cfg: cfg}
+				if err := restored.load(); err != nil || restored.current != nil {
+					t.Fatalf("stale state survived cleanup: %v", err)
+				}
+			} else {
+				if err == nil || m.current == nil || m.current.State != "error" {
+					t.Fatal("real deletion failure must retain session")
+				}
+			}
+		})
+	}
+}

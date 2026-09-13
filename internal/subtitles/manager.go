@@ -207,7 +207,14 @@ func (p RESTProvider) Get(ctx context.Context, id string) (Pod, error) {
 	return pod, err
 }
 func (p RESTProvider) Delete(ctx context.Context, id string) error {
-	return p.request(ctx, http.MethodDelete, "/pods/"+url.PathEscape(id), nil, nil)
+	err := p.request(ctx, http.MethodDelete, "/pods/"+url.PathEscape(id), nil, nil)
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		// An absent pod already satisfies cleanup, including after a restart
+		// or a deletion performed outside this controller.
+		return nil
+	}
+	return err
 }
 
 type persisted struct {
