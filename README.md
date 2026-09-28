@@ -1,6 +1,6 @@
 # Streamchat
 
-Streamchat 4.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, opening the active stream, dedicated bot replies, and platform-aware role markers. Streamchat uses only documented official platform APIs. Version 4.0 completes the basic YouTube alert path with named new-member acknowledgements, aggregate membership-gift counts, Super Chats, and Super Stickers.
+Streamchat 4.0.1 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, opening the active stream, dedicated bot replies, and platform-aware role markers. Streamchat uses only documented official platform APIs. The current release includes named YouTube new-member acknowledgements, aggregate membership-gift counts, Super Chats, and Super Stickers.
 
 Version 4.0.1 is a maintenance release that keeps the server, relay, and non-YouTube platforms running when the active YouTube live-chat resource disappears or the YouTube API quota is exhausted. Quota exhaustion pauses YouTube ingestion for five minutes between retries instead of restarting the complete service.
 
@@ -37,15 +37,15 @@ On a first run with no usable configuration, `streamchat` offers the setup wizar
 
 To make bot replies come from a separate Twitch account, run `streamchat setup twitch-bot`. Sign in to Twitch as that bot account before approving the browser prompt. This second authorization requests only `user:read:chat` and `user:write:chat`, stores the resolved identity under `bot.twitch`, and leaves the broadcaster's `twitch` configuration unchanged. The same Twitch developer application can be reused.
 
-Streamchat 3.5 adds the equivalent dedicated Kick bot path. Run `streamchat setup kick-bot`, sign in to Kick as the intended bot before approving the prompt, and authorize only `user:read` and `chat:write`. The resolved identity and tokens are stored under `bot.kick`; the primary broadcaster ID, webhook configuration, and event subscriptions stay unchanged. The existing Kick developer application can be reused.
+Dedicated Kick bot replies use `streamchat setup kick-bot`. Sign in to Kick as the intended bot before approving the prompt, and authorize only `user:read` and `chat:write`. The resolved identity and tokens are stored under `bot.kick`; the primary broadcaster ID, webhook configuration, and event subscriptions stay unchanged. The existing Kick developer application can be reused.
 
-Streamchat 3.8 adds a dedicated YouTube bot path. Run `streamchat setup youtube-bot` and select the separate bot channel when Google asks which identity to authorize. The requested `youtube` permission is intentionally broad and is not a least-privilege grant: it can authorize destructive content operations elsewhere in the YouTube API. Streamchat uses that bot authorization only to identify the selected channel and post command and 4.0 alert replies to the broadcaster's current live chat. The bot tokens and identity are stored under `bot.youtube`; the primary broadcast credentials and configured video target remain separate.
+Dedicated YouTube bot replies use `streamchat setup youtube-bot`. Select the separate bot channel when Google asks which identity to authorize. The requested `youtube` permission is intentionally broad and is not a least-privilege grant: it can authorize destructive content operations elsewhere in the YouTube API. Streamchat uses that bot authorization only to identify the selected channel and post command and alert replies to the broadcaster's current live chat. The bot tokens and identity are stored under `bot.youtube`; the primary broadcast credentials and configured video target remain separate.
 
 Streamchat gives Kick messages compact platform-aware role markers in the terminal: the shared red live dot for broadcaster, shield for moderator, check for partner, diamond for VIP, trophy for OG, star for subscriber, and green heart for follower. Up to four are displayed in role-priority order. The original structured Kick badges remain in the normalized message data, including provider-specific and custom badge details that the terminal does not draw.
 
 Streamchat gives YouTube messages the same compact platform-aware treatment. The actual YouTube roles currently normalized from live chat use the shared red live dot for broadcaster, a wrench for moderator and a star for channel member. Less common provider-neutral roles retain stable terminal-safe markers, and the original structured badges remain available to graphical clients.
 
-Streamchat 3.7 subscribes the primary Kick identity to signed follow, new-subscription, subscription-renewal, gift-subscription and KICKs-gifted webhooks alongside chat. Those events enter Streamchat's ordinary relay and archive exactly once. When the Kick bot is enabled, ComradeKip posts a short acknowledgement in Kick chat, naming the person when Kick supplies the identity and including gift-subscription or KICKs counts. Existing Kick authorizations already include `events:subscribe`; run `streamchat kick subscribe` once after upgrading to add the new event subscriptions.
+The primary Kick identity subscribes to signed follow, new-subscription, subscription-renewal, gift-subscription and KICKs-gifted webhooks alongside chat. Those events enter Streamchat's ordinary relay and archive exactly once. When the Kick bot is enabled, ComradeKip posts a short acknowledgement in Kick chat, naming the person when Kick supplies the identity and including gift-subscription or KICKs counts. Existing Kick authorizations already include `events:subscribe`; run `streamchat kick subscribe` once after upgrading from a release that predates these event subscriptions.
 
 Kick, Twitch and YouTube chat share one centrally implemented, case-insensitive command path. `!commands` lists the available commands, `!language` replies with `You can try Nederlands, English, Deutsch, 中文, 한국말, 日本語 and tiếng Việt on that fat Sleepy dude.`, and `!gender` replies with `I'm a bot you dumbrr`. YouTube's language reply omits `fat` because the complete original sentence was repeatedly accepted and then silently hidden by YouTube. A duplicate command may answer again after the configured cooldown (60 seconds by default) or after four ordinary intervening chat messages, whichever happens first. Suppressed duplicate commands do not themselves advance the message counter. YouTube additionally spaces different bot replies by the configured cooldown because closely adjacent API-accepted messages may be silently omitted by YouTube.
 
@@ -339,7 +339,7 @@ Webhook verification remains fail-closed. Streamchat verifies Kick's RSA/SHA-256
 
 The wizard asks the user to register the displayed localhost redirect URI in the [Twitch Developer Console](https://dev.twitch.tv/console/apps). It then opens the Twitch authorization page and always prints the URL as a fallback. The callback binds only to loopback, validates a cryptographically random OAuth state value, and exchanges the returned code for access and refresh tokens.
 
-Streamchat requests exactly `user:read:chat`, `user:write:chat`, `channel:manage:broadcast`, `moderator:manage:banned_users`, `moderator:manage:chat_messages`, `moderator:read:followers`, and `channel:read:subscriptions`. These authorize EventSub chat reads, chat sends, the authenticated broadcaster's title/category changes, ban/timeouts, remote chat clearing, follow events, and subscription events respectively. Streamchat 3.4 also recognizes the structured Bits value already included with a Twitch chat event, so it does not create a second EventSub subscription that could duplicate the alert. Authorizations made before 3.4 must be renewed once with `streamchat setup twitch`; the dedicated bot account still needs only its two chat scopes. Streamchat validates tokens, stores rotated refresh tokens, and resolves moderation targets through the official `GET /helix/users` API.
+Streamchat requests exactly `user:read:chat`, `user:write:chat`, `channel:manage:broadcast`, `moderator:manage:banned_users`, `moderator:manage:chat_messages`, `moderator:read:followers`, and `channel:read:subscriptions`. These authorize EventSub chat reads, chat sends, the authenticated broadcaster's title/category changes, ban/timeouts, remote chat clearing, follow events, and subscription events respectively. Streamchat recognizes the structured Bits value already included with a Twitch chat event, so it does not create a second EventSub subscription that could duplicate the alert. Authorizations made before this scope set was introduced must be renewed once with `streamchat setup twitch`; the dedicated bot account still needs only its two chat scopes. Streamchat validates tokens, stores rotated refresh tokens, and resolves moderation targets through the official `GET /helix/users` API.
 
 Twitch ban and timeout use `POST /helix/moderation/bans` with the configured channel as `broadcaster_id` and the authenticated account as `moderator_id`. Twitch timeouts accept whole seconds from `1s` through `14d`; Kick keeps its existing whole-minute rules. Plain `/clear twitch` sends one `DELETE /helix/moderation/chat` request without a message ID, which clears current Twitch chat without changing Streamchat's local display or archive. `/clear twitch Nd` reads known Twitch IDs from the SQLite archive and attempts individual deletion only for events less than six hours old. Older rows are reported as platform-limited and all archive rows remain historical.
 
@@ -459,11 +459,11 @@ Release builds follow one canonical location rule: Slacktop builds and validates
 Build all three Ubuntu/Debian packages with the locally installed Go toolchain, Qt 6 development files, and `dpkg-deb`:
 
 ```sh
-VERSION=4.0 make deb
+VERSION=4.0.1 make deb
 sudo apt install \
-  ./dist/streamchat-cli_4.0_amd64.deb \
-  ./dist/streamchat-server_4.0_amd64.deb \
-  ./dist/streamchat-gui_4.0_amd64.deb
+  ./dist/streamchat-cli_4.0.1_amd64.deb \
+  ./dist/streamchat-server_4.0.1_amd64.deb \
+  ./dist/streamchat-gui_4.0.1_amd64.deb
 ```
 
 The canonical release build runs on the Streamchat VM inside the checked-in Ubuntu 24.04 builder:
@@ -474,19 +474,19 @@ docker build \
   -t streamchat-deb-builder:24.04 .
 docker run --rm \
   --user "$(id -u):$(id -g)" \
-  -e VERSION=4.0 \
+  -e VERSION=4.0.1 \
   -v "$PWD:/src" \
   streamchat-deb-builder:24.04
 ```
 
-Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Version 4.0 is the packaged YouTube-parity release; versions 3.3 through 3.9.2 remain source checkpoints. The small 3.9.2 consistency pass made the green Kick broadcaster marker universal by changing Twitch from red to green and using the same marker for YouTube.
+Without `VERSION`, builds use an exact Git tag or a development value containing the commit date and hash. Version 4.0 introduced packaged YouTube parity, and 4.0.1 is its maintenance release. Versions 3.3 through 3.9.2 remain source checkpoints. Broadcasters now use the same red live marker on Kick, Twitch, and YouTube.
 
 `streamchat-cli` owns the statically linked shared runtime and `/usr/bin/streamchat`. It explicitly replaces the legacy combined `streamchat` package during upgrades. `streamchat-server` depends on the exact same CLI version and owns `streamchat-server.service`. `streamchat-gui` depends on the exact same CLI version and provides the native Qt application. Install a headless server with these two local artifacts:
 
 ```sh
 sudo apt install \
-  ./dist/streamchat-cli_4.0_amd64.deb \
-  ./dist/streamchat-server_4.0_amd64.deb
+  ./dist/streamchat-cli_4.0.1_amd64.deb \
+  ./dist/streamchat-server_4.0.1_amd64.deb
 ```
 
 The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:

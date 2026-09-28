@@ -50,7 +50,7 @@ import (
 var version = "development"
 
 const statusRefreshInterval = 30 * time.Second
-const usage = `Streamchat 4.0 combines Kick, Twitch, and YouTube chat.
+const usage = `Streamchat 4.0.1 combines Kick, Twitch, and YouTube chat.
 All three platforms support reading, sending, live status, channel controls, and moderation.
 
 Start here:
@@ -1661,14 +1661,24 @@ func newModerationControls(kickClient *kickOutboundSender, twitchClients ...*twi
 	return moderationControls{platforms: platforms}
 }
 
+func (m moderationControls) supportedPlatforms() string {
+	ordered := make([]string, 0, len(m.platforms))
+	for _, platform := range []string{"kick", "twitch", "youtube"} {
+		if _, ok := m.platforms[platform]; ok {
+			ordered = append(ordered, platform)
+		}
+	}
+	return strings.Join(ordered, ", ")
+}
+
 func (m moderationControls) Ban(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) != 2 {
-		return "Usage: /ban PLATFORM USER (supported: kick, twitch)", nil
+		return "Usage: /ban PLATFORM USER (supported: " + m.supportedPlatforms() + ")", nil
 	}
 	provider, ok := m.platforms[strings.ToLower(fields[0])]
 	if !ok {
-		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick, twitch.", nil
+		return "Unsupported moderation platform: " + fields[0] + ". Supported: " + m.supportedPlatforms() + ".", nil
 	}
 	return provider.BanUser(ctx, fields[1])
 }
@@ -1676,11 +1686,11 @@ func (m moderationControls) Ban(ctx context.Context, argument string) (string, e
 func (m moderationControls) Timeout(ctx context.Context, argument string) (string, error) {
 	fields := strings.Fields(argument)
 	if len(fields) != 3 {
-		return "Usage: /timeout PLATFORM USER DURATION (examples: /timeout kick USER 10m, /timeout twitch USER 30s)", nil
+		return "Usage: /timeout PLATFORM USER DURATION (supported: " + m.supportedPlatforms() + ")", nil
 	}
 	provider, ok := m.platforms[strings.ToLower(fields[0])]
 	if !ok {
-		return "Unsupported moderation platform: " + fields[0] + ". Supported: kick, twitch.", nil
+		return "Unsupported moderation platform: " + fields[0] + ". Supported: " + m.supportedPlatforms() + ".", nil
 	}
 	return provider.TimeoutUser(ctx, fields[1], fields[2])
 }

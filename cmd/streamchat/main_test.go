@@ -874,7 +874,7 @@ func TestModerationRejectsUnsupportedPlatformWithoutAPIRequestOrTargetInference(
 	if requests != 0 || len(sender.messages) != 0 {
 		t.Fatalf("API requests=%d chat=%v", requests, sender.messages)
 	}
-	if got := out.String(); !strings.Contains(got, "Usage: /ban PLATFORM USER") || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") || strings.Count(got, "Unsupported moderation platform: foo. Supported: kick, twitch.") != 2 {
+	if got := out.String(); !strings.Contains(got, "Usage: /ban PLATFORM USER") || !strings.Contains(got, "Usage: /timeout PLATFORM USER DURATION") || strings.Count(got, "Unsupported moderation platform: foo. Supported: kick.") != 2 {
 		t.Fatalf("output=%q", got)
 	}
 	if targets.Selected() != "kick" || errw.Len() != 0 {
