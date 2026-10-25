@@ -503,3 +503,6 @@ During an upgrade, the package detects an enabled or active legacy `streamchat.s
 ## License
 
 MIT. See `LICENSE`.
+
+Optional [OBS controller](docs/obs-controller.md): control OBS scenes, streaming,
+and recording from a phone through the existing Streamchat server.

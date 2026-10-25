@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html,body,canvas{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}
+</style></head><body><canvas id="c"></canvas><script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let values=Array(48).fill(0),shown=Array(48).fill(0);
+function resize(){const d=devicePixelRatio||1;canvas.width=innerWidth*d;canvas.height=innerHeight*d;ctx.setTransform(d,0,0,d,0,0)}
+addEventListener('resize',resize);resize();
+async function update(){try{const r=await fetch('/levels',{cache:'no-store'});values=await r.json()}catch(e){}setTimeout(update,16)}
+function draw(){
+  const w=innerWidth,h=innerHeight,n=values.length,gap=Math.max(2,w/n*.18),bw=(w-gap*(n-1))/n;
+  ctx.clearRect(0,0,w,h);
+  const gradient=ctx.createLinearGradient(0,h,0,0);
+  gradient.addColorStop(0,'#ff5c8a');gradient.addColorStop(.18,'#ff9a3d');
+  gradient.addColorStop(.35,'#ffff00');gradient.addColorStop(.5,'#00ff75');
+  gradient.addColorStop(.66,'#00eaff');gradient.addColorStop(.82,'#5865ff');gradient.addColorStop(1,'#ff00ff');
+  ctx.fillStyle=gradient;ctx.shadowColor='rgba(168,96,255,.55)';ctx.shadowBlur=8;
+  values.forEach((v,i)=>{shown[i]+=(v-shown[i])*(v>shown[i]?.72:.30);const bh=Math.max(2,shown[i]*h);const x=i*(bw+gap);ctx.beginPath();ctx.roundRect(x,h-bh,bw,bh,Math.min(4,bw/2));ctx.fill()});
+  requestAnimationFrame(draw);
+}
+update();draw();
+</script></body></html>

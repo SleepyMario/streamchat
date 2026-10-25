@@ -31,6 +31,7 @@ import (
 	"github.com/SleepyMario/streamchat/internal/inputtrigger"
 	"github.com/SleepyMario/streamchat/internal/launcher"
 	"github.com/SleepyMario/streamchat/internal/logging"
+	"github.com/SleepyMario/streamchat/internal/obscontrol"
 	"github.com/SleepyMario/streamchat/internal/outbound"
 	platformreg "github.com/SleepyMario/streamchat/internal/platform"
 	"github.com/SleepyMario/streamchat/internal/platform/kick"
@@ -480,6 +481,10 @@ func serve(ctx context.Context, args []string, out io.Writer) error {
 	webhook.MaxBody = c.Kick.MaxBodyBytes
 	webhook.MaxAge = c.Kick.MaxAge
 	server := relay.NewServer(c.Server.Listen, c.Server.WebSocketPath, c.RelayAuthToken, webhook.Handler())
+	server.OBS, err = obscontrol.FromEnv()
+	if err != nil {
+		return fmt.Errorf("initialize OBS controller: %w", err)
+	}
 	server.Accept = store.Store
 
 	serverCtx, cancel := context.WithCancel(ctx)
