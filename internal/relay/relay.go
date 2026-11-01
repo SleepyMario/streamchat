@@ -83,7 +83,6 @@ func (h *hub) count() int {
 type Server struct {
 	Listen, Path, Token string
 	Webhook             http.Handler
-	OBS                 http.Handler
 	// InputHookToken authenticates the narrow MediaMTX lifecycle endpoints.
 	// InputReady receives only the authoritative continuous OBS input state.
 	InputHookToken string
@@ -160,9 +159,6 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.Path, s.websocket)
 	mux.HandleFunc("/api/status", s.status)
-	if s.OBS != nil {
-		mux.Handle("/obs/", s.OBS)
-	}
 	mux.HandleFunc("/api/control", s.control)
 	if s.InputReady != nil {
 		mux.HandleFunc("/api/bot/input-ready", s.inputReady(true))
