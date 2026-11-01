@@ -246,10 +246,10 @@ func (a *agent) api(w http.ResponseWriter, r *http.Request) {
 func validLayout(v string) bool {
 	return v == "Dashboard" || v == "Minimal" || v == "Full" || v == "Off"
 }
-func (a *agent) item(name string, enabled bool) error {
+func (a *agent) item(scene, name string, enabled bool) error {
 	ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
 	defer c()
-	b, e := a.obs.request(ctx, "GetSceneItemId", map[string]string{"sceneName": "IRL - VPS", "sourceName": name})
+	b, e := a.obs.request(ctx, "GetSceneItemId", map[string]string{"sceneName": scene, "sourceName": name})
 	if e != nil {
 		return e
 	}
@@ -259,49 +259,74 @@ func (a *agent) item(name string, enabled bool) error {
 	if e = json.Unmarshal(b, &d); e != nil {
 		return e
 	}
-	_, e = a.obs.request(ctx, "SetSceneItemEnabled", map[string]any{"sceneName": "IRL - VPS", "sceneItemId": d.ID, "sceneItemEnabled": enabled})
+	_, e = a.obs.request(ctx, "SetSceneItemEnabled", map[string]any{"sceneName": scene, "sceneItemId": d.ID, "sceneItemEnabled": enabled})
 	return e
 }
 func (a *agent) irl() {
 	h := &http.Client{Timeout: 2 * time.Second}
-	var previous string
-	var synced time.Time
+	previous := map[string]string{}
+	synced := map[string]time.Time{}
+	recovery := map[string]*irlRecovery{}
 	for {
 		time.Sleep(2 * time.Second)
-		ready := false
-		if r, e := h.Get("http://127.0.0.1:9997/v3/paths/get/irl"); e == nil {
-			var p struct {
-				Ready bool `json:"ready"`
+		anyReady := false
+		for _, route := range []struct{ scene, source, path string }{{"IRL - VPS", "VPS-MMTX", "irl-vps"}, {"IRL - Banana", "Banana-MMTX", "irl"}} {
+			ready := false
+			var readyTime string
+			if r, e := h.Get("http://127.0.0.1:9997/v3/paths/get/" + route.path); e == nil {
+				var p struct {
+					Ready     bool   `json:"ready"`
+					ReadyTime string `json:"readyTime"`
+				}
+				if r.StatusCode == 200 {
+					_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&p)
+					ready = p.Ready
+					readyTime = p.ReadyTime
+				}
+				r.Body.Close()
 			}
-			if r.StatusCode == 200 {
-				_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&p)
-				ready = p.Ready
+			// Show a recovered source before restarting it: hidden media can remain stopped.
+			if e := a.item(route.scene, route.source, ready); e != nil {
+				continue
 			}
-			r.Body.Close()
+			if recovery[route.source] == nil {
+				recovery[route.source] = &irlRecovery{}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := recovery[route.source].sync(ctx, route.source, ready, readyTime, time.Now(), a.obs.request)
+			cancel()
+			if err != nil {
+				log.Printf("IRL recovery %s: %v", route.source, err)
+				continue
+			}
+			a.mu.Lock()
+			gps := a.gps
+			anyReady = anyReady || ready
+			a.mu.Unlock()
+			key := fmt.Sprint(ready) + gps
+			if key == previous[route.scene] && time.Since(synced[route.scene]) < 15*time.Second {
+				continue
+			}
+			if e := a.item(route.scene, route.source, ready); e != nil {
+				continue
+			}
+			ok := true
+			for _, layout := range []string{"Dashboard", "Minimal", "Full"} {
+				if e := a.item(route.scene, "IRL GPS "+layout, ready && gps == layout); e != nil {
+					ok = false
+				}
+			}
+			if ok {
+				previous[route.scene] = key
+				synced[route.scene] = time.Now()
+			}
 		}
 		a.mu.Lock()
-		gps := a.gps
-		a.live = ready
+		a.live = anyReady
 		a.mu.Unlock()
-		key := fmt.Sprint(ready) + gps
-		if key == previous && time.Since(synced) < 15*time.Second {
-			continue
-		}
-		if e := a.item("VPS-MMTX", ready); e != nil {
-			continue
-		}
-		ok := true
-		for _, layout := range []string{"Dashboard", "Minimal", "Full"} {
-			if e := a.item("IRL GPS "+layout, ready && gps == layout); e != nil {
-				ok = false
-			}
-		}
-		if ok {
-			previous = key
-			synced = time.Now()
-		}
 	}
 }
+
 func (a *agent) cava() {
 	for {
 		cmd := exec.Command(agentConfig.Cava, "-p", agentConfig.CavaConfig)

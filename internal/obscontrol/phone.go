@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -64,6 +65,13 @@ func (h *Handler) phone(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" {
 		switch path {
+		case "/api/stream/bitrate":
+			s, e := h.client.bitrateStatus(r.Context())
+			if e != nil {
+				fail(e)
+				return
+			}
+			writeJSON(w, 200, s)
 		case "/api/obs", "/obs":
 			agent("GET", "/obs", nil)
 		case "/api/scenes":
@@ -113,6 +121,18 @@ func (h *Handler) phone(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch path {
+	case "/api/stream/bitrate":
+		kbps, e := strconv.Atoi(r.URL.Query().Get("kbps"))
+		if e != nil || (kbps != 5000 && kbps != 6000 && kbps != 8000) {
+			writeJSON(w, 400, map[string]string{"error": "Choose 5000, 6000 or 8000 kbps"})
+			return
+		}
+		state, e := h.client.setBitrate(r.Context(), kbps)
+		if e != nil {
+			fail(e)
+			return
+		}
+		writeJSON(w, 200, state)
 	case "/api/obs/start":
 		agent("POST", "/obs/start", nil)
 	case "/api/obs/stop":

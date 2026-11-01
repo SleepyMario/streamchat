@@ -51,7 +51,7 @@ func TestPhoneAuthorizationAndRouting(t *testing.T) {
 		t.Fatal("unbounded action accepted")
 	}
 	w = call(h, "GET", "/obs/", "", "", "")
-	if strings.Contains(w.Body.String(), "<iframe") || !strings.Contains(w.Body.String(), "Live feed — not ready yet") {
-		t.Fatal("feed placeholder missing")
+	if strings.Contains(w.Body.String(), "<iframe") || !strings.Contains(w.Body.String(), "Open Twitch viewer") {
+		t.Fatal("on-demand viewer missing")
 	}
 }

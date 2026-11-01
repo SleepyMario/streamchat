@@ -59,7 +59,10 @@ h3 { margin:.1rem 0 .28rem; font-size:.95rem; }
 .state-pill { flex:none; padding:.3rem .55rem; border:1px solid #58405f; border-radius:999px; color:#cfc2d6; background:rgba(255,255,255,.05); font-size:.67rem; font-weight:800; }
 .state-pill.online { color:#a5f3cd; border-color:#376d56; background:rgba(88,213,150,.12); }
 .viewer-shell { position:relative; width:100%; aspect-ratio:16/9; margin-top:.75rem; overflow:hidden; border:1px solid #3a293f; border-radius:.85rem; background:#09070c; }
-.viewer-shell iframe { width:100%; height:100%; border:0; background:#09070c; }.card-note { color:#ae9bb8!important; font-size:.73rem!important; }
+.viewer-shell { min-height:300px; overflow:auto; }
+#viewer-toggle { min-height:44px; padding:.65rem 1rem; border:1px solid #79568c; border-radius:.7rem; background:#38233e; color:#efdfef; font:inherit; }
+#viewer-toggle[aria-expanded="true"] { border-color:#f0a6d7; background:rgba(223,111,184,.3); }
+.viewer-shell iframe { min-width:400px; min-height:300px; width:100%; height:100%; border:0; background:#09070c; }.card-note { color:#ae9bb8!important; font-size:.73rem!important; }
 .phone-chat { padding:0; }.phone-chat .card-heading { padding:.85rem .95rem .55rem; }.chat-feed { max-height:24rem; overflow-y:auto; padding:0 .75rem .75rem; overscroll-behavior:contain; }
 .chat-feed>p { margin:0; padding:1.15rem; color:#ae9bb8; text-align:center; }.chat-message { padding:.7rem .2rem; border-top:1px solid #3a293f; }.chat-identity { display:flex; align-items:center; gap:.5rem; min-width:0; }.chat-identity strong { overflow:hidden; font-size:.84rem; text-overflow:ellipsis; white-space:nowrap; }
 .chat-platform { flex:none; padding:.16rem .36rem; border-radius:.34rem; background:#596477; color:white; font-size:.55rem; font-weight:900; text-transform:uppercase; }.chat-platform.twitch { background:#9146ff; }.chat-platform.kick { background:#53fc18; color:#081008; }.chat-platform.youtube { background:#ff0033; }.chat-message p { margin:.32rem 0 0; font-size:.81rem; overflow-wrap:anywhere; }
@@ -70,7 +73,8 @@ h3 { margin:.1rem 0 .28rem; font-size:.95rem; }
 @media (max-width:23rem) { main { padding-left:.65rem; padding-right:.65rem; }.platform-card { grid-template-columns:1fr; text-align:center; }.platform-card .path-dot { margin:auto; }.platform-card small { grid-column:1; margin:0; }.monitor-grid { grid-template-columns:1fr; } }
 @media (prefers-reduced-motion:reduce) { .page-track { transition:none; } }
 
-[hidden]{display:none!important}.login{margin:16px}.login input{width:100%;padding:12px;box-sizing:border-box;background:#21182b;color:#fff;border:1px solid #79568c;border-radius:12px}.feed-placeholder{display:grid;place-items:center;min-height:180px;color:#bba9c5}.topbar{flex-wrap:wrap}.disconnect{font:inherit;font-size:12px;padding:8px;border-radius:12px;border:1px solid #79568c;background:#38233e;color:#efdfef;margin-left:auto}.gps-card select{display:block;width:100%;margin:12px 0;padding:12px;border-radius:12px;border:1px solid #79568c;background:#21182b;color:#fff;font:inherit}.gps-card button{width:100%}</style>
+[hidden]{display:none!important}.login{margin:16px}.login input{width:100%;padding:12px;box-sizing:border-box;background:#21182b;color:#fff;border:1px solid #79568c;border-radius:12px}.feed-placeholder{display:grid;place-items:center;min-height:180px;color:#bba9c5}.topbar{flex-wrap:wrap}.disconnect{font:inherit;font-size:12px;padding:8px;border-radius:12px;border:1px solid #79568c;background:#38233e;color:#efdfef;margin-left:auto}.gps-card select{display:block;width:100%;margin:12px 0;padding:12px;border-radius:12px;border:1px solid #79568c;background:#21182b;color:#fff;font:inherit}.gps-card button{width:100%}.bitrate-button[aria-pressed="true"] { border-color:#f0a6d7; background:linear-gradient(145deg,rgba(223,111,184,.38),rgba(117,67,136,.2)); color:#fff7fc; }
+</style>
 </head>
 <body>
   <main>
@@ -93,6 +97,14 @@ h3 { margin:.1rem 0 .28rem; font-size:.95rem; }
               <button id="obs-stop" class="action-button quiet" type="button" disabled>Stop OBS</button>
             </div>
             <p id="obs-state" aria-live="polite">Checking OBS…</p><p id="obs-action-result" role="status"></p>
+            <p>Stream bitrate</p>
+            <div class="output-actions" aria-label="Stream bitrate">
+              <button class="action-button quiet bitrate-button" data-kbps="5000" type="button" aria-pressed="false" disabled>5,000 kbps</button>
+              <button class="action-button quiet bitrate-button" data-kbps="6000" type="button" aria-pressed="false" disabled>6,000 kbps</button>
+              <button class="action-button quiet bitrate-button" data-kbps="8000" type="button" aria-pressed="false" disabled>8,000 kbps</button>
+            </div>
+            <p id="bitrate-status" role="status">Start OBS to adjust bitrate.</p>
+            <p>Change bitrate before or during a stream. Scene and start/stop controls are independent.</p>
             <div class="output-actions" aria-label="Streaming and recording">
               <button id="stream-start" class="action-button start" type="button" disabled>Start stream</button>
               <button id="stream-stop" class="action-button quiet" type="button" disabled>Stop stream</button>
@@ -128,9 +140,12 @@ h3 { margin:.1rem 0 .28rem; font-size:.95rem; }
           </section>
           <section class="card viewer-card" aria-labelledby="viewer-title">
             <header class="card-heading">
-              <div><p class="eyebrow">TOKYO RETURN VIEW</p><h2 id="viewer-title">What Tokyo receives</h2></div><span id="viewer-state" class="state-pill">Not ready yet</span>
+              <div><p class="eyebrow">TWITCH</p><h2 id="viewer-title">What viewers see</h2></div><span id="viewer-state" class="state-pill">Closed</span>
             </header>
-            <div class="viewer-shell feed-placeholder">Live feed — not ready yet</div></section>
+            <button id="viewer-toggle" type="button" aria-expanded="false" aria-controls="viewer-shell">Open Twitch viewer</button>
+            <p class="card-note" id="viewer-note">Muted on opening. Twitch playback has a delay. Closing stops video downloads.</p>
+            <a href="https://www.twitch.tv/sleepymario" target="_blank" rel="noopener noreferrer">Open on Twitch ↗</a>
+            <div id="viewer-shell" class="viewer-shell" hidden></div></section>
           <section class="card phone-chat" aria-labelledby="chat-title">
             <header class="card-heading"><div><p class="eyebrow">STREAMCHAT</p><h2 id="chat-title">Live chat</h2></div><small id="chat-status">Connecting…</small></header>
             <div id="chat-feed" class="chat-feed" aria-live="polite"><p id="chat-placeholder">Waiting for chat…</p></div>
@@ -181,6 +196,8 @@ const obsStart = $('#obs-start');
 const obsStop = $('#obs-stop');
 const obsState = $('#obs-state');
 const obsResult = $('#obs-action-result');
+const bitrateButtons = [...document.querySelectorAll('.bitrate-button')];
+let changingBitrate = false;
 const streamStart = $('#stream-start');
 const streamStop = $('#stream-stop');
 const recordStart = $('#record-start');
@@ -196,6 +213,35 @@ const pageTabs = [...document.querySelectorAll('[data-page]')];
 const pagePanels = [...document.querySelectorAll('[data-page-panel]')];
 
 const viewerState = $('#viewer-state');
+const viewerToggle = $('#viewer-toggle');
+const viewerShell = $('#viewer-shell');
+function closeViewer() {
+  viewerShell.replaceChildren();
+  viewerShell.hidden = true;
+  viewerToggle.textContent = 'Open Twitch viewer';
+  viewerToggle.setAttribute('aria-expanded', 'false');
+  viewerState.textContent = 'Closed';
+}
+viewerToggle.addEventListener('click', () => {
+  if (!viewerShell.hidden) { closeViewer(); return; }
+  if (location.protocol !== 'https:') {
+    $('#viewer-note').textContent = 'Use https://sleepymario.com/obs/ over WireGuard for the embedded viewer, or open Twitch separately.';
+    return;
+  }
+  const player = document.createElement('iframe');
+  player.title = 'SleepyMario on Twitch';
+  player.src = 'https://player.twitch.tv/?' + new URLSearchParams({channel: 'sleepymario', parent: location.hostname, muted: 'true', autoplay: 'true'});
+  player.allow = 'autoplay; fullscreen';
+  player.allowFullscreen = true;
+  player.referrerPolicy = 'strict-origin-when-cross-origin';
+  viewerShell.replaceChildren(player);
+  viewerShell.hidden = false;
+  viewerToggle.textContent = 'Close Twitch viewer';
+  viewerToggle.setAttribute('aria-expanded', 'true');
+  viewerState.textContent = 'Player open';
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) closeViewer(); });
+window.addEventListener('pagehide', closeViewer);
 const recoveryButtons = [...document.querySelectorAll('[data-recovery]')];
 const pageOrder = ['controls', 'stream', 'banana'];
 let activePage = 'controls';
@@ -227,6 +273,7 @@ function friendlyState(value) {
 function selectPage(page) {
   const index = pageOrder.indexOf(page);
   if (index < 0) return;
+  if (page !== 'stream') closeViewer();
   activePage = page;
   pageTrack.style.transform = `translateX(-${index * 100}%)`;
   for (const tab of pageTabs) {
@@ -313,7 +360,6 @@ async function loadStreamStatus() {
     setLiveDot($('#path-camera-dot'), status?.camera?.online, !banana.reachable);
     setLiveDot($('#path-bond-dot'), status?.speedify?.online, !banana.reachable);
     setLiveDot($('#path-tokyo-dot'), stream.tokyo_input_ready, !stream.tokyo_reachable);
-    viewerState.textContent = 'Not ready yet';
 
     $('#stream-updated').textContent = `Updated ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
   } catch (error) {
@@ -383,7 +429,7 @@ async function loadOBSStatus() {
     if (!response.ok) throw new Error(data.error || 'Status unavailable');
     obsProcessState = data.state; obsState.textContent = data.message;
     obsStart.disabled = changingOBS || data.state !== 'stopped'; obsStop.disabled = changingOBS || data.state !== 'running';
-    if (data.state === 'running') await loadOutputStatus(); else disableOutputControls('Start OBS to control streaming and recording.');
+    if (data.state === 'running') { await loadOutputStatus(); await loadBitrate(); } else disableOutputControls('Start OBS to control streaming and recording.');
   } catch (error) {
     obsState.textContent = error.message; obsStart.disabled = obsStop.disabled = true;
     disableOutputControls('Streaming and recording controls are unavailable.');
@@ -393,10 +439,11 @@ async function loadOBSStatus() {
 function disableOutputControls(message) {
   for (const button of [streamStart, streamStop, recordStart, recordStop]) button.disabled = true;
   outputState.textContent = message;
+  for (const button of bitrateButtons) button.disabled = true;
 }
 
 async function loadOutputStatus() {
-  if (changingOutput || obsProcessState !== 'running') return;
+  if (changingOutput || changingBitrate || obsProcessState !== 'running') return;
   try {
     const response = await controllerFetch('/api/outputs', { cache: 'no-store' }); const data = await response.json();
     if (!response.ok || !data.available) throw new Error(data.error || 'Output status unavailable');
@@ -406,7 +453,7 @@ async function loadOutputStatus() {
 }
 
 async function controlOutput(kind, action) {
-  if (changingOutput || obsProcessState !== 'running') return;
+  if (changingOutput || changingBitrate || obsProcessState !== 'running') return;
   const label = kind === 'stream' ? 'stream' : 'recording';
   if (!window.confirm(`${action === 'start' ? 'Start' : 'Stop'} the ${label}?`)) return;
   changingOutput = true; for (const button of [streamStart, streamStop, recordStart, recordStop]) button.disabled = true;
@@ -497,6 +544,39 @@ async function selectSubtitleMode(mode) {
   finally { changingSubtitles = false; await loadSubtitleStatus(); }
 }
 
+async function loadBitrate() {
+  if (changingBitrate) return;
+  try {
+    const response = await controllerFetch('/api/stream/bitrate', {cache:'no-store'});
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error || 'Bitrate unavailable');
+    showBitrate(data);
+  } catch (error) {
+    $('#bitrate-status').textContent = error.message;
+    for (const button of bitrateButtons) { button.disabled = true; button.setAttribute('aria-pressed','false'); }
+  }
+}
+function showBitrate(data) {
+  $('#bitrate-status').textContent = `${data.kbps.toLocaleString()} kbps · ${data.live ? 'live encoder target' : 'ready for next stream'}`;
+  for (const button of bitrateButtons) {
+    button.disabled = changingBitrate;
+    button.setAttribute('aria-pressed', String(Number(button.dataset.kbps) === data.kbps));
+  }
+}
+async function changeBitrate(kbps) {
+  if (changingBitrate || changingOutput || obsProcessState !== 'running') return;
+  changingBitrate = true;
+  for (const button of bitrateButtons) button.disabled = true;
+  $('#bitrate-status').textContent = `Applying ${Number(kbps).toLocaleString()} kbps…`;
+  try {
+    const response = await controllerFetch('/api/stream/bitrate?kbps=' + encodeURIComponent(kbps), {method:'POST'});
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error || 'Bitrate change failed');
+    showBitrate(data);
+  } catch (error) { $('#bitrate-status').textContent = error.message; }
+  finally { changingBitrate = false; for (const button of bitrateButtons) button.disabled = false; }
+}
+for (const button of bitrateButtons) button.addEventListener('click', () => changeBitrate(button.dataset.kbps));
 obsStart.addEventListener('click', () => controlOBS('start')); obsStop.addEventListener('click', () => controlOBS('stop'));
 streamStart.addEventListener('click', () => controlOutput('stream','start')); streamStop.addEventListener('click', () => controlOutput('stream','stop'));
 recordStart.addEventListener('click', () => controlOutput('record','start')); recordStop.addEventListener('click', () => controlOutput('record','stop'));
