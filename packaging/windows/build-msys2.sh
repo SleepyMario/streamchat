@@ -45,7 +45,14 @@ windeployqt6 --release --no-translations \
 # MSYS2/MinGW dependencies and verify that the app-local bundle is closed.
 "${repo_root}/packaging/windows/collect-msys2-runtime.sh" "${stage_dir}"
 
-makensis \
+nsis=$(command -v makensis || true)
+if [[ -z "${nsis}" ]]; then
+    for candidate in "/c/Program Files (x86)/NSIS/makensis.exe" "/c/Program Files/NSIS/makensis.exe"; do
+        if [[ -x "${candidate}" ]]; then nsis="${candidate}"; break; fi
+    done
+fi
+if [[ -z "${nsis}" ]]; then echo "NSIS compiler not found" >&2; exit 1; fi
+"${nsis}" \
     -DVERSION="${version}" \
 	-DVERSION_WINDOWS="${version_windows}" \
     -DSTAGE="$(cygpath -w "${stage_dir}")" \
