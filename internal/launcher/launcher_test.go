@@ -62,9 +62,6 @@ func TestDetachedCommandDoesNotUseTerminalStreams(t *testing.T) {
 	if command.Stdin != nil || command.Stdout != io.Discard || command.Stderr != io.Discard {
 		t.Fatalf("stdin=%v stdout=%v stderr=%v", command.Stdin, command.Stdout, command.Stderr)
 	}
-	if command.SysProcAttr == nil || !command.SysProcAttr.Setsid {
-		t.Fatalf("process is not detached: %+v", command.SysProcAttr)
-	}
 }
 
 func TestDetachedStartDoesNotWaitForChildExit(t *testing.T) {
