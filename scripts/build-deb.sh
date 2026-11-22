@@ -20,6 +20,8 @@ cd "${repository}"
 upstream_version=${VERSION:-$(./scripts/version.sh)}
 debian_version=$(printf '%s\n' "${upstream_version}" | sed 's/-beta\./~beta./')
 
+debian_version="${debian_version}-${DEBIAN_REVISION:-1}"
+
 if ! dpkg --validate-version "${debian_version}" >/dev/null 2>&1; then
 	echo "error: invalid Debian package version: ${debian_version}" >&2
 	exit 1

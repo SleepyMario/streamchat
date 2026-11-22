@@ -1,10 +1,10 @@
 Unicode true
 
 !ifndef VERSION
-  !define VERSION "4.0.1"
+  !define VERSION "5.0.0"
 !endif
 !ifndef VERSION_WINDOWS
-  !define VERSION_WINDOWS "4.0.1.0"
+  !define VERSION_WINDOWS "5.0.0.0"
 !endif
 !ifndef STAGE
   !error "STAGE must name the prepared Windows bundle directory"

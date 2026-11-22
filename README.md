@@ -1,8 +1,10 @@
 # Streamchat
 
-Streamchat 4.0.1 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, opening the active stream, dedicated bot replies, and platform-aware role markers. Streamchat uses only documented official platform APIs. The current release includes named YouTube new-member acknowledgements, aggregate membership-gift counts, Super Chats, and Super Stickers.
+Streamchat 5.0.0 is a multi-platform live-chat application for Kick, Twitch, and YouTube. It provides a native Qt 6 desktop interface, a terminal client, and an optional headless relay/archive server through one shared runtime. All three platforms support reading, sending, live status, title/category controls, moderation, recent-message clearing, opening the active stream, dedicated bot replies, and platform-aware role markers. Streamchat uses only documented official platform APIs. The current release includes named YouTube new-member acknowledgements, aggregate membership-gift counts, Super Chats, and Super Stickers.
 
-Version 4.0.1 is a maintenance release that keeps the server, relay, and non-YouTube platforms running when the active YouTube live-chat resource disappears or the YouTube API quota is exhausted. Quota exhaustion pauses YouTube ingestion for five minutes between retries instead of restarting the complete service.
+Version 5.0.0 unifies the Ubuntu, Gentoo, Windows, and Docker release baseline. It includes the fixes since 4.0.1 and separates OBS controller development into its own repository.
+
+Version 4.0.1 was a maintenance release that keeps the server, relay, and non-YouTube platforms running when the active YouTube live-chat resource disappears or the YouTube API quota is exhausted. Quota exhaustion pauses YouTube ingestion for five minutes between retries instead of restarting the complete service.
 
 ## Start here
 
@@ -459,11 +461,11 @@ Release builds follow one canonical location rule: Slacktop builds and validates
 Build all three Ubuntu/Debian packages with the locally installed Go toolchain, Qt 6 development files, and `dpkg-deb`:
 
 ```sh
-VERSION=4.0.1 make deb
+VERSION=5.0.0 make deb
 sudo apt install \
-  ./dist/streamchat-cli_4.0.1_amd64.deb \
-  ./dist/streamchat-server_4.0.1_amd64.deb \
-  ./dist/streamchat-gui_4.0.1_amd64.deb
+  ./dist/streamchat-cli_5.0.0-1_amd64.deb \
+  ./dist/streamchat-server_5.0.0-1_amd64.deb \
+  ./dist/streamchat-gui_5.0.0-1_amd64.deb
 ```
 
 The canonical release build runs on the Streamchat VM inside the checked-in Ubuntu 24.04 builder:
@@ -474,7 +476,7 @@ docker build \
   -t streamchat-deb-builder:24.04 .
 docker run --rm \
   --user "$(id -u):$(id -g)" \
-  -e VERSION=4.0.1 \
+  -e VERSION=5.0.0 \
   -v "$PWD:/src" \
   streamchat-deb-builder:24.04
 ```
@@ -485,8 +487,8 @@ Without `VERSION`, builds use an exact Git tag or a development value containing
 
 ```sh
 sudo apt install \
-  ./dist/streamchat-cli_4.0.1_amd64.deb \
-  ./dist/streamchat-server_4.0.1_amd64.deb
+  ./dist/streamchat-cli_5.0.0-1_amd64.deb \
+  ./dist/streamchat-server_5.0.0-1_amd64.deb
 ```
 
 The server package creates the dedicated `streamchat` account and `/etc/streamchat` only when missing. It never removes or replaces `/etc/streamchat/config.json` or `/var/lib/streamchat/streamchat.db`. On a fresh server, install the example privately, review it, then enable the service:

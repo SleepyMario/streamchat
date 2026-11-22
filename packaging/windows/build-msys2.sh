@@ -8,7 +8,7 @@ if [[ -z "${GOROOT:-}" && -d /ucrt64/lib/go ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-version="${VERSION:-4.0.1}"
+version="${VERSION:-5.0.0}"
 version_core="${version%%[-+]*}"
 IFS=. read -r version_major version_minor version_patch version_build <<<"${version_core}"
 version_windows="${version_major:-0}.${version_minor:-0}.${version_patch:-0}.${version_build:-0}"
